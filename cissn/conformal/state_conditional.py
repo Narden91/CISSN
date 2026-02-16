@@ -35,15 +35,19 @@ class StateConditionalConformal:
         if isinstance(residuals, torch.Tensor):
             residuals = residuals.detach().cpu().numpy()
             
-        # Ensure residuals are 1D
+        # Ensure residuals are 1D for standard SCCP
         if residuals.ndim > 1:
             if residuals.shape[1] == 1:
                 residuals = residuals.squeeze()
             else:
-                # If multi-dimensional, we likely want max residual across dimensions or handle separately
-                # For this implementation, we assume max absolute error across dims for conservative coverage or require 1D
-                print("Warning: Residuals are multi-dimensional. Taking max across last dim.")
+                # For multivariate time series, we can:
+                # 1. Calibrate on the worst-case dimension (max residual) -> conservative coverage
+                # 2. Calibrate per dimension (requires changing quantiles structure)
+                # 3. Flatten (not appropriate as samples are linked)
+                # Here we choose option 1 for safety guarantees on all dimensions.
+                # User should be aware this is conservative.
                 residuals = np.max(residuals, axis=-1)
+
 
         # 1. Cluster states
         self.kmeans.fit(states)
