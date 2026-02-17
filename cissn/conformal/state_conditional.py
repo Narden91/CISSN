@@ -10,14 +10,16 @@ class StateConditionalConformal:
     Uses latent states to cluster time steps and compute adaptive prediction intervals.
     """
     
-    def __init__(self, alpha: float = 0.1, n_clusters: int = 5):
+    def __init__(self, alpha: float = 0.1, n_clusters: int = 5, multivariate_strategy: str = 'max'):
         """
         Args:
             alpha: Significance level (coverage = 1 - alpha)
             n_clusters: Number of state clusters
+            multivariate_strategy: How to handle multivariate residuals ('max', 'mean')
         """
         self.alpha = alpha
         self.n_clusters = n_clusters
+        self.multivariate_strategy = multivariate_strategy
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42)
         self.quantiles = {}  # {cluster_id: quantile_value}
         self.calibrated = False
@@ -44,9 +46,14 @@ class StateConditionalConformal:
                 # 1. Calibrate on the worst-case dimension (max residual) -> conservative coverage
                 # 2. Calibrate per dimension (requires changing quantiles structure)
                 # 3. Flatten (not appropriate as samples are linked)
-                # Here we choose option 1 for safety guarantees on all dimensions.
-                # User should be aware this is conservative.
-                residuals = np.max(residuals, axis=-1)
+                if self.multivariate_strategy == 'max':
+                    # Conservative: coverage guarantees on all dimensions
+                    residuals = np.max(residuals, axis=-1)
+                elif self.multivariate_strategy == 'mean':
+                    # Average coverage (less safety)
+                    residuals = np.mean(residuals, axis=-1)
+                else:
+                    raise ValueError(f"Unknown multivariate strategy: {self.multivariate_strategy}")
 
 
         # 1. Cluster states
