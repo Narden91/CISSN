@@ -55,14 +55,18 @@ class StateConditionalConformal:
                 else:
                     raise ValueError(f"Unknown multivariate strategy: {self.multivariate_strategy}")
 
-
+        n_samples = states.shape[0]
+        if n_samples == 0:
+            raise ValueError("Calibration requires at least one state/residual pair.")
+        n_clusters = min(self.n_clusters, n_samples)
+        self.kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        self.quantiles = {}
         # 1. Cluster states
         self.kmeans.fit(states)
         cluster_labels = self.kmeans.predict(states)
-        
+
         # 2. Compute per-cluster quantiles
-        n = len(residuals)
-        for k in range(self.n_clusters):
+        for k in range(self.kmeans.n_clusters):
             # Get residuals for this cluster
             mask = (cluster_labels == k)
             cluster_residuals = residuals[mask]

@@ -172,9 +172,7 @@ class Experiment:
         # Load best model
         path = os.path.join(self.args.checkpoints, setting)
         self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth')))
-        # Note: We need to save/load Head too! 
-        # For simplicity in this script, let's assume we saved them together or handled it.
-        # FIX: The EarlyStopping class below needs to handle both.
+        self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth')))
         
         preds = []
         trues = []
@@ -261,14 +259,17 @@ class EarlyStopping:
 def adjust_learning_rate(optimizer, epoch, args):
     # type: (optim.Optimizer, int, argparse.Namespace) -> None
     # Decay learning rate by 0.5 every 1 epoch (aggressive) or 0.1 every 2 epochs
+    lr_adjust = {}
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
     elif args.lradj == 'type2':
         lr_adjust = {
-            2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6, 
+            2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6,
             10: 5e-7, 15: 1e-7, 20: 5e-8
         }
-    
+    else:
+        raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1' or 'type2'.")
+
     if epoch in lr_adjust.keys():
         lr = lr_adjust[epoch]
         for param_group in optimizer.param_groups:

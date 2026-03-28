@@ -43,7 +43,8 @@ pip-delete-this-directory.txt
 
 # Project-specific
 training_output/
-models/
+# Root-level saved checkpoints only (do not ignore cissn/models package)
+/models/
 *.pt
 *.pth
 *.ckpt

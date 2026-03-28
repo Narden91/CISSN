@@ -24,9 +24,9 @@ class BaseETTDataset(Dataset):
             self.label_len = size[1]
             self.pred_len = size[2]
             
-        # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
+        # init ('pred' uses the same split window as test — rolling forecast on held-out tail)
+        assert flag in ['train', 'test', 'val', 'pred']
+        type_map = {'train': 0, 'val': 1, 'test': 2, 'pred': 2}
         self.set_type = type_map[flag]
 
         self.features = features

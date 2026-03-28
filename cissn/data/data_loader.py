@@ -11,7 +11,7 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         args: Configuration object (Namespace or dict) containing:
               data, root_path, data_path, seq_len, label_len, pred_len,
               features, target, batch_size, freq, num_workers
-        flag: Split flag ('train', 'test', 'pred')
+        flag: Split flag ('train', 'val', 'test', 'pred')
         
     Returns:
         dataset: The created dataset object

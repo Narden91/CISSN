@@ -8,8 +8,12 @@ class DisentanglementLoss(nn.Module):
     Components:
     1. Covariance regularization (independence)
     2. Temporal consistency (slow vs fast dynamics)
-    """
     
+    Expects a 5-dimensional structured state (level, trend, seasonal pair, residual).
+    """
+
+    EXPECTED_STATE_DIM = 5
+
     def __init__(
         self,
         lambda_cov: float = 1.0,
@@ -52,10 +56,10 @@ class DisentanglementLoss(nn.Module):
         """
         Encourage appropriate temporal dynamics per dimension.
         
-        - Level (dim 0): Variational constraint (should vary slowly)
-        - Trend (dim 1): Smoothness constraint
-        - Seasonal (dim 2): Periodic constraint (not strictly enforced here, relied on structure)
-        - Residual (dim 3): Variance constraint (should be small)
+        - Level (dim 0): slow-varying
+        - Trend (dim 1): smooth (second-difference penalty when seq_len > 2)
+        - Seasonal (dims 2–3): weak magnitude drift penalty
+        - Residual (dim 4): small magnitude
         """
         if states.shape[1] < 2:
             return torch.tensor(0.0, device=states.device)
@@ -95,8 +99,13 @@ class DisentanglementLoss(nn.Module):
         Compute total disentanglement loss.
         
         Args:
-            states: (batch, seq_len, state_dim)
+            states: (batch, seq_len, state_dim) with state_dim == 5
         """
+        _, _, state_dim = states.shape
+        if state_dim != self.EXPECTED_STATE_DIM:
+            raise ValueError(
+                f"DisentanglementLoss expects state_dim={self.EXPECTED_STATE_DIM}; got {state_dim}."
+            )
         l_cov = self.covariance_loss(states)
         l_temp = self.temporal_consistency_loss(states)
         
