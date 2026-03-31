@@ -191,3 +191,80 @@ class Dataset_ETT_minute(BaseETTDataset):
         data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
         data_stamp[:, 4] = df_stamp.date.dt.minute.values / 60.0 - 0.5
         return data_stamp
+
+
+class Dataset_Custom(BaseETTDataset):
+    """
+    Generic dataset class for non-ETT benchmark datasets (Weather, Exchange-Rate,
+    Electricity/ECL, Traffic, ILI, Solar-Energy, etc.).
+
+    Split policy: 70% train / 10% val / 20% test, determined from the actual row
+    count of the CSV — no hardcoded calendar arithmetic.
+
+    Expected file format: CSV with a 'date' column as the first column, followed
+    by feature columns.  If the 'date' column is absent, pass ``scale=False`` and
+    set ``target`` to the desired column name; the time-mark array will be zeros.
+
+    Args:
+        freq: Sampling frequency string used to select time features.
+              ``'h'`` (hourly, default), ``'t'``/``'10min'``/``'15min'`` (sub-hourly),
+              ``'d'`` (daily), ``'w'`` (weekly).
+    """
+
+    def __init__(
+        self,
+        root_path: str,
+        flag: str = 'train',
+        size: Optional[List[int]] = None,
+        features: str = 'S',
+        data_path: str = 'weather.csv',
+        target: str = 'OT',
+        scale: bool = True,
+        freq: str = 'h',
+        **kwargs,
+    ):
+        self.freq = freq
+        super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
+
+    def _get_borders(self):
+        # Read only the first column to obtain row count without loading all feature data.
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path), usecols=[0])
+        n = len(df_raw)
+        num_train = int(n * 0.7)
+        num_test = int(n * 0.2)
+        num_vali = n - num_train - num_test
+        border1s = [0, num_train - self.seq_len, n - num_test - self.seq_len]
+        border2s = [num_train, num_train + num_vali, n]
+        return border1s, border2s
+
+    def _extract_time_features(self, df_stamp):
+        freq = self.freq.lower()
+        if freq in ('t', 'min', '10min', '15min'):
+            # Sub-hourly: month, day, weekday, hour, minute
+            data_stamp = np.zeros((len(df_stamp), 5))
+            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
+            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
+            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
+            data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
+            data_stamp[:, 4] = df_stamp.date.dt.minute.values / 60.0 - 0.5
+        elif freq in ('d', 'daily', '1d'):
+            # Daily: month, day, weekday
+            data_stamp = np.zeros((len(df_stamp), 3))
+            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
+            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
+            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
+        elif freq in ('w', 'weekly', '1w'):
+            # Weekly: month, ISO week number
+            data_stamp = np.zeros((len(df_stamp), 2))
+            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
+            data_stamp[:, 1] = (
+                df_stamp.date.dt.isocalendar().week.values.astype(float) / 52.0 - 0.5
+            )
+        else:
+            # Hourly (default): month, day, weekday, hour
+            data_stamp = np.zeros((len(df_stamp), 4))
+            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
+            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
+            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
+            data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
+        return data_stamp
