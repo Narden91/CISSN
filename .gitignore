@@ -94,3 +94,4 @@ dist/
 build/
 *.pyc
 .agent/*
+.github/

@@ -16,17 +16,27 @@ class BaseETTDataset(Dataset):
                  target: str = 'OT', scale: bool = True, **kwargs):
         # size [seq_len, label_len, pred_len]
         if size is None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
-        else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-            
+            size = [24 * 4 * 4, 24 * 4, 24 * 4]
+        if len(size) != 3:
+            raise ValueError(f"size must contain [seq_len, label_len, pred_len]; got {size!r}.")
+
+        self.seq_len, self.label_len, self.pred_len = size
+        for name, value in (
+            ("seq_len", self.seq_len),
+            ("label_len", self.label_len),
+            ("pred_len", self.pred_len),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be a positive integer; got {value}.")
+        if self.label_len > self.seq_len:
+            raise ValueError(
+                f"label_len must be <= seq_len for overlapping decoder context; got label_len={self.label_len}, seq_len={self.seq_len}."
+            )
+
         # init ('pred' uses the same split window as test — rolling forecast on held-out tail)
-        assert flag in ['train', 'test', 'val', 'pred']
         type_map = {'train': 0, 'val': 1, 'test': 2, 'pred': 2}
+        if flag not in type_map:
+            raise ValueError(f"flag must be one of {sorted(type_map)}; got {flag!r}.")
         self.set_type = type_map[flag]
 
         self.features = features
@@ -40,6 +50,8 @@ class BaseETTDataset(Dataset):
     def __read_data__(self):
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        if 'date' not in df_raw.columns:
+            raise ValueError("Dataset must contain a 'date' column for time feature extraction.")
 
         # Define borders based on dataset type
         # Allow overriding borders via kwargs for custom splits
@@ -52,12 +64,21 @@ class BaseETTDataset(Dataset):
         
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
+        n_rows = len(df_raw)
+        if not (0 <= border1 < border2 <= n_rows):
+            raise ValueError(
+                f"Invalid split borders for {self.data_path}: border1={border1}, border2={border2}, rows={n_rows}."
+            )
 
         if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
             df_data = df_raw[cols_data]
         elif self.features == 'S':
+            if self.target not in df_raw.columns:
+                raise ValueError(f"Target column {self.target!r} not found in dataset columns.")
             df_data = df_raw[[self.target]]
+        else:
+            raise ValueError(f"features must be one of 'M', 'MS', or 'S'; got {self.features!r}.")
 
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
@@ -70,10 +91,16 @@ class BaseETTDataset(Dataset):
         self.data_y = data[border1:border2]
         
         # Time features
-        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp = df_raw[['date']][border1:border2].copy()
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         
         self.data_stamp = self._extract_time_features(df_stamp)
+        self.length = len(self.data_x) - self.seq_len - self.pred_len + 1
+        if self.length <= 0:
+            raise ValueError(
+                "Dataset split is too short for the requested window sizes: "
+                f"split_length={len(self.data_x)}, seq_len={self.seq_len}, pred_len={self.pred_len}."
+            )
 
     def _get_borders(self):
         """
@@ -90,6 +117,9 @@ class BaseETTDataset(Dataset):
         raise NotImplementedError
 
     def __getitem__(self, index):
+        if index < 0 or index >= self.length:
+            raise IndexError(f"Index {index} is out of range for dataset of length {self.length}.")
+
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -100,10 +130,21 @@ class BaseETTDataset(Dataset):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
+        expected_x = self.seq_len
+        expected_y = self.label_len + self.pred_len
+        if len(seq_x) != expected_x or len(seq_x_mark) != expected_x:
+            raise RuntimeError(
+                f"Encoder window extraction failed at index {index}: expected {expected_x} rows, got data={len(seq_x)} marks={len(seq_x_mark)}."
+            )
+        if len(seq_y) != expected_y or len(seq_y_mark) != expected_y:
+            raise RuntimeError(
+                f"Decoder window extraction failed at index {index}: expected {expected_y} rows, got data={len(seq_y)} marks={len(seq_y_mark)}."
+            )
+
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
-        return len(self.data_x) - self.seq_len - self.pred_len + 1
+        return self.length
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)

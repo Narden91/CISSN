@@ -20,6 +20,9 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
     # Normalize args to object access if dict
     if isinstance(args, dict):
         args = SimpleNamespace(**args)
+
+    if getattr(args, 'batch_size', 0) <= 0:
+        raise ValueError(f"batch_size must be a positive integer; got {getattr(args, 'batch_size', None)}.")
         
     data_dict = {
         'ETTh1': Dataset_ETT_hour,
@@ -27,24 +30,28 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         'ETTm1': Dataset_ETT_minute,
         'ETTm2': Dataset_ETT_minute,
     }
+
+    if args.data not in data_dict:
+        supported = ', '.join(sorted(data_dict))
+        raise ValueError(f"Unknown dataset {args.data!r}. Supported datasets: {supported}.")
+
+    if flag not in {'train', 'val', 'test', 'pred'}:
+        raise ValueError(f"flag must be one of 'train', 'val', 'test', 'pred'; got {flag!r}.")
     
     Data = data_dict[args.data]
     
-    if flag == 'test':
-        shuffle_flag = False
+    if flag == 'train':
+        shuffle_flag = True
         drop_last = True
         batch_size = args.batch_size
-        freq = args.freq
     elif flag == 'pred':
         shuffle_flag = False
         drop_last = False
         batch_size = 1
-        freq = args.freq
     else:
-        shuffle_flag = True
-        drop_last = True
+        shuffle_flag = False
+        drop_last = False
         batch_size = args.batch_size
-        freq = args.freq
 
     data_set = Data(
         root_path=args.root_path,
@@ -54,8 +61,14 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         features=args.features,
         target=args.target
     )
+
+    dataset_length = len(data_set)
+    if flag == 'train' and dataset_length < batch_size:
+        raise ValueError(
+            f"Training split contains only {dataset_length} samples, which is smaller than batch_size={batch_size}."
+        )
     
-    print(f'{flag}: {len(data_set)}')
+    print(f'{flag}: {dataset_length}')
     
     data_loader = DataLoader(
         data_set,

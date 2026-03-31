@@ -48,6 +48,12 @@ class Experiment:
     def _select_criterion(self):
         return nn.MSELoss()
 
+    @staticmethod
+    def _concatenate_batches(batches, name):
+        if not batches:
+            raise RuntimeError(f"No {name} batches were produced.")
+        return np.concatenate(batches, axis=0)
+
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
@@ -143,11 +149,12 @@ class Experiment:
         return self.model
 
     def vali(self, vali_loader, criterion):
-        total_loss = []
+        total_loss = 0.0
+        total_weight = 0
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
+            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 
@@ -159,9 +166,13 @@ class Experiment:
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                 
                 loss = criterion(outputs, batch_y)
-                total_loss.append(loss.item())
+                batch_weight = outputs.numel()
+                total_loss += loss.item() * batch_weight
+                total_weight += batch_weight
+            if total_weight == 0:
+                raise RuntimeError("Validation loader produced no prediction elements.")
         
-        total_loss = np.average(total_loss)
+            total_loss = total_loss / total_weight
         self.model.train()
         self.head.train()
         return total_loss
@@ -171,8 +182,8 @@ class Experiment:
         
         # Load best model
         path = os.path.join(self.args.checkpoints, setting)
-        self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth')))
-        self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth')))
+        self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device))
+        self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device))
         
         preds = []
         trues = []
@@ -181,7 +192,7 @@ class Experiment:
         self.head.eval()
         
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 
@@ -195,12 +206,8 @@ class Experiment:
                 preds.append(outputs.detach().cpu().numpy())
                 trues.append(batch_y.detach().cpu().numpy())
         
-        preds = np.array(preds)
-        trues = np.array(trues)
-        
-        # Flatten
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
+            preds = self._concatenate_batches(preds, 'prediction')
+            trues = self._concatenate_batches(trues, 'target')
         
         # Metrics
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
