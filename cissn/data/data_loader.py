@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import DataLoader
 from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute
 from typing import Tuple, Union, Any, Dict
@@ -75,7 +76,9 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         batch_size=batch_size,
         shuffle=shuffle_flag,
         num_workers=args.num_workers,
-        drop_last=drop_last
+        drop_last=drop_last,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=args.num_workers > 0,
     )
     
     return data_set, data_loader

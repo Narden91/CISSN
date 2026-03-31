@@ -62,32 +62,38 @@ class DisentangledStateEncoder(nn.Module):
     def _residual_scale(self) -> torch.Tensor:
         return torch.sigmoid(self.raw_alpha_R) * 0.40
 
-    def apply_structured_A(self, s: torch.Tensor) -> torch.Tensor:
-        """Apply block-diagonal A: level, trend, 2D rotation (seasonal), residual."""
+    def _structured_dynamics(self):
         a_l = self._level_scale()
         a_t = self._trend_scale()
         g = self._gamma()
         w = self.omega
         c, sn = torch.cos(w), torch.sin(w)
-        rot00, rot01 = g * c, -g * sn
-        rot10, rot11 = g * sn, g * c
+        return a_l, a_t, g * c, -g * sn, g * sn, g * c, self._residual_scale()
+
+    def apply_structured_A(self, s: torch.Tensor, dynamics=None) -> torch.Tensor:
+        """Apply block-diagonal A: level, trend, 2D rotation (seasonal), residual."""
+        if dynamics is None:
+            dynamics = self._structured_dynamics()
+        a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
         s0, s1 = s[:, 2:3], s[:, 3:4]
         s_season0 = s0 * rot00 + s1 * rot10
         s_season1 = s0 * rot01 + s1 * rot11
         s_season = torch.cat([s_season0, s_season1], dim=-1)
-        a_r = self._residual_scale()
         s_level = s[:, 0:1] * a_l
         s_trend = s[:, 1:2] * a_t
         s_res = s[:, 4:5] * a_r
         return torch.cat([s_level, s_trend, s_season, s_res], dim=-1)
 
-    def step(self, x_t: torch.Tensor, s_prev: torch.Tensor) -> torch.Tensor:
-        h_t = self.input_proj(x_t)
+    def _step_from_hidden(self, h_t: torch.Tensor, s_prev: torch.Tensor, dynamics) -> torch.Tensor:
         b_x = self.innovation(h_t)
-        s_linear = self.apply_structured_A(s_prev) + b_x
+        s_linear = self.apply_structured_A(s_prev, dynamics=dynamics) + b_x
         corr_in = torch.cat([s_linear, h_t], dim=-1)
         correction = self.correction_scale * torch.tanh(self.correction_mlp(corr_in))
         return s_linear + correction
+
+    def step(self, x_t: torch.Tensor, s_prev: torch.Tensor) -> torch.Tensor:
+        h_t = self.input_proj(x_t)
+        return self._step_from_hidden(h_t, s_prev, dynamics=self._structured_dynamics())
 
     def forward(self, x: torch.Tensor, return_all_states: bool = False):
         """
@@ -100,12 +106,14 @@ class DisentangledStateEncoder(nn.Module):
         """
         batch, seq_len, _ = x.shape
         s = torch.zeros(batch, self.state_dim, device=x.device, dtype=x.dtype)
+        projected = self.input_proj(x)
+        dynamics = self._structured_dynamics()
         if return_all_states:
-            outs = []
+            outs = x.new_empty(batch, seq_len, self.state_dim)
             for t in range(seq_len):
-                s = self.step(x[:, t, :], s)
-                outs.append(s)
-            return torch.stack(outs, dim=1)
+                s = self._step_from_hidden(projected[:, t, :], s, dynamics)
+                outs[:, t, :] = s
+            return outs
         for t in range(seq_len):
-            s = self.step(x[:, t, :], s)
+            s = self._step_from_hidden(projected[:, t, :], s, dynamics)
         return s

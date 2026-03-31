@@ -72,7 +72,7 @@ class Experiment:
         disentangle_criterion = DisentanglementLoss(
             lambda_cov=self.args.lambda_cov,
             lambda_temporal=self.args.lambda_temp
-        )
+        ).to(self.device)
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
@@ -82,12 +82,12 @@ class Experiment:
             self.head.train()
             epoch_time = time.time()
             
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
                 
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
                 
                 # Encoder Forward
                 # We need all states for disentanglement loss
@@ -155,8 +155,8 @@ class Experiment:
         self.head.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(vali_loader):
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
                 
                 final_state = self.model(batch_x)
                 outputs = self.head(final_state)
@@ -193,8 +193,8 @@ class Experiment:
         
         with torch.no_grad():
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(test_loader):
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
                 
                 final_state = self.model(batch_x)
                 outputs = self.head(final_state)

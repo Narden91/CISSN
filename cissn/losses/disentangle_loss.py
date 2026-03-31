@@ -22,6 +22,10 @@ class DisentanglementLoss(nn.Module):
         super().__init__()
         self.lambda_cov = lambda_cov
         self.lambda_temporal = lambda_temporal
+        self.register_buffer(
+            "off_diag_mask",
+            torch.ones(self.EXPECTED_STATE_DIM, self.EXPECTED_STATE_DIM) - torch.eye(self.EXPECTED_STATE_DIM),
+        )
         
     def covariance_loss(self, states: torch.Tensor) -> torch.Tensor:
         """
@@ -46,9 +50,12 @@ class DisentanglementLoss(nn.Module):
         cov = torch.mm(centered.t(), centered) / (n - 1)
         
         # Penalize off-diagonal elements
-        # Create mask for off-diagonal
-        eye = torch.eye(state_dim, device=states.device)
-        off_diag_cov = cov * (1 - eye)
+        if state_dim == self.EXPECTED_STATE_DIM:
+            off_diag_mask = self.off_diag_mask.to(device=states.device, dtype=states.dtype)
+        else:
+            off_diag_mask = torch.ones(state_dim, state_dim, device=states.device, dtype=states.dtype)
+            off_diag_mask.fill_diagonal_(0.0)
+        off_diag_cov = cov * off_diag_mask
         
         return torch.norm(off_diag_cov, p='fro') ** 2
     
