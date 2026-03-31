@@ -54,14 +54,13 @@ def test_cissn_flow():
     calibration_residuals = torch.abs(torch.randn(100)) # Dummy residuals
     conformal.fit(calibration_states, calibration_residuals)
     
-    # Predict intervals
-    point_forecast = forecast[:, 0, :] # Take first step for simplicity
-    lower, upper = conformal.predict(final_state, point_forecast)
+    # Predict intervals for the full forecast tensor
+    lower, upper = conformal.predict(final_state, forecast)
     print(f"Prediction Interval width: {(upper - lower).mean().item():.4f}")
     
     # 5. Explainability
     print("Generating explanations...")
-    explanations = explainer.explain(final_state)
+    explanations = explainer.explain(final_state, horizon_idx=0, output_idx=0)
     
     print(f"Explanation for first sample:")
     e = explanations[0]
@@ -70,7 +69,9 @@ def test_cissn_flow():
     print(f"  Seasonal: {e.seasonal_contribution:.4f}")
     print(f"  Residual: {e.residual_contribution:.4f}")
     print(f"  Bias: {e.bias:.4f}")
-    print(f"  Total (Linear): {e.total_prediction:.4f}")
+    print(f"  Linear Branch: {e.linear_prediction:.4f}")
+    print(f"  Refinement: {e.refinement_contribution:.4f}")
+    print(f"  Total Forecast: {e.total_prediction:.4f}")
     
     print("\nSUCCESS: All components integrated and functioning.")
 

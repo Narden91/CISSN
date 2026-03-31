@@ -17,22 +17,36 @@ class TestComponents(unittest.TestCase):
     
     def test_forecast_explainer_structure(self):
         """Test that ForecastExplainer returns correct structure"""
+        torch.manual_seed(0)
         state_dim = 5
-        horizon = 2
+        horizon = 3
         batch_size = 3
         
-        head = ForecastHead(state_dim=state_dim, output_dim=1, horizon=horizon)
+        head = ForecastHead(state_dim=state_dim, output_dim=2, horizon=horizon)
         explainer = ForecastExplainer(head)
         
         # Mock state
         state = torch.randn(batch_size, state_dim)
+        horizon_idx = 2
+        output_idx = 1
         
-        results = explainer.explain(state)
+        results = explainer.explain(state, horizon_idx=horizon_idx, output_idx=output_idx)
+        forecasts = head(state)[:, horizon_idx, output_idx]
         
         self.assertEqual(len(results), batch_size)
         self.assertTrue(hasattr(results[0], 'level_contribution'))
         self.assertTrue(hasattr(results[0], 'trend_contribution'))
         self.assertTrue(hasattr(results[0], 'seasonal_contribution'))
+        self.assertTrue(hasattr(results[0], 'linear_prediction'))
+        self.assertTrue(hasattr(results[0], 'refinement_contribution'))
+
+        for result, forecast in zip(results, forecasts):
+            self.assertAlmostEqual(
+                result.linear_prediction + result.refinement_contribution,
+                result.total_prediction,
+                places=6,
+            )
+            self.assertAlmostEqual(result.total_prediction, float(forecast.item()), places=6)
         
     @patch('cissn.data.dataset.pd.read_csv')
     def test_dataset_refactoring(self, mock_read_csv):

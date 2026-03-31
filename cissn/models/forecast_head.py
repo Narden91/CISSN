@@ -37,32 +37,63 @@ class ForecastHead(nn.Module):
             nn.Linear(hidden_dim, horizon * output_dim),
         )
 
+    def _validate_state(self, state: torch.Tensor, caller: str) -> None:
+        if state.ndim != 2:
+            raise ValueError(f"{caller} expects state shape (batch, state_dim); got {tuple(state.shape)}.")
+        if state.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"{caller} expects trailing state dimension {self.state_dim}; got {state.shape[-1]}."
+            )
+
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """state: (batch, state_dim) -> (batch, horizon, output_dim)"""
+        self._validate_state(state, "forward")
         lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
         ref = self.refine(state).view(-1, self.horizon, self.output_dim)
         return lin + ref
 
-    def get_contributions(self, state: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def get_contributions(
+        self,
+        state: torch.Tensor,
+        horizon_idx: int = 0,
+        output_idx: int = 0,
+    ) -> Dict[str, torch.Tensor]:
         """
-        Linear decomposition for the first horizon step and first output channel (interpretability).
+        Decompose a selected forecast coordinate into structured linear terms plus refinement.
+
+        Args:
+            state: (batch, state_dim)
+            horizon_idx: Forecast horizon index to explain.
+            output_idx: Output channel index to explain.
         """
+        self._validate_state(state, "get_contributions")
         if self.state_dim != self.STRUCTURED_STATE_DIM:
             raise ValueError(
                 f"get_contributions requires state_dim={self.STRUCTURED_STATE_DIM}; got {self.state_dim}."
             )
-        w = self.lin_weight
-        h0, o0 = 0, 0
-        level = state[:, 0] * w[0, h0, o0]
-        trend = state[:, 1] * w[1, h0, o0]
-        seasonal = state[:, 2] * w[2, h0, o0] + state[:, 3] * w[3, h0, o0]
-        residual = state[:, 4] * w[4, h0, o0]
+        if not 0 <= horizon_idx < self.horizon:
+            raise IndexError(f"horizon_idx must be in [0, {self.horizon}); got {horizon_idx}.")
+        if not 0 <= output_idx < self.output_dim:
+            raise IndexError(f"output_idx must be in [0, {self.output_dim}); got {output_idx}.")
+
+        w = self.lin_weight[:, horizon_idx, output_idx]
+        refinement = self.refine(state).view(-1, self.horizon, self.output_dim)[:, horizon_idx, output_idx]
+
+        level = state[:, 0] * w[0]
+        trend = state[:, 1] * w[1]
+        seasonal = state[:, 2] * w[2] + state[:, 3] * w[3]
+        residual = state[:, 4] * w[4]
         total_linear = level + trend + seasonal + residual
+        bias = self.lin_bias[horizon_idx, output_idx].expand_as(total_linear)
+        linear_prediction = total_linear + bias
         return {
             "level": level,
             "trend": trend,
             "seasonal": seasonal,
             "residual": residual,
-            "bias": self.lin_bias[h0, o0],
+            "bias": bias,
             "total_linear": total_linear,
+            "linear_prediction": linear_prediction,
+            "refinement_contribution": refinement,
+            "total_prediction": linear_prediction + refinement,
         }
