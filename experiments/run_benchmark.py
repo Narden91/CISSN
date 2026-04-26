@@ -13,7 +13,10 @@ from cissn.models.forecast_head import ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from cissn.evaluation.metrics import (
+    mean_squared_error, mean_absolute_error,
+    compute_picp, compute_mpiw, winkler_score,
+)
 
 class Experiment:
     def __init__(self, args):
@@ -275,6 +278,7 @@ class Experiment:
         # Conformal prediction intervals
         coverage = None
         mean_width = None
+        winkler = None
         if hasattr(self, 'conformal') and self.conformal.calibrated:
             lower, upper = self.conformal.predict(
                 torch.from_numpy(test_states).float(),
@@ -282,15 +286,15 @@ class Experiment:
             )
             lower_np = lower.numpy()
             upper_np = upper.numpy()
-            covered = (trues >= lower_np) & (trues <= upper_np)
-            coverage = float(covered.mean())
-            mean_width = float(np.mean(upper_np - lower_np))
-            print(f'Coverage@90%: {coverage:.4f}, Mean Width: {mean_width:.4f}')
+            coverage = compute_picp(lower_np, upper_np, trues)
+            mean_width = compute_mpiw(lower_np, upper_np)
+            winkler = winkler_score(lower_np, upper_np, trues, alpha=0.1)
+            print(f'Coverage@90%: {coverage:.4f}, MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}')
         else:
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
 
-        print(f'mse:{mse}, mae:{mae}, rmse:{rmse}, mape:{mape}')
+        print(f'MSE:{mse:.6f} MAE:{mae:.6f} RMSE:{rmse:.6f} MAPE:{mape:.2f}%')
 
         if self.args.use_wandb:
             import wandb
@@ -308,7 +312,8 @@ class Experiment:
 
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape]))
         np.save(folder_path + 'conformal.npy', np.array([coverage if coverage is not None else -1,
-                                                          mean_width if mean_width is not None else -1]))
+                                                          mean_width if mean_width is not None else -1,
+                                                          winkler if winkler is not None else -1]))
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
         np.save(folder_path + 'lower.npy', lower_np)
