@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 from typing import Union, Tuple
 
 class StateConditionalConformal:
@@ -120,10 +121,12 @@ class StateConditionalConformal:
         residuals, self.quantile_shape = self._prepare_residuals(residuals, n_samples)
         n_clusters = min(self.n_clusters, n_samples)
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        self.scaler = StandardScaler()
         self.quantiles = {}
         # 1. Cluster states
-        self.kmeans.fit(states)
-        cluster_labels = self.kmeans.predict(states)
+        scaled_states = self.scaler.fit_transform(states)
+        self.kmeans.fit(scaled_states)
+        cluster_labels = self.kmeans.predict(scaled_states)
 
         # 2. Compute per-cluster quantiles
         for k in range(self.kmeans.n_clusters):
@@ -170,7 +173,8 @@ class StateConditionalConformal:
             )
             
         # Assign clusters
-        cluster_labels = self.kmeans.predict(states_np)
+        scaled_states = self.scaler.transform(states_np)
+        cluster_labels = self.kmeans.predict(scaled_states)
         
         # Retrieve quantiles
         q_values = [self.quantiles[k] for k in cluster_labels]

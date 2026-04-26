@@ -75,14 +75,14 @@ class DisentangledStateEncoder(nn.Module):
         if dynamics is None:
             dynamics = self._structured_dynamics()
         a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
-        s0, s1 = s[:, 2:3], s[:, 3:4]
-        s_season0 = s0 * rot00 + s1 * rot10
-        s_season1 = s0 * rot01 + s1 * rot11
-        s_season = torch.cat([s_season0, s_season1], dim=-1)
-        s_level = s[:, 0:1] * a_l
-        s_trend = s[:, 1:2] * a_t
-        s_res = s[:, 4:5] * a_r
-        return torch.cat([s_level, s_trend, s_season, s_res], dim=-1)
+        
+        out = torch.empty_like(s)
+        out[:, 0] = s[:, 0] * a_l
+        out[:, 1] = s[:, 1] * a_t
+        out[:, 2] = s[:, 2] * rot00 + s[:, 3] * rot10
+        out[:, 3] = s[:, 2] * rot01 + s[:, 3] * rot11
+        out[:, 4] = s[:, 4] * a_r
+        return out
 
     def _step_from_hidden(self, h_t: torch.Tensor, s_prev: torch.Tensor, dynamics) -> torch.Tensor:
         b_x = self.innovation(h_t)
@@ -95,6 +95,21 @@ class DisentangledStateEncoder(nn.Module):
         h_t = self.input_proj(x_t)
         return self._step_from_hidden(h_t, s_prev, dynamics=self._structured_dynamics())
 
+    import sys
+    @torch.compile(disable=sys.platform == 'win32')
+    def _run_sequence(self, projected: torch.Tensor, dynamics: tuple, return_all_states: bool) -> torch.Tensor:
+        batch, seq_len, _ = projected.shape
+        s = torch.zeros(batch, self.state_dim, device=projected.device, dtype=projected.dtype)
+        if return_all_states:
+            outs = projected.new_empty(batch, seq_len, self.state_dim)
+            for t in range(seq_len):
+                s = self._step_from_hidden(projected[:, t, :], s, dynamics)
+                outs[:, t, :] = s
+            return outs
+        for t in range(seq_len):
+            s = self._step_from_hidden(projected[:, t, :], s, dynamics)
+        return s
+
     def forward(self, x: torch.Tensor, return_all_states: bool = False):
         """
         Args:
@@ -104,16 +119,6 @@ class DisentangledStateEncoder(nn.Module):
         Returns:
             Final state (batch, state_dim) or all states (batch, seq_len, state_dim)
         """
-        batch, seq_len, _ = x.shape
-        s = torch.zeros(batch, self.state_dim, device=x.device, dtype=x.dtype)
         projected = self.input_proj(x)
         dynamics = self._structured_dynamics()
-        if return_all_states:
-            outs = x.new_empty(batch, seq_len, self.state_dim)
-            for t in range(seq_len):
-                s = self._step_from_hidden(projected[:, t, :], s, dynamics)
-                outs[:, t, :] = s
-            return outs
-        for t in range(seq_len):
-            s = self._step_from_hidden(projected[:, t, :], s, dynamics)
-        return s
+        return self._run_sequence(projected, dynamics, return_all_states)

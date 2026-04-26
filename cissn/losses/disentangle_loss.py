@@ -38,9 +38,12 @@ class DisentanglementLoss(nn.Module):
         batch_size, seq_len, state_dim = states.shape
         flat_states = states.reshape(-1, state_dim)  # (batch*seq_len, state_dim)
         
-        # Center the states
-        mean = flat_states.mean(dim=0, keepdim=True)
-        centered = flat_states - mean
+        # Center the states per sequence to provide better conditional independence
+        mean = states.mean(dim=1, keepdim=True)
+        centered = states - mean
+        
+        # Flatten batch and time for covariance computation
+        centered = centered.reshape(-1, state_dim)
         
         # Compute covariance matrix
         n = flat_states.size(0)
@@ -59,19 +62,36 @@ class DisentanglementLoss(nn.Module):
         
         return torch.norm(off_diag_cov, p='fro') ** 2
     
-    def temporal_consistency_loss(self, states: torch.Tensor) -> torch.Tensor:
+    def temporal_consistency_loss(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:
         """
         Encourage appropriate temporal dynamics per dimension.
         
-        - Level (dim 0): slow-varying
-        - Trend (dim 1): smooth (second-difference penalty when seq_len > 2)
-        - Seasonal (dims 2–3): weak magnitude drift penalty
-        - Residual (dim 4): small magnitude
+        If dynamics (from DisentangledStateEncoder) is provided, penalizes
+        deviation from expected structural transitions. Otherwise, uses
+        simple finite differences.
         """
         if states.shape[1] < 2:
             return torch.tensor(0.0, device=states.device)
             
-        # Diff across time
+        if dynamics is not None:
+            a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
+            s_prev = states[:, :-1, :]
+            s_curr = states[:, 1:, :]
+            
+            s_level_expected = s_prev[:, :, 0] * a_l
+            s_trend_expected = s_prev[:, :, 1] * a_t
+            s_season0_expected = s_prev[:, :, 2] * rot00 + s_prev[:, :, 3] * rot10
+            s_season1_expected = s_prev[:, :, 2] * rot01 + s_prev[:, :, 3] * rot11
+            
+            level_loss = torch.mean((s_curr[:, :, 0] - s_level_expected) ** 2)
+            trend_loss = torch.mean((s_curr[:, :, 1] - s_trend_expected) ** 2)
+            seasonal_loss = torch.mean((s_curr[:, :, 2] - s_season0_expected) ** 2 + 
+                                     (s_curr[:, :, 3] - s_season1_expected) ** 2) * 0.1
+            residual_loss = torch.mean(states[:, :, 4] ** 2)
+            
+            return level_loss + trend_loss + seasonal_loss + residual_loss
+
+        # Diff across time (fallback if dynamics not provided)
         diffs = states[:, 1:, :] - states[:, :-1, :]
         
         # Level (dim 0): slow varying -> minimize diff
@@ -84,11 +104,7 @@ class DisentanglementLoss(nn.Module):
         else:
             trend_loss = torch.mean(diffs[:, :, 1] ** 2)
             
-        # Seasonal (dims 2, 3): 
-        # Ideally we want them to follow the rotation dynamics, but that's hard to enforce via loss 
-        # without knowing omega perfectly. The structural prior (A matrix) does most of the work.
-        # We can add a weak regularization to keep magnitude consistent or just ignore for now.
-        # Let's add a small penalty on magnitude changes to avoid explosion.
+        # Seasonal (dims 2, 3)
         seasonal_mag = torch.norm(states[:, :, 2:4], dim=-1)
         if states.shape[1] > 1:
             mag_diff = seasonal_mag[:, 1:] - seasonal_mag[:, :-1]
@@ -101,12 +117,13 @@ class DisentanglementLoss(nn.Module):
         
         return level_loss + trend_loss + seasonal_loss + residual_loss
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:
         """
         Compute total disentanglement loss.
         
         Args:
             states: (batch, seq_len, state_dim) with state_dim == 5
+            dynamics: (tuple, optional) the structural dynamics scales from the encoder
         """
         _, _, state_dim = states.shape
         if state_dim != self.EXPECTED_STATE_DIM:
@@ -114,6 +131,6 @@ class DisentanglementLoss(nn.Module):
                 f"DisentanglementLoss expects state_dim={self.EXPECTED_STATE_DIM}; got {state_dim}."
             )
         l_cov = self.covariance_loss(states)
-        l_temp = self.temporal_consistency_loss(states)
+        l_temp = self.temporal_consistency_loss(states, dynamics)
         
         return self.lambda_cov * l_cov + self.lambda_temporal * l_temp

@@ -45,7 +45,8 @@ def test_cissn_flow():
     print(f"Forecast shape: {forecast.shape}")
     
     # 3. Compute Loss
-    d_loss = loss_fn(states)
+    dynamics = encoder._structured_dynamics()
+    d_loss = loss_fn(states, dynamics)
     print(f"Disentanglement Loss: {d_loss.item():.4f}")
     
     # 4. Conformal Prediction (Calibration)
