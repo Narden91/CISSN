@@ -3,6 +3,8 @@ Disentangled state encoder with structured transition (level, trend, rotation, r
 """
 from __future__ import annotations
 
+import sys
+
 import torch
 import torch.nn as nn
 
@@ -50,6 +52,9 @@ class DisentangledStateEncoder(nn.Module):
         self.raw_alpha_R = nn.Parameter(torch.zeros(1))
         self.omega = nn.Parameter(torch.zeros(1))
 
+        if sys.platform != 'win32' and hasattr(torch, 'compile'):
+            self._run_sequence = torch.compile(self._run_sequence)
+
     def _level_scale(self) -> torch.Tensor:
         return torch.sigmoid(self.raw_alpha_L) * 0.15 + 0.85
 
@@ -95,8 +100,6 @@ class DisentangledStateEncoder(nn.Module):
         h_t = self.input_proj(x_t)
         return self._step_from_hidden(h_t, s_prev, dynamics=self._structured_dynamics())
 
-    import sys
-    @torch.compile(disable=sys.platform == 'win32')
     def _run_sequence(self, projected: torch.Tensor, dynamics: tuple, return_all_states: bool) -> torch.Tensor:
         batch, seq_len, _ = projected.shape
         s = torch.zeros(batch, self.state_dim, device=projected.device, dtype=projected.dtype)
