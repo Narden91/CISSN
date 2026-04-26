@@ -229,8 +229,12 @@ class Experiment:
         # Check exchangeability assumption
         exchange_results = self.conformal.check_exchangeability(all_states, all_residuals)
         for k, v in exchange_results.items():
-            if v.get("acf_lag1") is not None and abs(v["acf_lag1"]) > 0.3:
-                print(f"  Warning: Cluster {k} ACF(1)={v['acf_lag1']:.3f} — exchangeability assumption may be violated.")
+            acf1 = v.get("acf_lag1")
+            if acf1 is not None and abs(acf1) > 0.3:
+                if v.get("corrected"):
+                    print(f"  Cluster {k} ACF(1)={acf1:.3f} — corrected (inflation ×{v['correction_factor']:.3f})")
+                else:
+                    print(f"  Cluster {k} ACF(1)={acf1:.3f} — consider re-running with correct_acf=True")
         self.model.train()
         self.head.train()
 

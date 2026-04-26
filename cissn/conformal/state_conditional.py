@@ -22,6 +22,7 @@ class StateConditionalConformal:
         n_clusters: int = 5,
         multivariate_strategy: str = 'per_feature',
         random_state: int = 42,
+        correct_acf: bool = True,
     ):
         """
         Args:
@@ -32,6 +33,9 @@ class StateConditionalConformal:
                 - 'max': reduce every sample to a single worst-case residual.
                 - 'mean': reduce every sample to a single mean residual.
             random_state: Seed for KMeans clustering reproducibility.
+            correct_acf: If True, automatically inflate cluster quantiles when
+                within-cluster autocorrelation (ACF(1)) exceeds 0.3, compensating
+                for the reduced effective sample size (Theorem 1b).
         """
         if not 0 < alpha < 1:
             raise ValueError(f"alpha must lie strictly between 0 and 1; got {alpha}.")
@@ -45,9 +49,11 @@ class StateConditionalConformal:
         self.n_clusters = n_clusters
         self.multivariate_strategy = multivariate_strategy
         self.random_state = random_state
+        self.correct_acf = correct_acf
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
         self.quantiles = {}  # {cluster_id: quantile_value}
         self.quantile_shape = ()
+        self.acf_corrections_ = {}  # {cluster_id: correction_factor}
         self.calibrated = False
 
     @staticmethod
@@ -88,6 +94,18 @@ class StateConditionalConformal:
     @staticmethod
     def _compute_quantile(residuals: np.ndarray, q_level: float):
         return np.quantile(residuals, q_level, axis=0, method='higher')
+
+    @staticmethod
+    def _compute_acf1(residuals: np.ndarray) -> Optional[float]:
+        """Compute lag-1 autocorrelation. Returns None if < 5 samples."""
+        if residuals.shape[0] < 5:
+            return None
+        r = residuals
+        if r.ndim > 1:
+            r = r.reshape(r.shape[0], -1).mean(axis=1)
+        mean_r = r.mean()
+        diff_r = r - mean_r
+        return float(np.corrcoef(diff_r[:-1], diff_r[1:])[0, 1])
 
     def _build_quantile_tensor(self, q_values, point_forecasts: torch.Tensor) -> torch.Tensor:
         if self.quantile_shape:
@@ -143,16 +161,18 @@ class StateConditionalConformal:
 
         # 2. Compute per-cluster quantiles
         self.cluster_sizes_ = {}
+        empty_clusters = []
         for k in range(self.kmeans.n_clusters):
             mask = (cluster_labels == k)
             cluster_residuals = residuals[mask]
-
-            if cluster_residuals.shape[0] == 0:
-                cluster_residuals = residuals
-                warnings.warn(f"Cluster {k} is empty after K-Means; using global residuals as fallback. Consider reducing n_clusters.")
-
             n_k = cluster_residuals.shape[0]
             self.cluster_sizes_[k] = n_k
+
+            if n_k == 0:
+                empty_clusters.append(k)
+                warnings.warn(f"Cluster {k} is empty after K-Means. Will fall back to max quantile of non-empty clusters. Consider reducing n_clusters.")
+                continue
+
             if n_k < 1.0 / self.alpha:
                 warnings.warn(
                     f"Cluster {k} has only {n_k} samples, below 1/alpha={1.0/self.alpha:.0f}. "
@@ -160,12 +180,40 @@ class StateConditionalConformal:
                 )
             q_level = np.ceil((n_k + 1) * (1 - self.alpha)) / n_k
             q_level = min(q_level, 1.0)
-            self.quantiles[k] = self._compute_quantile(cluster_residuals, q_level)
+            q_k_base = self._compute_quantile(cluster_residuals, q_level)
+
+            if self.correct_acf:
+                rho = self._compute_acf1(cluster_residuals)
+                if rho is not None and abs(rho) > 0.3:
+                    n_eff = n_k * (1.0 - abs(rho)) / (1.0 + abs(rho))
+                    se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
+                    f_correction = 1.0 + se_inflation / np.sqrt(n_k)
+                    q_k = q_k_base * f_correction
+                    self.acf_corrections_[k] = f_correction
+                else:
+                    q_k = q_k_base
+            else:
+                q_k = q_k_base
+
+            self.quantiles[k] = q_k
+
+        if empty_clusters:
+            fallback_quantile = None
+            if self.quantiles:
+                fallback_qs = np.stack(list(self.quantiles.values()), axis=0)
+                fallback_quantile = fallback_qs.max(axis=0)
+            else:
+                q_level = np.ceil((residuals.shape[0] + 1) * (1 - self.alpha)) / residuals.shape[0]
+                q_level = min(q_level, 1.0)
+                fallback_quantile = self._compute_quantile(residuals, q_level)
+            for k in empty_clusters:
+                self.quantiles[k] = fallback_quantile
 
         print(
             f"SCCP calibration: {n_clusters} clusters, "
             f"sizes={dict(self.cluster_sizes_)}, "
             f"alpha={self.alpha}"
+            + (f", acf_corrections={dict(self.acf_corrections_)}" if self.acf_corrections_ else "")
         )
         self.calibrated = True
         
@@ -218,11 +266,12 @@ class StateConditionalConformal:
         """
         Validate the within-cluster exchangeability assumption via lag-1 autocorrelation.
 
-        Conformal coverage guarantees require exchangeability within each state cluster.
-        Significant autocorrelation suggests temporal dependence that violates this assumption.
+        Returns a dict mapping cluster_id -> dict with keys:
+            acf_lag1, n_samples, corrected (bool), correction_factor (if corrected).
 
-        Returns a dict mapping cluster_id -> acf_lag1 value.
-        Values near 0 support the assumption; values > 0.3 warrant caution.
+        When correct_acf=True was used during fit(), the stored quantiles already
+        incorporate an inflation factor to compensate for autocorrelation (Theorem 1b).
+        This method reports the diagnostic values and applied corrections.
         """
         states = self._validate_states(self._to_numpy(states, 'states'))
         residuals = self._to_numpy(residuals, 'residuals')
@@ -233,19 +282,26 @@ class StateConditionalConformal:
         for k in range(self.kmeans.n_clusters):
             mask = cluster_labels == k
             n_k = mask.sum()
+            entry = {"n_samples": int(n_k), "corrected": False, "correction_factor": None}
+
             if n_k < 5:
-                results[k] = {"acf_lag1": None, "n_samples": int(n_k), "warning": "too few samples"}
+                entry["acf_lag1"] = None
+                entry["warning"] = "too few samples for ACF computation"
+                results[k] = entry
                 continue
+
             r = residuals[mask]
-            if r.ndim > 1:
-                r = r.reshape(n_k, -1).mean(axis=1)
-            mean_r = r.mean()
-            diff_r = r - mean_r
-            acf1 = float(np.corrcoef(diff_r[:-1], diff_r[1:])[0, 1]) if n_k > 1 else None
-            results[k] = {"acf_lag1": acf1, "n_samples": int(n_k)}
-            if acf1 is not None and abs(acf1) > 0.3:
+            rho = self._compute_acf1(r)
+            entry["acf_lag1"] = rho
+
+            if k in self.acf_corrections_:
+                entry["corrected"] = True
+                entry["correction_factor"] = self.acf_corrections_[k]
+            elif rho is not None and abs(rho) > 0.3:
                 warnings.warn(
-                    f"Cluster {k} shows substantial autocorrelation (ACF(1)={acf1:.3f}). "
-                    f"The exchangeability assumption required for conformal coverage may be violated."
+                    f"Cluster {k} shows substantial autocorrelation (ACF(1)={rho:.3f}). "
+                    f"Re-run fit() with correct_acf=True to apply automatic quantile inflation."
                 )
+
+            results[k] = entry
         return results

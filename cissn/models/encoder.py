@@ -7,6 +7,7 @@ import sys
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class DisentangledStateEncoder(nn.Module):
@@ -40,11 +41,11 @@ class DisentangledStateEncoder(nn.Module):
         )
         self.innovation = nn.Linear(hidden_dim, state_dim)
         self.correction_mlp = nn.Sequential(
-            nn.Linear(state_dim + hidden_dim, hidden_dim),
+            nn.utils.spectral_norm(nn.Linear(state_dim + hidden_dim, hidden_dim)),
             nn.GELU(),
-            nn.Linear(hidden_dim, state_dim),
+            nn.utils.spectral_norm(nn.Linear(hidden_dim, state_dim)),
         )
-        self.correction_scale = nn.Parameter(torch.tensor(0.01))
+        self.raw_correction_scale = nn.Parameter(torch.tensor(-4.6))  # softplus⁻¹(0.01)
 
         self.raw_alpha_L = nn.Parameter(torch.zeros(1))
         self.raw_alpha_T = nn.Parameter(torch.zeros(1))
@@ -66,6 +67,9 @@ class DisentangledStateEncoder(nn.Module):
 
     def _residual_scale(self) -> torch.Tensor:
         return torch.sigmoid(self.raw_alpha_R) * 0.40
+
+    def _correction_scale(self) -> torch.Tensor:
+        return F.softplus(self.raw_correction_scale)
 
     def _structured_dynamics(self):
         a_l = self._level_scale()
@@ -93,7 +97,7 @@ class DisentangledStateEncoder(nn.Module):
         b_x = self.innovation(h_t)
         s_linear = self.apply_structured_A(s_prev, dynamics=dynamics) + b_x
         corr_in = torch.cat([s_linear, h_t], dim=-1)
-        correction = self.correction_scale * torch.tanh(self.correction_mlp(corr_in))
+        correction = self._correction_scale() * torch.tanh(self.correction_mlp(corr_in))
         return s_linear + correction
 
     def step(self, x_t: torch.Tensor, s_prev: torch.Tensor) -> torch.Tensor:
