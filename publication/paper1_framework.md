@@ -38,14 +38,14 @@ where `q_k^{1-α} = Quantile({r_i : cluster(s_i) = k}, ⌈(n_k+1)(1-α)⌉/n_k)`
 
 **Proof sketch to formalize:**
 1. Within cluster k, the n_k calibration residuals plus the new residual form an exchangeable set of n_k+1 variables (assumption).
-2. By standard split conformal (Vovk et al., 2005), the rank of r_{new} among the n_k+1 residuals is uniform.
-3. The event `r_{new} ≤ q_k^{1-α}` occurs precisely when r_{new} is not in the top α fraction.
-4. With the finite-sample correction `⌈(n_k+1)(1-α)⌉/n_k`, the probability is ≥ 1-α.
-5. Marginalizing over clusters, the overall coverage is a weighted average of per-cluster coverages, each ≥ 1-α.
+2. By standard split conformal (Vovk et al., 2005), the rank of r_{new} among the n_k+1 residuals is uniform over {1, ..., n_k+1}.
+3. Let m = ⌈(n_k+1)(1-α)⌉. With quantile level min(m/n_k, 1.0), the event {r_new ≤ q_k} occurs when r_new has rank ≤ min(m, n_k) in the combined set.
+4. When n_k ≥ ⌈1/α⌉ − 1 (guaranteeing m ≤ n_k, no clipping), P(r_new ≤ q_k) = m/(n_k+1) ≥ 1−α. Below this threshold, P = n_k/(n_k+1) which may fall below 1−α.
+5. Marginalizing over clusters, the overall coverage is a weighted average of per-cluster coverages, each ≥ 1−α.
 
 **Edge cases to address:**
 - Empty clusters (already handled: fallback to global residuals)
-- Single-sample clusters (warning issued; coverage guarantee degrades)
+- Small clusters with n_k < ⌈1/α⌉ − 1: coverage guarantee degrades to n_k/(n_k+1) < 1−α
 - Autocorrelated residuals (bound the coverage loss via ACF(1))
 
 **Status:** ✅ FORMAL PROOF COMPLETE — REVISED (see `paper1_proofs.tex`). Full proof with rank-uniformity argument, finite-sample correction with clipping analysis, and code-path verification. **Amendment:** The coverage guarantee requires $n_k \geq \lceil 1/\alpha \rceil - 1$ calibration samples per cluster. Below this threshold, coverage degrades to $n_k/(n_k+1)$, which may fall below $1-\alpha$ (e.g., $n_k=5$, $\alpha=0.1$ gives $P=5/6\approx 0.833$). The code warns at $n_k < 1/\alpha$ (line~157). Identified limitation: (i) exchangeability within time-series clusters is approximate, not guaranteed; (ii) small clusters break the coverage guarantee. GRADE assessment: MODERATE. Empirical validation plan provided.
