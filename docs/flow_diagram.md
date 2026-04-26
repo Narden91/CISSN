@@ -12,15 +12,15 @@ flowchart TB
         subgraph extraction["Innovation Extraction"]
             E1[("Level Extractor")]
             E2[("Trend Extractor")]
-            E3[("Seasonal Extractor")]
+            E3[("Seasonal Extractor\n(cos/sin pair)")]
             E4[("Residual Extractor")]
         end
         
         subgraph transition["Structured Transition (A)"]
-            T1[("Level A≈1")]
-            T2[("Trend A≈1")]
-            T3[("Seasonal Rot(ω)")]
-            T4[("Residual A<1")]
+            T1[("Level α≈1")]
+            T2[("Trend α≈1")]
+            T3[("Seasonal 2D Rot(ω)")]
+            T4[("Residual α<1")]
         end
         
         subgraph correction["Non-Linear Correction"]
