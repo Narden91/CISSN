@@ -36,6 +36,7 @@ class ForecastHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, horizon * output_dim),
         )
+        self.refinement_scale = nn.Parameter(torch.tensor(0.1))
 
     def _validate_state(self, state: torch.Tensor, caller: str) -> None:
         if state.ndim != 2:
@@ -49,7 +50,7 @@ class ForecastHead(nn.Module):
         """state: (batch, state_dim) -> (batch, horizon, output_dim)"""
         self._validate_state(state, "forward")
         lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
-        ref = self.refine(state).view(-1, self.horizon, self.output_dim)
+        ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
         return lin + ref
 
     def get_contributions(
@@ -77,7 +78,7 @@ class ForecastHead(nn.Module):
             raise IndexError(f"output_idx must be in [0, {self.output_dim}); got {output_idx}.")
 
         w = self.lin_weight[:, horizon_idx, output_idx]
-        refinement = self.refine(state).view(-1, self.horizon, self.output_dim)[:, horizon_idx, output_idx]
+        refinement = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)[:, horizon_idx, output_idx]
 
         level = state[:, 0] * w[0]
         trend = state[:, 1] * w[1]
@@ -97,3 +98,18 @@ class ForecastHead(nn.Module):
             "refinement_contribution": refinement,
             "total_prediction": linear_prediction + refinement,
         }
+
+    def get_refinement_ratio(self, state: torch.Tensor) -> float:
+        """Fraction of total prediction magnitude coming from the refinement path.
+
+        A ratio near 0 means the linear interpretable path dominates.
+        A ratio near 1 means the non-linear refinement dominates,
+        which weakens the interpretability guarantee.
+        """
+        self._validate_state(state, "get_refinement_ratio")
+        lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
+        ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
+        lin_mag = lin.abs().mean()
+        ref_mag = ref.abs().mean()
+        total = lin_mag + ref_mag + 1e-8
+        return (ref_mag / total).item()

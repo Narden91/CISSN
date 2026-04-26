@@ -68,13 +68,13 @@ We impose structure on the state space so each dimension captures a specific tem
 1. State dimensions are statistically independent: `I(s^{(i)}; s^{(j)}) ≈ 0` for `i ≠ j`
 2. Each dimension captures a distinct generative factor of variation
 
-For time-series, we target K=4 interpretable dimensions:
+For time-series, we target K=5 interpretable dimensions (seasonal requires 2 dimensions for 2D rotation):
 
 | Dimension | Notation | Semantic Meaning | Dynamics |
 |-----------|----------|------------------|----------|
-| 1 | `s^{(level)}` | Current level/mean | Slow-varying |
-| 2 | `s^{(trend)}` | Direction of change | Smooth integration |
-| 3 | `s^{(seasonal)}` | Periodic patterns | Oscillatory |
+| 0 | `s^{(level)}` | Current level/mean | Slow-varying |
+| 1 | `s^{(trend)}` | Direction of change | Smooth integration |
+| 2-3 | `s^{(seasonal_0)}, s^{(seasonal_1)}` | Periodic patterns (cos/sin pair) | 2D rotation |
 | 4 | `s^{(residual)}` | Innovation/noise | High-frequency |
 
 ### 2.3 Achieving Disentanglement (Unsupervised)
@@ -173,11 +173,11 @@ class DisentangledStateEncoder(nn.Module):
     
     Parameters:
         input_dim: D (number of input features)
-        state_dim: K=4 (disentangled dimensions)
+        state_dim: K=5 (disentangled dimensions: level, trend, seasonal_0, seasonal_1, residual)
         hidden_dim: H (MLP hidden size)
     """
     
-    def __init__(self, input_dim, state_dim=4, hidden_dim=64):
+    def __init__(self, input_dim, state_dim=5, hidden_dim=64):
         # Input projection: x_t → intermediate
         self.input_proj = nn.Linear(input_dim, hidden_dim)
         
@@ -511,19 +511,20 @@ import math
 
 class DisentangledStateEncoder(nn.Module):
     """
-    Encodes input time series into K=4 disentangled state dimensions.
+    Encodes input time series into K=5 disentangled state dimensions.
     
     State dimensions:
         0: Level - slow-varying baseline
         1: Trend - direction of change
-        2: Seasonal - periodic component
-        3: Residual - fast-changing innovations
+        2: Seasonal (cosine) - periodic component
+        3: Seasonal (sine) - periodic component (forms 2D rotation with dim 2)
+        4: Residual - fast-changing innovations
     """
     
     def __init__(
         self,
         input_dim: int,
-        state_dim: int = 4,
+        state_dim: int = 5,
         hidden_dim: int = 64,
         dropout: float = 0.1
     ):
@@ -673,7 +674,7 @@ class ForecastHead(nn.Module):
     
     def __init__(
         self,
-        state_dim: int = 4,
+        state_dim: int = 5,
         output_dim: int = 1,
         horizon: int = 1,
         hidden_dim: int = 32
@@ -727,7 +728,7 @@ class ForecastHead(nn.Module):
         Returns interpretable breakdown of forecast.
         """
         contributions = {}
-        dimension_names = ['level', 'trend', 'seasonal', 'residual']
+        dimension_names = ['level', 'trend', 'seasonal_0', 'seasonal_1', 'residual']
         
         for i, name in enumerate(dimension_names):
             # Contribution of dimension i
@@ -1019,7 +1020,7 @@ class CISSN(nn.Module):
         self,
         input_dim: int,
         output_dim: int = 1,
-        state_dim: int = 4,
+        state_dim: int = 5,
         hidden_dim: int = 64,
         horizon: int = 96,
         dropout: float = 0.1
@@ -1312,7 +1313,7 @@ class CISSNTrainer:
 model:
   input_dim: 7        # ETTh1 has 7 features
   output_dim: 1       # Predict OT (oil temperature)
-  state_dim: 4        # Disentangled dimensions
+  state_dim: 5        # Disentangled dimensions (level, trend, seasonal_0, seasonal_1, residual)
   hidden_dim: 64
   horizon: 96         # Predict 96 steps ahead
   dropout: 0.1

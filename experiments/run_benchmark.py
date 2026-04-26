@@ -132,8 +132,12 @@ class Experiment:
             # Compute disentanglement quality metrics on last training batch
             disent_metrics = disentangle_criterion.get_metrics(states)
 
+            # Monitor refinement ratio (interpretability: linear path should dominate)
+            refinement_ratio = self.head.get_refinement_ratio(final_state)
+
             print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f} Test Loss: {test_loss:.7f}")
             print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")
+            print(f"  Refinement ratio: {refinement_ratio:.4f} ({'linear dominates' if refinement_ratio < 0.5 else 'refinement dominates'})")
 
             if self.args.use_wandb:
                 import wandb
@@ -144,6 +148,7 @@ class Experiment:
                     "test_loss": test_loss,
                     "lr": model_optim.param_groups[0]['lr'],
                     "disent_off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
+                    "refinement_ratio": refinement_ratio,
                 })
 
             early_stopping(vali_loss, self.model, self.head, path)
