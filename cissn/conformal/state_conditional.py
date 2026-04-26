@@ -1,19 +1,28 @@
+import sys
+import warnings
+
 import torch
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 class StateConditionalConformal:
     """
     State-Conditional Conformal Prediction (SCCP).
-    
+
     Uses latent states to cluster time steps and compute adaptive prediction intervals.
     """
-    
+
     VALID_MULTIVARIATE_STRATEGIES = {'per_feature', 'max', 'mean'}
 
-    def __init__(self, alpha: float = 0.1, n_clusters: int = 5, multivariate_strategy: str = 'per_feature'):
+    def __init__(
+        self,
+        alpha: float = 0.1,
+        n_clusters: int = 5,
+        multivariate_strategy: str = 'per_feature',
+        random_state: int = 42,
+    ):
         """
         Args:
             alpha: Significance level (coverage = 1 - alpha)
@@ -22,6 +31,7 @@ class StateConditionalConformal:
                 - 'per_feature': keep the residual trailing dimensions and learn one quantile per element.
                 - 'max': reduce every sample to a single worst-case residual.
                 - 'mean': reduce every sample to a single mean residual.
+            random_state: Seed for KMeans clustering reproducibility.
         """
         if not 0 < alpha < 1:
             raise ValueError(f"alpha must lie strictly between 0 and 1; got {alpha}.")
@@ -34,7 +44,8 @@ class StateConditionalConformal:
         self.alpha = alpha
         self.n_clusters = n_clusters
         self.multivariate_strategy = multivariate_strategy
-        self.kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        self.random_state = random_state
+        self.kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
         self.quantiles = {}  # {cluster_id: quantile_value}
         self.quantile_shape = ()
         self.calibrated = False
@@ -119,8 +130,10 @@ class StateConditionalConformal:
 
         n_samples = states.shape[0]
         residuals, self.quantile_shape = self._prepare_residuals(residuals, n_samples)
-        n_clusters = min(self.n_clusters, n_samples)
-        self.kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        min_samples_per_cluster = max(5, int(np.ceil(1.0 / max(self.alpha, 0.01))))
+        n_clusters = min(self.n_clusters, n_samples // min_samples_per_cluster)
+        n_clusters = max(2, n_clusters)
+        self.kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state)
         self.scaler = StandardScaler()
         self.quantiles = {}
         # 1. Cluster states
@@ -129,19 +142,31 @@ class StateConditionalConformal:
         cluster_labels = self.kmeans.predict(scaled_states)
 
         # 2. Compute per-cluster quantiles
+        self.cluster_sizes_ = {}
         for k in range(self.kmeans.n_clusters):
-            # Get residuals for this cluster
             mask = (cluster_labels == k)
             cluster_residuals = residuals[mask]
-            
+
             if cluster_residuals.shape[0] == 0:
                 cluster_residuals = residuals
+                warnings.warn(f"Cluster {k} is empty after K-Means; using global residuals as fallback. Consider reducing n_clusters.")
 
             n_k = cluster_residuals.shape[0]
+            self.cluster_sizes_[k] = n_k
+            if n_k < 1.0 / self.alpha:
+                warnings.warn(
+                    f"Cluster {k} has only {n_k} samples, below 1/alpha={1.0/self.alpha:.0f}. "
+                    f"Conformal coverage guarantee may be unreliable for this cluster."
+                )
             q_level = np.ceil((n_k + 1) * (1 - self.alpha)) / n_k
             q_level = min(q_level, 1.0)
             self.quantiles[k] = self._compute_quantile(cluster_residuals, q_level)
-                
+
+        print(
+            f"SCCP calibration: {n_clusters} clusters, "
+            f"sizes={dict(self.cluster_sizes_)}, "
+            f"alpha={self.alpha}"
+        )
         self.calibrated = True
         
     def predict(self, states: Union[torch.Tensor, np.ndarray], point_forecasts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -184,3 +209,43 @@ class StateConditionalConformal:
         upper = point_forecasts + q_tensor
         
         return lower, upper
+
+    def check_exchangeability(
+        self,
+        states: Union[torch.Tensor, np.ndarray],
+        residuals: Union[torch.Tensor, np.ndarray],
+    ) -> dict:
+        """
+        Validate the within-cluster exchangeability assumption via lag-1 autocorrelation.
+
+        Conformal coverage guarantees require exchangeability within each state cluster.
+        Significant autocorrelation suggests temporal dependence that violates this assumption.
+
+        Returns a dict mapping cluster_id -> acf_lag1 value.
+        Values near 0 support the assumption; values > 0.3 warrant caution.
+        """
+        states = self._validate_states(self._to_numpy(states, 'states'))
+        residuals = self._to_numpy(residuals, 'residuals')
+        scaled_states = self.scaler.transform(states)
+        cluster_labels = self.kmeans.predict(scaled_states)
+
+        results = {}
+        for k in range(self.kmeans.n_clusters):
+            mask = cluster_labels == k
+            n_k = mask.sum()
+            if n_k < 5:
+                results[k] = {"acf_lag1": None, "n_samples": int(n_k), "warning": "too few samples"}
+                continue
+            r = residuals[mask]
+            if r.ndim > 1:
+                r = r.reshape(n_k, -1).mean(axis=1)
+            mean_r = r.mean()
+            diff_r = r - mean_r
+            acf1 = float(np.corrcoef(diff_r[:-1], diff_r[1:])[0, 1]) if n_k > 1 else None
+            results[k] = {"acf_lag1": acf1, "n_samples": int(n_k)}
+            if acf1 is not None and abs(acf1) > 0.3:
+                warnings.warn(
+                    f"Cluster {k} shows substantial autocorrelation (ACF(1)={acf1:.3f}). "
+                    f"The exchangeability assumption required for conformal coverage may be violated."
+                )
+        return results

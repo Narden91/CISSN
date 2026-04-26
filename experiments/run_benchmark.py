@@ -1,6 +1,7 @@
 
 import os
 import sys
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,6 +11,7 @@ import time
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
+from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
@@ -77,43 +79,43 @@ class Experiment:
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
-            
+
             self.model.train()
             self.head.train()
             epoch_time = time.time()
-            
+
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
-                
+
                 batch_x = batch_x.float().to(self.device, non_blocking=True)
                 batch_y = batch_y.float().to(self.device, non_blocking=True)
-                
+
                 # Encoder Forward
                 # We need all states for disentanglement loss
                 states = self.model(batch_x, return_all_states=True) # (B, L, State)
                 final_state = states[:, -1, :] # (B, State)
-                
+
                 # Forecast
                 outputs = self.head(final_state) # (B, Pred, Out)
-                
+
                 # Slicing for loss
                 # batch_y shape: (B, Label+Pred, Out)
                 # We only want the last Pred_len steps
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                
+
                 # Losses
                 pred_loss = criterion(outputs, batch_y)
                 dis_loss = disentangle_criterion(states)
-                
+
                 loss = pred_loss + dis_loss
                 train_loss.append(loss.item())
-                
+
                 loss.backward()
                 model_optim.step()
-                
+
                 if (i + 1) % 100 == 0:
                     print(f"\titers: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
                     speed = (time.time() - time_now) / iter_count
@@ -121,14 +123,18 @@ class Experiment:
                     print(f'\tspeed: {speed:.4f}s/iter; left time: {left_time:.4f}s')
                     iter_count = 0
                     time_now = time.time()
-            
+
             print(f"Epoch: {epoch+1} cost time: {time.time()-epoch_time:.2f}")
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_loader, criterion)
             test_loss = self.vali(test_loader, criterion)
 
+            # Compute disentanglement quality metrics on last training batch
+            disent_metrics = disentangle_criterion.get_metrics(states)
+
             print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f} Test Loss: {test_loss:.7f}")
-            
+            print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")
+
             if self.args.use_wandb:
                 import wandb
                 wandb.log({
@@ -136,16 +142,19 @@ class Experiment:
                     "train_loss": train_loss,
                     "vali_loss": vali_loss,
                     "test_loss": test_loss,
-                    "lr": model_optim.param_groups[0]['lr']
+                    "lr": model_optim.param_groups[0]['lr'],
+                    "disent_off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
                 })
-            
+
             early_stopping(vali_loss, self.model, self.head, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
-            
+
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-            
+
+        # Calibrate conformal predictor on validation set
+        self._calibrate_conformal(vali_loader)
         return self.model
 
     def vali(self, vali_loader, criterion):
@@ -177,59 +186,129 @@ class Experiment:
         self.head.train()
         return total_loss
 
+    def _calibrate_conformal(self, vali_loader):
+        """Calibrate the StateConditionalConformal predictor on the validation set."""
+        self.conformal = StateConditionalConformal(
+            alpha=0.1,
+            n_clusters=5,
+            random_state=self.args.seed,
+        )
+        all_states = []
+        all_residuals = []
+
+        self.model.eval()
+        self.head.eval()
+        with torch.no_grad():
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in vali_loader:
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
+
+                final_state = self.model(batch_x)
+                outputs = self.head(final_state)
+
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+
+                all_states.append(final_state.detach().cpu())
+                all_residuals.append((outputs - batch_y).abs().detach().cpu())
+
+        all_states = torch.cat(all_states, dim=0)
+        all_residuals = torch.cat(all_residuals, dim=0)
+        self.conformal.fit(all_states, all_residuals)
+        print("Conformal predictor calibrated on validation set.")
+
+        # Check exchangeability assumption
+        exchange_results = self.conformal.check_exchangeability(all_states, all_residuals)
+        for k, v in exchange_results.items():
+            if v.get("acf_lag1") is not None and abs(v["acf_lag1"]) > 0.3:
+                print(f"  Warning: Cluster {k} ACF(1)={v['acf_lag1']:.3f} — exchangeability assumption may be violated.")
+        self.model.train()
+        self.head.train()
+
     def test(self, setting):
         test_data, test_loader = self._get_data(flag='test')
-        
+
         # Load best model
         path = os.path.join(self.args.checkpoints, setting)
         self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device))
         self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device))
-        
+
         preds = []
         trues = []
-        
+        test_states = []
+
         self.model.eval()
         self.head.eval()
-        
+
         with torch.no_grad():
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device, non_blocking=True)
                 batch_y = batch_y.float().to(self.device, non_blocking=True)
-                
+
                 final_state = self.model(batch_x)
                 outputs = self.head(final_state)
-                
+
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                
+
                 preds.append(outputs.detach().cpu().numpy())
                 trues.append(batch_y.detach().cpu().numpy())
-        
+                test_states.append(final_state.detach().cpu().numpy())
+
             preds = self._concatenate_batches(preds, 'prediction')
             trues = self._concatenate_batches(trues, 'target')
-        
-        # Metrics
+            test_states = self._concatenate_batches(test_states, 'state')
+
+        # Point forecast metrics
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
         rmse = np.sqrt(mse)
         mape = np.mean(np.abs((trues.flatten() - preds.flatten()) / np.maximum(np.abs(trues.flatten()), 1e-8))) * 100
 
+        # Conformal prediction intervals
+        coverage = None
+        mean_width = None
+        if hasattr(self, 'conformal') and self.conformal.calibrated:
+            lower, upper = self.conformal.predict(
+                torch.from_numpy(test_states).float(),
+                torch.from_numpy(preds).float(),
+            )
+            lower_np = lower.numpy()
+            upper_np = upper.numpy()
+            covered = (trues >= lower_np) & (trues <= upper_np)
+            coverage = float(covered.mean())
+            mean_width = float(np.mean(upper_np - lower_np))
+            print(f'Coverage@90%: {coverage:.4f}, Mean Width: {mean_width:.4f}')
+        else:
+            lower_np = np.full_like(preds, np.nan)
+            upper_np = np.full_like(preds, np.nan)
+
         print(f'mse:{mse}, mae:{mae}, rmse:{rmse}, mape:{mape}')
-        
+
         if self.args.use_wandb:
             import wandb
-            wandb.log({"test_mse": mse, "test_mae": mae})
-        
+            wandb.log({
+                "test_mse": mse,
+                "test_mae": mae,
+                "test_coverage": coverage if coverage is not None else 0.0,
+                "test_mean_width": mean_width if mean_width is not None else 0.0,
+            })
+
         # Save results
         folder_path = './results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-        
+
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape]))
+        np.save(folder_path + 'conformal.npy', np.array([coverage if coverage is not None else -1,
+                                                          mean_width if mean_width is not None else -1]))
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
-        
+        np.save(folder_path + 'lower.npy', lower_np)
+        np.save(folder_path + 'upper.npy', upper_np)
+
         return
 
 class EarlyStopping:
@@ -322,8 +401,17 @@ if __name__ == '__main__':
     # Logging
     parser.add_argument('--use_wandb', action='store_true', help='use wandb for logging')
     parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
+    parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
 
     args = parser.parse_args()
+
+    # Set seeds for reproducibility
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     print('Args in experiment:')
     print(args)

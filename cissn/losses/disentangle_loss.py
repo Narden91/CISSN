@@ -132,3 +132,28 @@ class DisentanglementLoss(nn.Module):
         l_temp = self.temporal_consistency_loss(states, dynamics)
         
         return self.lambda_cov * l_cov + self.lambda_temporal * l_temp
+
+    @staticmethod
+    def get_metrics(states: torch.Tensor) -> dict:
+        """Compute disentanglement quality diagnostics from state sequences.
+
+        Args:
+            states: (batch, seq_len, state_dim)
+
+        Returns:
+            dict with:
+                mean_abs_off_diag_corr: Mean absolute Pearson correlation between
+                    different state dimensions (0 = perfectly disentangled).
+                per_dim_variance: Variance of each state dimension across all
+                    flattened time steps.
+        """
+        flat = states.reshape(-1, states.shape[-1])
+        corr = torch.corrcoef(flat.T)
+        eye = torch.eye(corr.shape[0], device=corr.device, dtype=corr.dtype)
+        off_diag_abs = (corr * (1 - eye)).abs()
+        mean_off_diag = off_diag_abs.mean().item()
+        per_dim_var = flat.var(dim=0).detach().cpu().tolist()
+        return {
+            "mean_abs_off_diag_corr": float(mean_off_diag),
+            "per_dim_variance": [float(v) for v in per_dim_var],
+        }
