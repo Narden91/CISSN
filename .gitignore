@@ -95,3 +95,15 @@ build/
 *.pyc
 .agent/*
 .github/
+
+# Latex
+*.aux
+*.lof
+*.log
+*.out
+*.fls
+*.synctex.gz
+*.toc
+*.fdb_latexmk
+*.sty
+*.sty

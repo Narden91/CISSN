@@ -139,8 +139,8 @@ where for sub-Gaussian residuals, $Q_k \leq \sigma_k \cdot \sqrt{2 \log(1/\sqrt{
 #### 3.2 Disentangled State-Space Encoder
 - **Structured Transition Matrix A**: Block-diagonal with sigmoid-gated eigenvalues
   - α_L ∈ [0.85, 1.0], α_T ∈ [0.70, 0.95], γ ∈ [0.80, 1.0], α_R ∈ [0.0, 0.4]
-  - 2D rotation for seasonal: [c, -s; s, c] with learnable ω
-  - State equation: s_t = A·s_{t-1} + B(x_t) + β·tanh(MLP(s_{t-1}, x_t))
+  - 2D rotation for seasonal: [c, s; -s, c] with learnable ω
+  - State equation: s_t = A·s_{t-1} + B(x_t) + β·tanh(MLP(A·s_{t-1} + B(x_t), h_t)) where h_t = input_proj(x_t)
 - **Innovation**: Neural projection of x_t into per-dimension increments
 - **Correction**: Small MLP (β_init = 0.01) for non-linear refinement
 - **Complexity**: O(L·d) per sample

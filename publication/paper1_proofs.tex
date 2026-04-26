@@ -232,7 +232,7 @@ Publication bias & Not applicable & \\
 \begin{definition}[State Transition Function]\label{def:transition}
 The state at time $t$ is computed by the recurrence:
 \begin{equation}\label{eq:recurrence}
-\mathbf{s}_t = A(\theta) \cdot \mathbf{s}_{t-1} + B(\mathbf{x}_t) + \beta \cdot \tanh\big(\text{MLP}_\phi(\mathbf{s}_{t-1}, \mathbf{h}_t)\big)
+\mathbf{s}_t = A(\theta) \cdot \mathbf{s}_{t-1} + B(\mathbf{x}_t) + \beta \cdot \tanh\big(\text{MLP}_\phi(A(\theta) \cdot \mathbf{s}_{t-1} + B(\mathbf{x}_t),\; \mathbf{h}_t)\big)
 \end{equation}
 where:
 \begin{itemize}
@@ -248,7 +248,7 @@ where:
     \]
     with $c = \cos(\omega)$, $s = \sin(\omega)$.
     \item $B(\mathbf{x}_t) = W_B \cdot \text{GELU}(\text{LayerNorm}(W_{\text{proj}}\mathbf{x}_t + b_{\text{proj}})) + b_B$ is the innovation term (encoder lines 35--41, applied at line 93).
-    \item $\beta = \texttt{correction\_scale} \in \R^+$ is a learnable scalar initialized to 0.01 (line 47). The $\tanh$ ensures $\norm{\text{correction}}_\infty \leq \beta$.
+    \item $\beta = \texttt{correction\_scale} \in \R$ is a learnable scalar initialized to 0.01 (line 47). The $\tanh$ ensures $\norm{\text{correction}}_\infty \leq |\beta|$.
 \end{itemize}
 \end{definition}
 
