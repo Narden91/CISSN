@@ -82,7 +82,7 @@ htmlcov/
 .pytest_cache/
 coverage.xml
 *.cover
-*.py,cover
+*.cover
 .hypothesis/
 
 # Documentation

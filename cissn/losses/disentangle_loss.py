@@ -34,19 +34,17 @@ class DisentanglementLoss(nn.Module):
         Args:
             states: (batch, seq_len, state_dim)
         """
-        # Flatten batch and time
         batch_size, seq_len, state_dim = states.shape
-        flat_states = states.reshape(-1, state_dim)  # (batch*seq_len, state_dim)
-        
+
         # Center the states per sequence to provide better conditional independence
         mean = states.mean(dim=1, keepdim=True)
         centered = states - mean
-        
+
         # Flatten batch and time for covariance computation
-        centered = centered.reshape(-1, state_dim)
-        
+        centered = centered.reshape(-1, state_dim)  # (batch*seq_len, state_dim)
+
         # Compute covariance matrix
-        n = flat_states.size(0)
+        n = centered.size(0)
         if n < 2:
             return torch.tensor(0.0, device=states.device)
             

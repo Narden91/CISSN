@@ -60,7 +60,7 @@ class BaseETTDataset(Dataset):
              # But easier: expects tuple (border1s, border2s)
              border1s, border2s = self.kwargs['borders']
         else:
-            border1s, border2s = self._get_borders()
+            border1s, border2s = self._get_borders(df_raw)
         
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
@@ -102,9 +102,14 @@ class BaseETTDataset(Dataset):
                 f"split_length={len(self.data_x)}, seq_len={self.seq_len}, pred_len={self.pred_len}."
             )
 
-    def _get_borders(self):
+    def _get_borders(self, df_raw: pd.DataFrame):
         """
-        Define train/val/test split borders.
+        Define train/val/test split borders using a 12/4/4-month convention.
+
+        Computes boundaries from the actual date column rather than hardcoded
+        row counts, so all month lengths (including February and DST shifts)
+        are handled automatically.
+
         Should be implemented/overridden by subclasses.
         """
         raise NotImplementedError
@@ -151,11 +156,17 @@ class BaseETTDataset(Dataset):
 
 
 class Dataset_ETT_hour(BaseETTDataset):
-    def _get_borders(self):
-        # 12 months train, 4 months val, 4 months test (hourly data)
-        # 30 days * 24 hours = 720 hours/month
-        border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
-        border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
+    def _get_borders(self, df_raw):
+        dates = pd.to_datetime(df_raw['date'])
+        start_date = dates.iloc[0]
+        train_end = start_date + pd.DateOffset(months=12)  # 12-month train
+        val_end = train_end + pd.DateOffset(months=4)       # 4-month val
+        test_end = val_end + pd.DateOffset(months=4)        # 4-month test
+        train_n = int((dates < train_end).sum())
+        val_n = int((dates < val_end).sum())
+        test_n = int((dates < test_end).sum())
+        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
+        border2s = [train_n, val_n, test_n]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp):
@@ -174,12 +185,17 @@ class Dataset_ETT_minute(BaseETTDataset):
                  target: str = 'OT', scale: bool = True, **kwargs):
         super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
 
-    def _get_borders(self):
-        # 12 months train, 4 months val, 4 months test (minute data - 15min intervals usually for ETTm)
-        # But here logic multiplies by 4, likely assuming 15-min intervals (4 per hour) if index is just counts
-        # ETTm1 is 15-minute level. 24 * 4 points per day.
-        border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
-        border2s = [12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
+    def _get_borders(self, df_raw):
+        dates = pd.to_datetime(df_raw['date'])
+        start_date = dates.iloc[0]
+        train_end = start_date + pd.DateOffset(months=12)  # 12-month train
+        val_end = train_end + pd.DateOffset(months=4)       # 4-month val
+        test_end = val_end + pd.DateOffset(months=4)        # 4-month test
+        train_n = int((dates < train_end).sum())
+        val_n = int((dates < val_end).sum())
+        test_n = int((dates < test_end).sum())
+        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
+        border2s = [train_n, val_n, test_n]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp):
@@ -226,9 +242,7 @@ class Dataset_Custom(BaseETTDataset):
         self.freq = freq
         super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
 
-    def _get_borders(self):
-        # Read only the first column to obtain row count without loading all feature data.
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path), usecols=[0])
+    def _get_borders(self, df_raw):
         n = len(df_raw)
         num_train = int(n * 0.7)
         num_test = int(n * 0.2)

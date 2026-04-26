@@ -212,8 +212,10 @@ class Experiment:
         # Metrics
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
-        
-        print(f'mse:{mse}, mae:{mae}')
+        rmse = np.sqrt(mse)
+        mape = np.mean(np.abs((trues.flatten() - preds.flatten()) / np.maximum(np.abs(trues.flatten()), 1e-8))) * 100
+
+        print(f'mse:{mse}, mae:{mae}, rmse:{rmse}, mape:{mape}')
         
         if self.args.use_wandb:
             import wandb
@@ -224,7 +226,7 @@ class Experiment:
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
         
-        np.save(folder_path + 'metrics.npy', np.array([mae, mse, 0, 0])) # dummy rmse/mape
+        np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape]))
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
         
