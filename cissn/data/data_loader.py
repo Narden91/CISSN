@@ -4,18 +4,17 @@ from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Cus
 from typing import Tuple, Union, Any, Dict
 from types import SimpleNamespace
 
-# Maps dataset name → (Dataset class, default sampling frequency)
 _DATA_REGISTRY: dict = {
     'ETTh1':         (Dataset_ETT_hour,   'h'),
     'ETTh2':         (Dataset_ETT_hour,   'h'),
     'ETTm1':         (Dataset_ETT_minute, 't'),
     'ETTm2':         (Dataset_ETT_minute, 't'),
-    'weather':       (Dataset_Custom,     't'),     # 10-min intervals
-    'exchange_rate': (Dataset_Custom,     'd'),     # daily
-    'ECL':           (Dataset_Custom,     'h'),     # hourly
-    'traffic':       (Dataset_Custom,     'h'),     # hourly
-    'ILI':           (Dataset_Custom,     'w'),     # weekly
-    'solar':         (Dataset_Custom,     't'),     # 10-min intervals
+    'weather':       (Dataset_Custom,     't'),
+    'exchange_rate': (Dataset_Custom,     'd'),
+    'ECL':           (Dataset_Custom,     'h'),
+    'traffic':       (Dataset_Custom,     'h'),
+    'ILI':           (Dataset_Custom,     'w'),
+    'solar':         (Dataset_Custom,     't'),
 }
 
 def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> Tuple[Any, DataLoader]:
@@ -32,7 +31,6 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         dataset: The created dataset object
         data_loader: The PyTorch DataLoader
     """
-    # Normalize args to object access if dict
     if isinstance(args, dict):
         args = SimpleNamespace(**args)
 
@@ -47,7 +45,6 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         raise ValueError(f"flag must be one of 'train', 'val', 'test', 'pred'; got {flag!r}.")
 
     Data, default_freq = _DATA_REGISTRY[args.data]
-    # Caller can override the default frequency via args.freq
     freq = getattr(args, 'freq', default_freq) or default_freq
 
     if flag == 'train':
@@ -63,7 +60,6 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         drop_last = False
         batch_size = args.batch_size
 
-    # Build kwargs shared by all dataset classes; Dataset_Custom also accepts freq
     dataset_kwargs = dict(
         root_path=args.root_path,
         data_path=args.data_path,

@@ -1,4 +1,3 @@
-
 import os
 import sys
 import random
@@ -104,7 +103,6 @@ class Experiment:
                 batch_x = batch_x.float().to(self.device, non_blocking=True)
                 batch_y = batch_y.float().to(self.device, non_blocking=True)
 
-                # Need all states for disentanglement loss
                 states = self.model(batch_x, return_all_states=True)  # (B, L, State)
                 final_state = states[:, -1, :]                         # (B, State)
                 outputs = self.head(final_state)
@@ -132,10 +130,7 @@ class Experiment:
             vali_loss = self.vali(vali_loader, criterion)
             test_loss = self.vali(test_loader, criterion)
 
-            # Compute disentanglement quality metrics on last training batch
             disent_metrics = disentangle_criterion.get_metrics(states)
-
-            # Monitor refinement ratio (interpretability: linear path should dominate)
             refinement_ratio = self.head.get_refinement_ratio(final_state)
 
             print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f} Test Loss: {test_loss:.7f}")
@@ -161,7 +156,6 @@ class Experiment:
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
-        # Calibrate conformal predictor on validation set
         self._calibrate_conformal(vali_loader)
         return self.model
 
@@ -220,7 +214,6 @@ class Experiment:
     def test(self, setting):
         test_data, test_loader = self._get_data(flag='test')
 
-        # Load best model
         path = os.path.join(self.args.checkpoints, setting)
         self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device))
         self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device))
@@ -243,13 +236,11 @@ class Experiment:
             trues = self._concatenate_batches(trues, 'target')
             test_states = self._concatenate_batches(test_states, 'state')
 
-        # Point forecast metrics
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
         rmse = np.sqrt(mse)
         mape = np.mean(np.abs((trues.flatten() - preds.flatten()) / np.maximum(np.abs(trues.flatten()), 1e-8))) * 100
 
-        # Conformal prediction intervals
         coverage = None
         mean_width = None
         winkler = None
@@ -279,10 +270,8 @@ class Experiment:
                 "test_mean_width": mean_width if mean_width is not None else 0.0,
             })
 
-        # Save results
         folder_path = './results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+        os.makedirs(folder_path, exist_ok=True)
 
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape]))
         np.save(folder_path + 'conformal.npy', np.array([coverage if coverage is not None else -1,
@@ -328,8 +317,6 @@ class EarlyStopping:
         self.val_loss_min = val_loss
 
 def adjust_learning_rate(optimizer, epoch, args):
-    # type: (optim.Optimizer, int, argparse.Namespace) -> None
-    # Decay learning rate by 0.5 every 1 epoch (aggressive) or 0.1 every 2 epochs
     lr_adjust = {}
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
@@ -350,45 +337,39 @@ def adjust_learning_rate(optimizer, epoch, args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CISSN Benchmark Runner')
 
-    # Basic Config
-    parser.add_argument('--data', type=str, required=True, default='ETTh1', help='data')
-    parser.add_argument('--root_path', type=str, default='./data/ETT/', help='root path of the data file')
-    parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data file')    
-    parser.add_argument('--features', type=str, default='M', help='forecasting task, options:[M, S, MS]')
-    parser.add_argument('--target', type=str, default='OT', help='target feature in S or MS task')
-    parser.add_argument('--freq', type=str, default='h', help='freq for time features encoding')
-    parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
+    parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset name')
+    parser.add_argument('--root_path', type=str, default='./data/ETT/', help='data root directory')
+    parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data filename')
+    parser.add_argument('--features', type=str, default='M', help='forecasting task [M, S, MS]')
+    parser.add_argument('--target', type=str, default='OT', help='target feature for S/MS tasks')
+    parser.add_argument('--freq', type=str, default='h', help='time feature encoding frequency')
+    parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='checkpoint directory')
 
-    # Model Params
     parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
-    parser.add_argument('--label_len', type=int, default=48, help='start token length')
-    parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
-    
-    # CISSN Specific
+    parser.add_argument('--label_len', type=int, default=48, help='decoder start token length')
+    parser.add_argument('--pred_len', type=int, default=96, help='prediction horizon')
+
     parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
     parser.add_argument('--c_out', type=int, default=7, help='output size')
-    parser.add_argument('--d_model', type=int, default=64, help='dimension of model')
-    parser.add_argument('--state_dim', type=int, default=5, help='dimension of latent state')
-    parser.add_argument('--dropout', type=float, default=0.05, help='dropout')
+    parser.add_argument('--d_model', type=int, default=64, help='model hidden dimension')
+    parser.add_argument('--state_dim', type=int, default=5, help='latent state dimension')
+    parser.add_argument('--dropout', type=float, default=0.05, help='dropout rate')
     parser.add_argument('--lambda_cov', type=float, default=1.0, help='covariance loss weight')
     parser.add_argument('--lambda_temp', type=float, default=0.5, help='temporal consistency loss weight')
 
-    # Optimization
-    parser.add_argument('--num_workers', type=int, default=0, help='data loader num workers')
-    parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
+    parser.add_argument('--num_workers', type=int, default=0, help='dataloader workers')
+    parser.add_argument('--train_epochs', type=int, default=10, help='training epochs')
+    parser.add_argument('--batch_size', type=int, default=32, help='batch size')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
-    parser.add_argument('--learning_rate', type=float, default=0.001, help='optimizer learning rate')
-    parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate policy')
+    parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
+    parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2]')
 
-    # Logging
-    parser.add_argument('--use_wandb', action='store_true', help='use wandb for logging')
+    parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
     parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
-    parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
 
     args = parser.parse_args()
 
-    # Set seeds for reproducibility
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
@@ -411,12 +392,10 @@ if __name__ == '__main__':
         import wandb
         wandb.init(project=args.project_name, config=args, name=setting)
 
-    exp = Experiment(args) 
-    
-    print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+    exp = Experiment(args)
+    print(f'Training: {setting}')
     exp.train(setting)
-    
-    print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+    print(f'Testing:  {setting}')
     exp.test(setting)
     
     if args.use_wandb:

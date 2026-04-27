@@ -10,15 +10,13 @@ from cissn.explanations import ForecastExplainer
 def test_cissn_flow():
     print("Initializing CISSN components...")
     
-    # Hyperparameters
     input_dim = 10
     state_dim = 5
     hidden_dim = 32
     batch_size = 16
     seq_len = 20
     horizon = 5
-    
-    # 1. Initialize Models
+
     encoder = DisentangledStateEncoder(input_dim, state_dim, hidden_dim)
     head = ForecastHead(state_dim, output_dim=1, horizon=horizon)
     loss_fn = DisentanglementLoss()
@@ -27,35 +25,27 @@ def test_cissn_flow():
     
     print("Models initialized successfully.")
     
-    # 2. Forward Pass
     x = torch.randn(batch_size, seq_len, input_dim)
-    
-    # Encode
-    states = encoder(x, return_all_states=True)  # (batch, seq_len, state_dim)
-    final_state = states[:, -1, :]  # (batch, state_dim)
+    states = encoder(x, return_all_states=True)
+    final_state = states[:, -1, :]
     
     print(f"Encoded state shape: {final_state.shape}")
     
-    # Forecast
-    forecast = head(final_state)  # (batch, horizon, 1)
+    forecast = head(final_state)
     print(f"Forecast shape: {forecast.shape}")
-    
-    # 3. Compute Loss
+
     dynamics = encoder._structured_dynamics()
     d_loss = loss_fn(states, dynamics)
     print(f"Disentanglement Loss: {d_loss.item():.4f}")
     
-    # 4. Conformal Prediction (Calibration)
     print("Calibrating conformal predictor...")
-    calibration_states = torch.randn(100, state_dim) # Dummy states
-    calibration_residuals = torch.abs(torch.randn(100)) # Dummy residuals
+    calibration_states = torch.randn(100, state_dim)
+    calibration_residuals = torch.abs(torch.randn(100))
     conformal.fit(calibration_states, calibration_residuals)
     
-    # Predict intervals for the full forecast tensor
     lower, upper = conformal.predict(final_state, forecast)
     print(f"Prediction Interval width: {(upper - lower).mean().item():.4f}")
-    
-    # 5. Explainability
+
     print("Generating explanations...")
     explanations = explainer.explain(final_state, horizon_idx=0, output_idx=0)
     

@@ -41,7 +41,6 @@ import urllib.request
 import shutil
 from pathlib import Path
 
-# ── Source registry ──────────────────────────────────────────────────────────
 
 _ETT_RAW = "https://github.com/zhouhaoyi/ETDataset/raw/main/ETT-small"
 _SOLAR_RAW = (
@@ -49,13 +48,10 @@ _SOLAR_RAW = (
     "/raw/master/solar-energy/solar_AL.txt.gz"
 )
 
-# Autoformer Google Drive folder (public, shared by thuml/Autoformer)
 _AUTOFORMER_FOLDER_URL = (
     "https://drive.google.com/drive/folders/1ZOYpTUa82_jCcxIdTmyr0LXQfvaM9vIy"
 )
 
-# Maps dataset key → (method, source, dest_relative_to_data_root)
-# method: "github_raw" | "gdrive_folder" | "github_raw_gz"
 REGISTRY: dict = {
     "ETTh1": (
         "github_raw",
@@ -77,14 +73,11 @@ REGISTRY: dict = {
         f"{_ETT_RAW}/ETTm2.csv",
         "ETT/ETTm2.csv",
     ),
-    # ── Autoformer Drive datasets ─────────────────────────────────────────
-    # These are downloaded as a folder; the script picks out the right files.
     "weather":       ("gdrive_folder", "weather.csv",           "weather.csv"),
     "exchange_rate": ("gdrive_folder", "exchange_rate.csv",     "exchange_rate.csv"),
     "ECL":           ("gdrive_folder", "electricity.csv",       "electricity.csv"),
     "traffic":       ("gdrive_folder", "traffic.csv",           "traffic.csv"),
     "ILI":           ("gdrive_folder", "national_illness.csv",  "national_illness.csv"),
-    # ── Solar Energy (LSTNet repo, gzip-compressed) ───────────────────────
     "solar": (
         "github_raw_gz",
         _SOLAR_RAW,
@@ -94,7 +87,6 @@ REGISTRY: dict = {
 
 ALL_DATASETS = list(REGISTRY)
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _progress_hook(block_num: int, block_size: int, total_size: int) -> None:
     downloaded = block_num * block_size
@@ -166,7 +158,6 @@ def _download_gdrive_folder(dest_root: Path, requested_files: list[str]) -> list
 
     moved: list[str] = []
     for fname in requested_files:
-        # gdown may nest the folder; search recursively
         found = list(tmp.rglob(fname))
         if found:
             target = dest_root / fname
@@ -176,7 +167,6 @@ def _download_gdrive_folder(dest_root: Path, requested_files: list[str]) -> list
         else:
             print(f"  ✗ {fname} not found in downloaded folder")
 
-    # Clean up temp directory
     try:
         shutil.rmtree(tmp)
     except OSError:
@@ -195,12 +185,10 @@ def _download_gz(url: str, dest: Path) -> None:
     gz_path.unlink()
 
 
-# ── Main logic ────────────────────────────────────────────────────────────────
 
 def download(datasets: list[str], data_root: Path) -> None:
     data_root.mkdir(parents=True, exist_ok=True)
 
-    # Separate datasets by method
     github_raw_datasets = []
     github_raw_gz_datasets = []
     gdrive_datasets = []
@@ -220,7 +208,6 @@ def download(datasets: list[str], data_root: Path) -> None:
         elif method == "gdrive_folder":
             gdrive_datasets.append((name, src, dest))
 
-    # ── Direct GitHub downloads ───────────────────────────────────────────
     for name, src, dest in github_raw_datasets:
         print(f"\n[{name}]")
         try:
@@ -229,7 +216,6 @@ def download(datasets: list[str], data_root: Path) -> None:
         except Exception as e:
             print(f"  ✗ failed: {e}")
 
-    # ── Direct GitHub gzip downloads ──────────────────────────────────────
     for name, src, dest in github_raw_gz_datasets:
         print(f"\n[{name}]")
         try:
@@ -239,7 +225,6 @@ def download(datasets: list[str], data_root: Path) -> None:
         except Exception as e:
             print(f"  ✗ failed: {e}")
 
-    # ── Google Drive Folder downloads ─────────────────────────────────────
     if gdrive_datasets:
         print(f"\n[Autoformer Drive datasets: {', '.join(n for n, _, _ in gdrive_datasets)}]")
         if not _ensure_gdown():
@@ -281,7 +266,7 @@ def print_usage_table(data_root: Path) -> None:
     print()
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

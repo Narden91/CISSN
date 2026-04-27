@@ -13,7 +13,6 @@ class BaseETTDataset(Dataset):
     Handles data loading, scaling, and time feature extraction.
     """
 
-    # Subclasses may override to change the default data file
     _DEFAULT_DATA_PATH: str = "ETTh1.csv"
 
     def __init__(
@@ -27,7 +26,6 @@ class BaseETTDataset(Dataset):
         scale: bool = True,
         **kwargs,
     ):
-        # size [seq_len, label_len, pred_len]
         if size is None:
             size = [24 * 4 * 4, 24 * 4, 24 * 4]
         if len(size) != 3:
@@ -259,6 +257,6 @@ class Dataset_Custom(BaseETTDataset):
             fields = _DAILY_FIELDS
         elif freq in ("w", "weekly", "1w"):
             fields = _WEEKLY_FIELDS
-        else:  # hourly (default)
+        else:
             fields = _HOURLY_FIELDS
         return self._build_time_features(df_stamp, fields)
