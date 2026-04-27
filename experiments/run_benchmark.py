@@ -181,6 +181,7 @@ class Experiment:
         self.conformal = StateConditionalConformal(
             alpha=0.1,
             n_clusters=5,
+            multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
         )
         all_states = []
@@ -226,11 +227,22 @@ class Experiment:
         self.head.eval()
 
         with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in test_loader:
-                final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
-                preds.append(outputs.detach().cpu().numpy())
-                trues.append(batch_y.detach().cpu().numpy())
-                test_states.append(final_state.detach().cpu().numpy())
+            if getattr(self.args, 'walk_forward', False):
+                print("Running walk-forward rolling window evaluation...")
+                for i in range(0, len(test_data), self.args.pred_len):
+                    bx, by, bxm, bym = test_data[i]
+                    batch_x = torch.from_numpy(bx).unsqueeze(0)
+                    batch_y = torch.from_numpy(by).unsqueeze(0)
+                    final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
+                    preds.append(outputs.detach().cpu().numpy())
+                    trues.append(batch_y.detach().cpu().numpy())
+                    test_states.append(final_state.detach().cpu().numpy())
+            else:
+                for batch_x, batch_y, _batch_x_mark, _batch_y_mark in test_loader:
+                    final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
+                    preds.append(outputs.detach().cpu().numpy())
+                    trues.append(batch_y.detach().cpu().numpy())
+                    test_states.append(final_state.detach().cpu().numpy())
 
             preds = self._concatenate_batches(preds, 'prediction')
             trues = self._concatenate_batches(trues, 'target')
@@ -367,6 +379,10 @@ if __name__ == '__main__':
     parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
     parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    
+    # New arguments for improvements
+    parser.add_argument('--walk_forward', action='store_true', help='Enable walk-forward rolling window evaluation')
+    parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max, mean, mahalanobis]')
 
     args = parser.parse_args()
 

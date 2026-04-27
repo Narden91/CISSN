@@ -14,7 +14,7 @@ class StateConditionalConformal:
     Uses latent states to cluster time steps and compute adaptive prediction intervals.
     """
 
-    VALID_MULTIVARIATE_STRATEGIES = {"per_feature", "max", "mean"}
+    VALID_MULTIVARIATE_STRATEGIES = {"per_feature", "max", "mean", "mahalanobis"}
 
     def __init__(
         self,
@@ -50,6 +50,8 @@ class StateConditionalConformal:
         self.quantiles: dict = {}
         self.quantile_shape: tuple = ()
         self.acf_corrections_: dict = {}
+        self.cov_matrices_: dict = {}
+        self.inv_cov_matrices_: dict = {}
         self.calibrated = False
 
     @staticmethod
@@ -83,6 +85,8 @@ class StateConditionalConformal:
             return flattened.max(axis=1), ()
         if self.multivariate_strategy == "mean":
             return flattened.mean(axis=1), ()
+        if self.multivariate_strategy == "mahalanobis":
+            return flattened, tuple(residuals.shape[1:])
         return residuals, tuple(residuals.shape[1:])
 
     @staticmethod
@@ -170,18 +174,45 @@ class StateConditionalConformal:
                     "Conformal coverage guarantee may be unreliable for this cluster."
                 )
 
-            q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / n_k, 1.0)
-            q_k = self._compute_quantile(cluster_residuals, q_level)
+            if self.multivariate_strategy == "mahalanobis":
+                flattened = cluster_residuals.reshape(n_k, -1)
+                cov = np.cov(flattened, rowvar=False)
+                if cov.ndim == 0:
+                    cov = np.array([[cov]])
+                cov += np.eye(cov.shape[0]) * 1e-6
+                inv_cov = np.linalg.inv(cov)
+                self.cov_matrices_[k] = cov
+                self.inv_cov_matrices_[k] = inv_cov
+                
+                distances = np.sqrt(np.einsum('ij,jk,ik->i', flattened, inv_cov, flattened))
+                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / n_k, 1.0)
+                q_k = self._compute_quantile(distances, q_level)
+                
+                bounds = q_k * np.sqrt(np.diag(cov))
+                bounds = bounds.reshape(self.quantile_shape)
+                
+                if self.correct_acf:
+                    rho = self._compute_acf1(distances)
+                    if rho is not None and abs(rho) > 0.3:
+                        se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
+                        f_correction = 1.0 + se_inflation / np.sqrt(n_k)
+                        bounds = bounds * f_correction
+                        self.acf_corrections_[k] = f_correction
+                
+                self.quantiles[k] = bounds
+            else:
+                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / n_k, 1.0)
+                q_k = self._compute_quantile(cluster_residuals, q_level)
 
-            if self.correct_acf:
-                rho = self._compute_acf1(cluster_residuals)
-                if rho is not None and abs(rho) > 0.3:
-                    se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
-                    f_correction = 1.0 + se_inflation / np.sqrt(n_k)
-                    q_k = q_k * f_correction
-                    self.acf_corrections_[k] = f_correction
+                if self.correct_acf:
+                    rho = self._compute_acf1(cluster_residuals)
+                    if rho is not None and abs(rho) > 0.3:
+                        se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
+                        f_correction = 1.0 + se_inflation / np.sqrt(n_k)
+                        q_k = q_k * f_correction
+                        self.acf_corrections_[k] = f_correction
 
-            self.quantiles[k] = q_k
+                self.quantiles[k] = q_k
 
         if empty_clusters:
             if self.quantiles:

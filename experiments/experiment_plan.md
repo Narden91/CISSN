@@ -54,7 +54,7 @@ We will report metrics in two tables:
 - [x] Create `experiments/run_benchmark.py`: standardised trainer with early stopping.
 - [x] Integrate **WandB** for logging (`--use_wandb` flag).
 - [x] Set global seeds for reproducibility (`--seed` argument).
-- [ ] Implement **Rolling Window Evaluation** (walk-forward, crucial for time series).
+- [x] Implement **Rolling Window Evaluation** (walk-forward, crucial for time series).
 
 ### Phase 3: Ablation Studies
 - **w/o Structure**: Replace structured SSM with standard GRU.

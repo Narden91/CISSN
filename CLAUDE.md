@@ -163,7 +163,7 @@ cissn/
 
 ## Known Limitations
 
-- No rolling-window evaluation yet (single train/val/test split)
+- Walk-forward rolling window evaluation is available via `--walk_forward`, but pure online sequential learning is still an area for future work.
 - ACF-aware quantile correction addresses autocorrelation (Theorem 1b), but relies on the AR(1) approximation; stronger temporal dependence (e.g., long-memory processes) may require block-conformal extensions
 
 ## Testing

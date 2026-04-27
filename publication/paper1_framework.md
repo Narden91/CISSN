@@ -208,7 +208,7 @@ where for sub-Gaussian residuals, $Q_k \leq \sigma_k \cdot \sqrt{2 \log(1/\sqrt{
 - **Theorem 2**: Interval width bound (see theory gaps above)
 - **Finite-sample correction**: ⌈(n_k+1)(1-α)⌉/n_k
 - **Exchangeability validation**: Per-cluster ACF(1) test
-- **Multivariate strategies**: per_feature, max, mean
+- **Multivariate strategies**: per_feature, max, mean, mahalanobis
 
 ### 4. Experiments (3 pages)
 

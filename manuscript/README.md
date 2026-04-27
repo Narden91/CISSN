@@ -55,7 +55,7 @@
 
 #### 3.4 State-Conditional Conformal Prediction
 - [ ] Calibration: residual computation per state cluster / KDE weighting
-- [ ] Multivariate strategies: `max`, `scalar`, `per_output`
+- [x] Multivariate strategies: `max`, `mean`, `per_output`, `mahalanobis`
 - [ ] Coverage guarantee proof sketch (finite-sample, distribution-free)
 - [ ] Computational cost of SCCP at inference
 
@@ -85,7 +85,7 @@
 - [ ] No disentanglement loss (α=0, β=0)
 - [ ] No MLP refinement (linear head only)
 - [ ] Marginal CP vs. state-conditional CP (same encoder, SCCP disabled)
-- [ ] Multivariate strategy: max vs. scalar vs. per_output
+- [ ] Multivariate strategy: max vs. mean vs. per_output vs. mahalanobis
 - [ ] Encoder depth (hidden_dim ∈ {32, 64, 128, 256})
 
 #### 4.5 Analysis
@@ -161,7 +161,7 @@
 - [ ] CISSN (full) vs. no-disentanglement (α=0, β=0): ETTh1, all 5 horizons
 - [ ] CISSN (full) vs. linear-head-only (no MLP refinement): ETTh1, ETTm1
 - [ ] Full SCCP vs. marginal CP: ETTh1, Weather (coverage + width)
-- [ ] SCCP strategy: max vs. scalar vs. per_output on multivariate datasets
+- [ ] SCCP strategy: max vs. mean vs. per_output vs. mahalanobis on multivariate datasets
 - [ ] Hidden dim sweep {32, 64, 128, 256}: ETTh1 horizon=96
 - [ ] α sweep {0, 0.01, 0.1, 1.0}: covariance loss weight
 - [ ] β sweep {0, 0.01, 0.1, 1.0}: temporal loss weight

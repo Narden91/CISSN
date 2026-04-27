@@ -14,12 +14,12 @@
   - `DeepEnsemble` — ensemble uncertainty (Lakshminarayanan et al., NeurIPS 2017)
   - `PatchTST` — channel-independent patch Transformer (Nie et al., ICLR 2023)
   - `DeepState` — GRU + structured SSM with Gaussian intervals (Rangapuram et al., NeurIPS 2018)
+- **Rolling window evaluation**: Walk-forward validation implemented for true out-of-sample assessment across non-overlapping prediction windows via the `--walk_forward` flag.
+- **Multivariate output strategies**: Advanced multivariate conformal prediction implemented using Mahalanobis distance regions via the `--multivariate_strategy mahalanobis` flag.
 
 ## Planned
 
-- **Rolling window evaluation**: Implement walk-forward validation for true out-of-sample assessment.
 - **Hyperparameter optimization**: Integrate Optuna or similar for automatic tuning.
 - **Causal reasoning**: Extend the structural state-space to support counterfactual queries.
 - **Online/streaming conformal**: Adapt SCCP for streaming data with periodic recalibration.
-- **Multivariate output strategies**: Advanced multivariate conformal (copula-based, Mahalanobis).
 - **Deployment guides**: TorchServe / ONNX export pipelines for production serving.
