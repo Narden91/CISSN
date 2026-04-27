@@ -43,8 +43,18 @@ class Experiment:
         )
 
     def _get_data(self, flag):
-        data_set, data_loader = get_data_loader(self.args, flag)
-        return data_set, data_loader
+        return get_data_loader(self.args, flag)
+
+    def _forward_and_slice(self, batch_x, batch_y):
+        """Run encoder + head and slice to the prediction window."""
+        batch_x = batch_x.float().to(self.device, non_blocking=True)
+        batch_y = batch_y.float().to(self.device, non_blocking=True)
+        final_state = self.model(batch_x)
+        outputs = self.head(final_state)
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.args.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+        return final_state, outputs, batch_y
 
     def _select_optimizer(self):
         params = list(self.model.parameters()) + list(self.head.parameters())
@@ -94,26 +104,16 @@ class Experiment:
                 batch_x = batch_x.float().to(self.device, non_blocking=True)
                 batch_y = batch_y.float().to(self.device, non_blocking=True)
 
-                # Encoder Forward
-                # We need all states for disentanglement loss
-                states = self.model(batch_x, return_all_states=True) # (B, L, State)
-                final_state = states[:, -1, :] # (B, State)
+                # Need all states for disentanglement loss
+                states = self.model(batch_x, return_all_states=True)  # (B, L, State)
+                final_state = states[:, -1, :]                         # (B, State)
+                outputs = self.head(final_state)
 
-                # Forecast
-                outputs = self.head(final_state) # (B, Pred, Out)
-
-                # Slicing for loss
-                # batch_y shape: (B, Label+Pred, Out)
-                # We only want the last Pred_len steps
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
 
-                # Losses
-                pred_loss = criterion(outputs, batch_y)
-                dis_loss = disentangle_criterion(states)
-
-                loss = pred_loss + dis_loss
+                loss = criterion(outputs, batch_y) + disentangle_criterion(states)
                 train_loss.append(loss.item())
 
                 loss.backward()
@@ -171,28 +171,16 @@ class Experiment:
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(vali_loader):
-                batch_x = batch_x.float().to(self.device, non_blocking=True)
-                batch_y = batch_y.float().to(self.device, non_blocking=True)
-                
-                final_state = self.model(batch_x)
-                outputs = self.head(final_state)
-                
-                f_dim = -1 if self.args.features == 'MS' else 0
-                outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                
-                loss = criterion(outputs, batch_y)
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in vali_loader:
+                _, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 batch_weight = outputs.numel()
-                total_loss += loss.item() * batch_weight
+                total_loss += criterion(outputs, batch_y).item() * batch_weight
                 total_weight += batch_weight
             if total_weight == 0:
                 raise RuntimeError("Validation loader produced no prediction elements.")
-        
-            total_loss = total_loss / total_weight
         self.model.train()
         self.head.train()
-        return total_loss
+        return total_loss / total_weight
 
     def _calibrate_conformal(self, vali_loader):
         """Calibrate the StateConditionalConformal predictor on the validation set."""
@@ -208,16 +196,7 @@ class Experiment:
         self.head.eval()
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in vali_loader:
-                batch_x = batch_x.float().to(self.device, non_blocking=True)
-                batch_y = batch_y.float().to(self.device, non_blocking=True)
-
-                final_state = self.model(batch_x)
-                outputs = self.head(final_state)
-
-                f_dim = -1 if self.args.features == 'MS' else 0
-                outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-
+                final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 all_states.append(final_state.detach().cpu())
                 all_residuals.append((outputs - batch_y).abs().detach().cpu())
 
@@ -254,17 +233,8 @@ class Experiment:
         self.head.eval()
 
         with torch.no_grad():
-            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(test_loader):
-                batch_x = batch_x.float().to(self.device, non_blocking=True)
-                batch_y = batch_y.float().to(self.device, non_blocking=True)
-
-                final_state = self.model(batch_x)
-                outputs = self.head(final_state)
-
-                f_dim = -1 if self.args.features == 'MS' else 0
-                outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in test_loader:
+                final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 preds.append(outputs.detach().cpu().numpy())
                 trues.append(batch_y.detach().cpu().numpy())
                 test_states.append(final_state.detach().cpu().numpy())
@@ -354,7 +324,6 @@ class EarlyStopping:
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
         torch.save(model.state_dict(), os.path.join(path, 'checkpoint.pth'))
-        # Save head state too - simpler to just save model for now or separate file
         torch.save(head.state_dict(), os.path.join(path, 'checkpoint_head.pth'))
         self.val_loss_min = val_loss
 

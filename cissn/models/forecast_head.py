@@ -46,11 +46,16 @@ class ForecastHead(nn.Module):
                 f"{caller} expects trailing state dimension {self.state_dim}; got {state.shape[-1]}."
             )
 
+    def _compute_lin_ref(self, state: torch.Tensor):
+        """Shared computation of linear and refinement terms."""
+        lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
+        ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
+        return lin, ref
+
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """state: (batch, state_dim) -> (batch, horizon, output_dim)"""
         self._validate_state(state, "forward")
-        lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
-        ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
+        lin, ref = self._compute_lin_ref(state)
         return lin + ref
 
     def get_contributions(
@@ -77,9 +82,10 @@ class ForecastHead(nn.Module):
         if not 0 <= output_idx < self.output_dim:
             raise IndexError(f"output_idx must be in [0, {self.output_dim}); got {output_idx}.")
 
-        w = self.lin_weight[:, horizon_idx, output_idx]
-        refinement = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)[:, horizon_idx, output_idx]
+        lin, ref = self._compute_lin_ref(state)
+        refinement = ref[:, horizon_idx, output_idx]
 
+        w = self.lin_weight[:, horizon_idx, output_idx]
         level = state[:, 0] * w[0]
         trend = state[:, 1] * w[1]
         seasonal = state[:, 2] * w[2] + state[:, 3] * w[3]
@@ -107,9 +113,7 @@ class ForecastHead(nn.Module):
         which weakens the interpretability guarantee.
         """
         self._validate_state(state, "get_refinement_ratio")
-        lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
-        ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
+        lin, ref = self._compute_lin_ref(state)
         lin_mag = lin.abs().mean()
         ref_mag = ref.abs().mean()
-        total = lin_mag + ref_mag + 1e-8
-        return (ref_mag / total).item()
+        return (ref_mag / (lin_mag + ref_mag + 1e-8)).item()

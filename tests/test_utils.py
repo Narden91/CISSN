@@ -1,11 +1,7 @@
 import unittest
-import sys
-import os
 
 import torch
 
-# Ensure project root is in path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cissn.conformal import StateConditionalConformal
 

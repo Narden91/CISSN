@@ -1,10 +1,6 @@
 import torch
 import numpy as np
-import sys
-import os
 
-# Ensure the project root is in the path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cissn.models import DisentangledStateEncoder, ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
@@ -16,7 +12,7 @@ def test_cissn_flow():
     
     # Hyperparameters
     input_dim = 10
-    state_dim = 5 # Updated to 5
+    state_dim = 5
     hidden_dim = 32
     batch_size = 16
     seq_len = 20

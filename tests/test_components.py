@@ -1,13 +1,9 @@
 import unittest
 import torch
-import sys
-import os
 import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch
 
-# Ensure project root is in path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cissn.data.dataset import BaseETTDataset, Dataset_ETT_hour, Dataset_ETT_minute
 from cissn.models import ForecastHead

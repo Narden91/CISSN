@@ -84,14 +84,13 @@ class DisentangledStateEncoder(nn.Module):
         if dynamics is None:
             dynamics = self._structured_dynamics()
         a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
-        
-        out = torch.empty_like(s)
-        out[:, 0] = s[:, 0] * a_l
-        out[:, 1] = s[:, 1] * a_t
-        out[:, 2] = s[:, 2] * rot00 + s[:, 3] * rot10
-        out[:, 3] = s[:, 2] * rot01 + s[:, 3] * rot11
-        out[:, 4] = s[:, 4] * a_r
-        return out
+        return torch.stack([
+            s[:, 0] * a_l,
+            s[:, 1] * a_t,
+            s[:, 2] * rot00 + s[:, 3] * rot10,
+            s[:, 2] * rot01 + s[:, 3] * rot11,
+            s[:, 4] * a_r,
+        ], dim=-1)
 
     def _step_from_hidden(self, h_t: torch.Tensor, s_prev: torch.Tensor, dynamics) -> torch.Tensor:
         b_x = self.innovation(h_t)

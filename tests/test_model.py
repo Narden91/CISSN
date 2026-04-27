@@ -1,10 +1,6 @@
 import torch
 import unittest
-import sys
-import os
 
-# Ensure the project root is in the path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cissn.models import DisentangledStateEncoder, ForecastHead
 

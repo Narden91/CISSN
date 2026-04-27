@@ -1,6 +1,4 @@
 import unittest
-import sys
-import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,8 +8,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import RandomSampler, SequentialSampler
 
-# Ensure the project root is in the path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cissn.data.data_loader import get_data_loader
 from cissn.data.dataset import Dataset_ETT_hour

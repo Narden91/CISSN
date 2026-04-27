@@ -4,16 +4,29 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from sklearn.preprocessing import StandardScaler
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
 
 class BaseETTDataset(Dataset):
     """
     Base class for ETT datasets (Electricity Transformer Temperature).
     Handles data loading, scaling, and time feature extraction.
     """
-    def __init__(self, root_path: str, flag: str = 'train', size: Optional[List[int]] = None,
-                 features: str = 'S', data_path: str = 'ETTh1.csv',
-                 target: str = 'OT', scale: bool = True, **kwargs):
+
+    # Subclasses may override to change the default data file
+    _DEFAULT_DATA_PATH: str = "ETTh1.csv"
+
+    def __init__(
+        self,
+        root_path: str,
+        flag: str = "train",
+        size: Optional[List[int]] = None,
+        features: str = "S",
+        data_path: str = "",
+        target: str = "OT",
+        scale: bool = True,
+        **kwargs,
+    ):
         # size [seq_len, label_len, pred_len]
         if size is None:
             size = [24 * 4 * 4, 24 * 4, 24 * 4]
@@ -33,8 +46,7 @@ class BaseETTDataset(Dataset):
                 f"label_len must be <= seq_len for overlapping decoder context; got label_len={self.label_len}, seq_len={self.seq_len}."
             )
 
-        # init ('pred' uses the same split window as test — rolling forecast on held-out tail)
-        type_map = {'train': 0, 'val': 1, 'test': 2, 'pred': 2}
+        type_map = {"train": 0, "val": 1, "test": 2, "pred": 2}
         if flag not in type_map:
             raise ValueError(f"flag must be one of {sorted(type_map)}; got {flag!r}.")
         self.set_type = type_map[flag]
@@ -43,25 +55,21 @@ class BaseETTDataset(Dataset):
         self.target = target
         self.scale = scale
         self.root_path = root_path
-        self.data_path = data_path
-        self.kwargs = kwargs # Store extra args for custom overrides
+        self.data_path = data_path or self._DEFAULT_DATA_PATH
+        self.kwargs = kwargs
         self.__read_data__()
 
     def __read_data__(self):
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-        if 'date' not in df_raw.columns:
+        if "date" not in df_raw.columns:
             raise ValueError("Dataset must contain a 'date' column for time feature extraction.")
 
-        # Define borders based on dataset type
-        # Allow overriding borders via kwargs for custom splits
-        if 'borders' in self.kwargs:
-             # Expects list of [train_start, val_start, test_start, test_end] or similar structure matched to subclasses
-             # But easier: expects tuple (border1s, border2s)
-             border1s, border2s = self.kwargs['borders']
+        if "borders" in self.kwargs:
+            border1s, border2s = self.kwargs["borders"]
         else:
             border1s, border2s = self._get_borders(df_raw)
-        
+
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
         n_rows = len(df_raw)
@@ -70,10 +78,9 @@ class BaseETTDataset(Dataset):
                 f"Invalid split borders for {self.data_path}: border1={border1}, border2={border2}, rows={n_rows}."
             )
 
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
+        if self.features in ("M", "MS"):
+            df_data = df_raw[df_raw.columns[1:]]
+        elif self.features == "S":
             if self.target not in df_raw.columns:
                 raise ValueError(f"Target column {self.target!r} not found in dataset columns.")
             df_data = df_raw[[self.target]]
@@ -89,12 +96,11 @@ class BaseETTDataset(Dataset):
 
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
-        
-        # Time features
-        df_stamp = df_raw[['date']][border1:border2].copy()
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        
+
+        df_stamp = df_raw[["date"]][border1:border2].copy()
+        df_stamp["date"] = pd.to_datetime(df_stamp.date)
         self.data_stamp = self._extract_time_features(df_stamp)
+
         self.length = len(self.data_x) - self.seq_len - self.pred_len + 1
         if self.length <= 0:
             raise ValueError(
@@ -102,23 +108,52 @@ class BaseETTDataset(Dataset):
                 f"split_length={len(self.data_x)}, seq_len={self.seq_len}, pred_len={self.pred_len}."
             )
 
+    @staticmethod
+    def _build_time_features(
+        df_stamp: pd.DataFrame,
+        fields: List[Tuple[str, float]],
+    ) -> np.ndarray:
+        """
+        Build a normalized time-feature array.
+
+        Args:
+            df_stamp: DataFrame with a 'date' datetime column.
+            fields: List of (accessor_name, normalizer_period) pairs.
+                    Normalization: value / period - 0.5
+                    Accessor names map to pd.DatetimeIndex attributes,
+                    e.g. 'month', 'day', 'dayofweek', 'hour', 'minute'.
+                    For ISO week use 'isocalendar_week'.
+        Returns:
+            np.ndarray of shape (len(df_stamp), len(fields))
+        """
+        data = np.zeros((len(df_stamp), len(fields)))
+        for col, (accessor, period) in enumerate(fields):
+            if accessor == "isocalendar_week":
+                values = df_stamp.date.dt.isocalendar().week.values.astype(float)
+            else:
+                values = getattr(df_stamp.date.dt, accessor).values.astype(float)
+            data[:, col] = values / period - 0.5
+        return data
+
     def _get_borders(self, df_raw: pd.DataFrame):
         """
         Define train/val/test split borders using a 12/4/4-month convention.
-
-        Computes boundaries from the actual date column rather than hardcoded
-        row counts, so all month lengths (including February and DST shifts)
-        are handled automatically.
-
-        Should be implemented/overridden by subclasses.
+        Used by ETT hourly and minute subclasses. Override for custom splits.
         """
-        raise NotImplementedError
+        dates = pd.to_datetime(df_raw["date"])
+        start_date = dates.iloc[0]
+        train_end = start_date + pd.DateOffset(months=12)
+        val_end = train_end + pd.DateOffset(months=4)
+        test_end = val_end + pd.DateOffset(months=4)
+        train_n = int((dates < train_end).sum())
+        val_n = int((dates < val_end).sum())
+        test_n = int((dates < test_end).sum())
+        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
+        border2s = [train_n, val_n, test_n]
+        return border1s, border2s
 
-    def _extract_time_features(self, df_stamp):
-        """
-        Extract time features from date column.
-        Should be implemented/overridden by subclasses.
-        """
+    def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
+        """Extract time features from date column. Override in subclasses."""
         raise NotImplementedError
 
     def __getitem__(self, index):
@@ -139,11 +174,13 @@ class BaseETTDataset(Dataset):
         expected_y = self.label_len + self.pred_len
         if len(seq_x) != expected_x or len(seq_x_mark) != expected_x:
             raise RuntimeError(
-                f"Encoder window extraction failed at index {index}: expected {expected_x} rows, got data={len(seq_x)} marks={len(seq_x_mark)}."
+                f"Encoder window extraction failed at index {index}: expected {expected_x} rows, "
+                f"got data={len(seq_x)} marks={len(seq_x_mark)}."
             )
         if len(seq_y) != expected_y or len(seq_y_mark) != expected_y:
             raise RuntimeError(
-                f"Decoder window extraction failed at index {index}: expected {expected_y} rows, got data={len(seq_y)} marks={len(seq_y_mark)}."
+                f"Decoder window extraction failed at index {index}: expected {expected_y} rows, "
+                f"got data={len(seq_y)} marks={len(seq_y_mark)}."
             )
 
         return seq_x, seq_y, seq_x_mark, seq_y_mark
@@ -155,58 +192,26 @@ class BaseETTDataset(Dataset):
         return self.scaler.inverse_transform(data)
 
 
-class Dataset_ETT_hour(BaseETTDataset):
-    def _get_borders(self, df_raw):
-        dates = pd.to_datetime(df_raw['date'])
-        start_date = dates.iloc[0]
-        train_end = start_date + pd.DateOffset(months=12)  # 12-month train
-        val_end = train_end + pd.DateOffset(months=4)       # 4-month val
-        test_end = val_end + pd.DateOffset(months=4)        # 4-month test
-        train_n = int((dates < train_end).sum())
-        val_n = int((dates < val_end).sum())
-        test_n = int((dates < test_end).sum())
-        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
-        border2s = [train_n, val_n, test_n]
-        return border1s, border2s
+_HOURLY_FIELDS = [("month", 12.0), ("day", 31.0), ("dayofweek", 7.0), ("hour", 24.0)]
+_MINUTE_FIELDS = _HOURLY_FIELDS + [("minute", 60.0)]
 
-    def _extract_time_features(self, df_stamp):
-        # Simple time encoding: Month, Day, Weekday, Hour
-        data_stamp = np.zeros((len(df_stamp), 4))
-        data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-        data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
-        data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
-        data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
-        return data_stamp
+
+class Dataset_ETT_hour(BaseETTDataset):
+    _DEFAULT_DATA_PATH = "ETTh1.csv"
+
+    def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
+        return self._build_time_features(df_stamp, _HOURLY_FIELDS)
 
 
 class Dataset_ETT_minute(BaseETTDataset):
-    def __init__(self, root_path: str, flag: str = 'train', size: Optional[List[int]] = None,
-                 features: str = 'S', data_path: str = 'ETTm1.csv',
-                 target: str = 'OT', scale: bool = True, **kwargs):
-        super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
+    _DEFAULT_DATA_PATH = "ETTm1.csv"
 
-    def _get_borders(self, df_raw):
-        dates = pd.to_datetime(df_raw['date'])
-        start_date = dates.iloc[0]
-        train_end = start_date + pd.DateOffset(months=12)  # 12-month train
-        val_end = train_end + pd.DateOffset(months=4)       # 4-month val
-        test_end = val_end + pd.DateOffset(months=4)        # 4-month test
-        train_n = int((dates < train_end).sum())
-        val_n = int((dates < val_end).sum())
-        test_n = int((dates < test_end).sum())
-        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
-        border2s = [train_n, val_n, test_n]
-        return border1s, border2s
+    def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
+        return self._build_time_features(df_stamp, _MINUTE_FIELDS)
 
-    def _extract_time_features(self, df_stamp):
-        # Time encoding: Month, Day, Weekday, Hour, Minute
-        data_stamp = np.zeros((len(df_stamp), 5))
-        data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-        data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
-        data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
-        data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
-        data_stamp[:, 4] = df_stamp.date.dt.minute.values / 60.0 - 0.5
-        return data_stamp
+
+_DAILY_FIELDS = [("month", 12.0), ("day", 31.0), ("dayofweek", 7.0)]
+_WEEKLY_FIELDS = [("month", 12.0), ("isocalendar_week", 52.0)]
 
 
 class Dataset_Custom(BaseETTDataset):
@@ -214,35 +219,30 @@ class Dataset_Custom(BaseETTDataset):
     Generic dataset class for non-ETT benchmark datasets (Weather, Exchange-Rate,
     Electricity/ECL, Traffic, ILI, Solar-Energy, etc.).
 
-    Split policy: 70% train / 10% val / 20% test, determined from the actual row
-    count of the CSV — no hardcoded calendar arithmetic.
-
-    Expected file format: CSV with a 'date' column as the first column, followed
-    by feature columns.  If the 'date' column is absent, pass ``scale=False`` and
-    set ``target`` to the desired column name; the time-mark array will be zeros.
+    Split policy: 70% train / 10% val / 20% test.
 
     Args:
         freq: Sampling frequency string used to select time features.
-              ``'h'`` (hourly, default), ``'t'``/``'10min'``/``'15min'`` (sub-hourly),
-              ``'d'`` (daily), ``'w'`` (weekly).
+              'h' (hourly, default), 't'/'10min'/'15min' (sub-hourly),
+              'd' (daily), 'w' (weekly).
     """
 
     def __init__(
         self,
         root_path: str,
-        flag: str = 'train',
+        flag: str = "train",
         size: Optional[List[int]] = None,
-        features: str = 'S',
-        data_path: str = 'weather.csv',
-        target: str = 'OT',
+        features: str = "S",
+        data_path: str = "weather.csv",
+        target: str = "OT",
         scale: bool = True,
-        freq: str = 'h',
+        freq: str = "h",
         **kwargs,
     ):
         self.freq = freq
         super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
 
-    def _get_borders(self, df_raw):
+    def _get_borders(self, df_raw: pd.DataFrame):
         n = len(df_raw)
         num_train = int(n * 0.7)
         num_test = int(n * 0.2)
@@ -251,34 +251,14 @@ class Dataset_Custom(BaseETTDataset):
         border2s = [num_train, num_train + num_vali, n]
         return border1s, border2s
 
-    def _extract_time_features(self, df_stamp):
+    def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
         freq = self.freq.lower()
-        if freq in ('t', 'min', '10min', '15min'):
-            # Sub-hourly: month, day, weekday, hour, minute
-            data_stamp = np.zeros((len(df_stamp), 5))
-            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
-            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
-            data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
-            data_stamp[:, 4] = df_stamp.date.dt.minute.values / 60.0 - 0.5
-        elif freq in ('d', 'daily', '1d'):
-            # Daily: month, day, weekday
-            data_stamp = np.zeros((len(df_stamp), 3))
-            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
-            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
-        elif freq in ('w', 'weekly', '1w'):
-            # Weekly: month, ISO week number
-            data_stamp = np.zeros((len(df_stamp), 2))
-            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-            data_stamp[:, 1] = (
-                df_stamp.date.dt.isocalendar().week.values.astype(float) / 52.0 - 0.5
-            )
-        else:
-            # Hourly (default): month, day, weekday, hour
-            data_stamp = np.zeros((len(df_stamp), 4))
-            data_stamp[:, 0] = df_stamp.date.dt.month.values / 12.0 - 0.5
-            data_stamp[:, 1] = df_stamp.date.dt.day.values / 31.0 - 0.5
-            data_stamp[:, 2] = df_stamp.date.dt.dayofweek.values / 7.0 - 0.5
-            data_stamp[:, 3] = df_stamp.date.dt.hour.values / 24.0 - 0.5
-        return data_stamp
+        if freq in ("t", "min", "10min", "15min"):
+            fields = _MINUTE_FIELDS
+        elif freq in ("d", "daily", "1d"):
+            fields = _DAILY_FIELDS
+        elif freq in ("w", "weekly", "1w"):
+            fields = _WEEKLY_FIELDS
+        else:  # hourly (default)
+            fields = _HOURLY_FIELDS
+        return self._build_time_features(df_stamp, fields)
