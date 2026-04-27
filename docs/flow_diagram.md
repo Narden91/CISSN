@@ -17,20 +17,20 @@ flowchart TB
         end
         
         subgraph transition["Structured Transition (A)"]
-            T1[("Level α≈1")]
-            T2[("Trend α≈1")]
+            T1[("Level α∈[0.85,1.0]")]
+            T2[("Trend α∈[0.70,0.95]")]
             T3[("Seasonal 2D Rot(ω)")]
-            T4[("Residual α<1")]
+            T4[("Residual α∈[0.0,0.4]")]
         end
         
         subgraph correction["Non-Linear Correction"]
-            MLP[("Sparse MLP Correction")]
+            MLP[("Spectral-Norm MLP\n(correction_scale · tanh)")]
         end
-        
+
         Proj --> extraction
         extraction --> transition
         transition --> MLP
-        MLP --> State[("Latent State s_t\n(Level, Trend, Seas, Res)")]
+        MLP --> State[("Latent State s_t\n(Level, Trend, Seas_cos, Seas_sin, Residual)")]
     end
     
     subgraph Forecast["Forecast Head 🔮"]

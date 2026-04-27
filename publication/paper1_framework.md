@@ -103,7 +103,7 @@ For within-cluster residuals following AR(1) with coefficient ρ_k, the coverage
 
 **Proof:** Via Bartlett's formula for the variance of the sample mean under autocorrelation, extended to quantile estimators via the Bahadur representation.
 
-**Status:** ✅ FORMAL PROOF COMPLETE. The ACF(1) diagnostic at line 213 now provides a theoretically grounded coverage-deficit estimate. For |ρ_k| ≤ 0.3 and n_k ≥ 20, the deficit is ≤ 0.03.
+**Status:** ✅ FORMAL PROOF COMPLETE + IMPLEMENTED. The ACF(1) diagnostic at line~261 now provides a theoretically grounded coverage-deficit estimate. The \texttt{correct\_acf=True} parameter (default) automatically inflates cluster quantiles by factor $1 + (\sqrt{(1+|\rho|)/(1-|\rho|)} - 1)/\sqrt{n_k}$ when ACF(1) > 0.3, restoring the $1-\alpha$ guarantee. On ETTh1 with $\rho_k \approx 0.80$--$0.87$, correction factors are 1.091--1.104 (~9--10\% inflation) and empirical coverage rises from 0.908 (uncorrected) to 0.934 (corrected).
 
 ---
 
@@ -298,7 +298,7 @@ where for sub-Gaussian residuals, $Q_k \leq \sigma_k \cdot \sqrt{2 \log(1/\sqrt{
 | 7 | ~~Formal coverage proof (LaTeX)~~ ✅ DONE — REVISED | `publication/paper1_proofs.tex` | **CORRECTED** — added min-cluster condition A3, Lemma 2, Cor.~1a/1b, Thm.~1b |
 | 7b | ~~Structured dynamics stability proof~~ ✅ DONE — REVISED | `publication/paper1_proofs.tex` | **CORRECTED** — BIBO stability, rotation sign, geometric series direction, Thm.~2d |
 | 7c | ~~Correction boundedness (softplus + SN)~~ ✅ DONE | `cissn/models/encoder.py` | Softplus gate for β ≥ 0; spectral norm on MLP |
-| 7d | ~~Empty-cluster fallback~~ ✅ DONE | `cissn/conformal/state_conditional.py` | Max-of-nonempty-quantile fallback |
+| 7d | ~~Empty-cluster + ACF correction~~ ✅ DONE | `cissn/conformal/state_conditional.py` | Max-of-nonempty fallback; ACF-aware quantile inflation |
 
 ### High (should complete)
 

@@ -1,26 +1,71 @@
 # Benchmark Datasets for LTSF
 
-This document lists the benchmark datasets used for Long-Term Time Series Forecasting (LTSF) experiments and their sources.
+Benchmark datasets used for Long-Term Time Series Forecasting (LTSF) experiments.
+All datasets are automatically downloadable via `scripts/download_datasets.py`.
 
-## Datasets
+## Dataset Overview
 
-| Dataset | Description | Source | Note |
-| :--- | :--- | :--- | :--- |
-| **ETT** (ETTh1, ETTh2, ETTm1, ETTm2) | Electricity Transformer Temperature | [GitHub - zhouhaoyi/ETDataset](https://github.com/zhouhaoyi/ETDataset) | Already present in `data/ETT` (partial) |
-| **Electricity** (ECL) | Hourly electricity consumption of 321 clients | [Google Drive (Autoformer/LTSF-Linear)](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?) | Via `cure-lab/LTSF-Linear` |
-| **Traffic** | Hourly traffic occupancy from 862 sensors | [Google Drive (Autoformer/LTSF-Linear)](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?) | Via `cure-lab/LTSF-Linear` |
-| **Weather** | 21 meteorological indicators every 10 min | [Google Drive (Autoformer/LTSF-Linear)](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?) | Via `cure-lab/LTSF-Linear` |
-| **Exchange** | Daily exchange rates of 8 countries | [Google Drive (Autoformer/LTSF-Linear)](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?) | Via `cure-lab/LTSF-Linear` |
-| **ILI** | Weekly influenza-like illness data | [Google Drive (Autoformer/LTSF-Linear)](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?) | Via `cure-lab/LTSF-Linear` |
+| Dataset | Domain | Frequency | Features | Source |
+| :--- | :--- | :--- | :--- | :--- |
+| **ETTh1, ETTh2** | Electricity transformer temperature | Hourly | 7 | GitHub — zhouhaoyi/ETDataset |
+| **ETTm1, ETTm2** | Electricity transformer temperature | 15-min | 7 | GitHub — zhouhaoyi/ETDataset |
+| **Weather** | Meteorological indicators | 10-min | 21 | Autoformer Google Drive |
+| **Exchange-Rate** | Daily FX rates (8 countries) | Daily | 8 | Autoformer Google Drive |
+| **ECL (Electricity)** | Hourly electricity consumption | Hourly | 321 | Autoformer Google Drive |
+| **Traffic** | Road occupancy (862 sensors) | Hourly | 862 | Autoformer Google Drive |
+| **ILI** | Influenza-like illness | Weekly | 7 | Autoformer Google Drive |
+| **Solar-Energy** | Solar power (137 Alabama stations) | 10-min | 137 | GitHub — laiguokun/multivariate-time-series-data |
 
-## Download Instructions
+## Download
 
-1.  **ETT**: Clone the [ETDataset](https://github.com/zhouhaoyi/ETDataset) repository or download `ETTh1.csv`, `ETTh2.csv`, `ETTm1.csv`, `ETTm2.csv` and place them in `data/ETT/`.
-2.  **Others**: Go to the [Autoformer/LTSF-Linear Google Drive](https://drive.google.com/drive/folders/1Zjhx6HAbD9L9HwE-aK9Kq2V0bLgN7g7?).
-    *   Download `electricity.csv` -> `data/electricity/`
-    *   Download `traffic.csv` -> `data/traffic/`
-    *   Download `weather.csv` -> `data/weather/`
-    *   Download `exchange_rate.csv` -> `data/exchange_rate/`
-    *   Download `national_illness.csv` -> `data/illness/`
+The automated script handles all datasets including gzip decompression for Solar-Energy:
 
-**Note**: Ensure the file names match what the data loader expects (usually standardized to `name.csv`).
+```bash
+# Download all datasets
+uv run scripts/download_datasets.py
+
+# Check which datasets are already present
+uv run scripts/download_datasets.py --status
+
+# Download specific datasets only
+uv run scripts/download_datasets.py --datasets ETTh1,ETTh2,weather
+```
+
+ETT and Solar-Energy download directly from GitHub (no extra dependencies).
+Weather, Exchange-Rate, ECL, Traffic, and ILI come from the Autoformer Google Drive folder
+and require `gdown` — the script will offer to install it automatically.
+
+## Expected Directory Layout
+
+```
+data/
+├── ETT/
+│   ├── ETTh1.csv
+│   ├── ETTh2.csv
+│   ├── ETTm1.csv
+│   └── ETTm2.csv
+├── weather.csv
+├── exchange_rate.csv
+├── electricity.csv
+├── traffic.csv
+├── national_illness.csv
+└── solar_AL.txt
+```
+
+## Dataset Registry (data_loader.py)
+
+The `get_data_loader` function maps dataset names to classes and default frequencies:
+
+| Key | Class | Default freq |
+|-----|-------|-------------|
+| `ETTh1`, `ETTh2` | `Dataset_ETT_hour` | `h` |
+| `ETTm1`, `ETTm2` | `Dataset_ETT_minute` | `t` |
+| `weather` | `Dataset_Custom` | `t` (10-min) |
+| `exchange_rate` | `Dataset_Custom` | `d` (daily) |
+| `ECL` | `Dataset_Custom` | `h` (hourly) |
+| `traffic` | `Dataset_Custom` | `h` (hourly) |
+| `ILI` | `Dataset_Custom` | `w` (weekly) |
+| `solar` | `Dataset_Custom` | `t` (10-min) |
+
+All ETT datasets use a 12/4/4-month train/val/test split.
+All Custom datasets use a 70%/10%/20% proportional split.

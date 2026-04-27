@@ -72,7 +72,7 @@ uv run examples/demo_cissn.py
 
 Run a benchmark experiment:
 ```bash
-uv run python experiments/run_benchmark.py --data ETTh1 --train_epochs 10 --seed 42
+uv run experiments/run_benchmark.py --data ETTh1 --train_epochs 10 --seed 42
 ```
 
 ---
@@ -135,10 +135,23 @@ The 5-dimensional state:
 
 Download all datasets:
 ```bash
-uv run python scripts/download_datasets.py
+uv run scripts/download_datasets.py
 ```
 
 ---
+
+## Baselines
+
+All six comparison models are implemented in `cissn/baselines/` and share the same `forward(x)` interface:
+
+| Baseline | Reference | Key idea |
+|----------|-----------|----------|
+| `DLinear` | Zeng et al., AAAI 2023 | Moving-average decomposition + two linear layers |
+| `FlatConformal` | — | Marginal conformal prediction (no state-conditioning) |
+| `MCDropout` | Gal & Ghahramani, ICML 2016 | Stochastic dropout at inference for uncertainty |
+| `DeepEnsemble` | Lakshminarayanan et al., NeurIPS 2017 | Ensemble of independently trained models |
+| `PatchTST` | Nie et al., ICLR 2023 | Channel-independent patch-based Transformer |
+| `DeepState` | Rangapuram et al., NeurIPS 2018 | GRU encoder + structured SSM + Gaussian intervals |
 
 ## Evaluation Metrics
 
@@ -160,6 +173,7 @@ cissn/              # Package
 ├── conformal/      # StateConditionalConformal (SCCP)
 ├── losses/         # DisentanglementLoss
 ├── explanations/   # ForecastExplainer
+├── baselines/      # DLinear, FlatConformal, MCDropout, DeepEnsemble, PatchTST, DeepState
 └── data/           # BaseETTDataset, data loader factory
 
 experiments/        # Benchmark runner + experiment plan

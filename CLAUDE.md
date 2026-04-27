@@ -104,21 +104,29 @@ cissn/
 ├── __init__.py              # Version (0.1.0)
 ├── models/
 │   ├── __init__.py          # Exports DisentangledStateEncoder, ForecastHead
-│   ├── encoder.py           # Structured SSM encoder (127 lines)
-│   └── forecast_head.py     # Linear + MLP forecast head (117 lines)
+│   ├── encoder.py           # Structured SSM encoder with SN correction (109 lines)
+│   └── forecast_head.py     # Linear + MLP forecast head (104 lines)
 ├── conformal/
 │   ├── __init__.py          # Exports StateConditionalConformal
-│   └── state_conditional.py # SCCP with K-Means clustering (251 lines)
+│   └── state_conditional.py # SCCP with K-Means clustering + ACF correction (236 lines)
 ├── losses/
 │   ├── __init__.py          # Exports DisentanglementLoss
-│   └── disentangle_loss.py  # Cov + temporal regularization (157 lines)
+│   └── disentangle_loss.py  # Cov + temporal regularization (105 lines)
 ├── explanations/
 │   ├── __init__.py          # Exports ForecastExplainer, ExplanationResult
-│   └── state_attribution.py # Contribution decomposition (72 lines)
+│   └── state_attribution.py # Contribution decomposition (53 lines)
+├── baselines/
+│   ├── __init__.py          # Exports all six baselines
+│   ├── dlinear.py           # Decomposition-Linear (Zeng et al., AAAI 2023)
+│   ├── flat_conformal.py    # Marginal conformal baseline (no state-conditioning)
+│   ├── mc_dropout.py        # MC Dropout uncertainty (Gal & Ghahramani, ICML 2016)
+│   ├── deep_ensemble.py     # Deep Ensemble uncertainty (Lakshminarayanan et al., NeurIPS 2017)
+│   ├── patchtst.py          # Channel-independent patch Transformer (Nie et al., ICLR 2023) (92 lines)
+│   └── deepstate.py         # GRU + structured SSM with Gaussian intervals (Rangapuram et al., NeurIPS 2018) (142 lines)
 └── data/
     ├── __init__.py          # Exports datasets + get_data_loader
-    ├── dataset.py           # BaseETTDataset + ETT_hour/minute/Custom (282 lines)
-    └── data_loader.py       # Factory for 10 benchmarks (98 lines)
+    ├── dataset.py           # BaseETTDataset + ETT_hour/minute/Custom (219 lines)
+    └── data_loader.py       # Factory for 10 benchmarks (82 lines)
 ```
 
 ## Key Files (Root)
@@ -126,10 +134,9 @@ cissn/
 | File | Purpose |
 |------|---------|
 | `pyproject.toml` | Package metadata + dependencies |
-| `experiments/run_benchmark.py` | Main training + evaluation script (440 lines) |
+| `experiments/run_benchmark.py` | Main training + evaluation script |
 | `examples/demo_cissn.py` | End-to-end demo of all components |
 | `benchmark_encoder.py` | Encoder performance benchmarking |
-| `sanity_check.py` | Quick integration check with dummy data |
 | `scripts/download_datasets.py` | Download all benchmark datasets |
 | `tests/run_tests.py` | Test runner (discovers test_*.py) |
 | `tests/test_model.py` | Encoder + ForecastHead shape tests |
@@ -156,10 +163,8 @@ cissn/
 
 ## Known Limitations
 
-- Example files `adapter.py`, `basic_classification.py`, `handwriting_classification.py` are legacy BSSNN code with `ImportError` guards
 - No rolling-window evaluation yet (single train/val/test split)
-- No baseline wrapper implementations (PatchTST, DLinear, DeepState)
-- Conformal coverage guarantee depends on within-cluster exchangeability (tested via ACF check but not guaranteed for time series)
+- ACF-aware quantile correction addresses autocorrelation (Theorem 1b), but relies on the AR(1) approximation; stronger temporal dependence (e.g., long-memory processes) may require block-conformal extensions
 
 ## Testing
 

@@ -21,12 +21,12 @@ We will use the standard **Long-Term Time Series Forecasting (LTSF)** benchmarks
 We need to compare against three categories of models:
 
 ### A. SOTA Linear/Transformer Models (Accuracy Benchmarks)
-- **iTransformer / PatchTST**: Current SOTA. CISSN might not beat them on pure MSE, but must be close.
-- **DLinear**: Simple linear baseline. CISSN **MUST** beat this to be taken seriously.
+- **PatchTST**: Channel-independent patch Transformer. ✅ Implemented in `cissn/baselines/patchtst.py`.
+- **DLinear**: Simple linear baseline. ✅ Implemented in `cissn/baselines/dlinear.py`. CISSN **MUST** beat this to be taken seriously.
 
 ### B. Probabilistic/State-Space Models (Direct Competitors)
-- **DeepState (GluonTS)**: The classic RNN+SSM baseline.
-- **DeepAR**: Standard probabilistic RNN.
+- **DeepState**: GRU + structured SSM with Gaussian intervals. ✅ Implemented in `cissn/baselines/deepstate.py`.
+- **MCDropout / DeepEnsemble**: ✅ Implemented in `cissn/baselines/`.
 
 ### C. Interpretable Models
 - **Prophet / NeuralProphet**: For visual comparison of trend/seasonality decomposition.
@@ -46,21 +46,22 @@ We will report metrics in two tables:
 
 ## 4. Implementation Roadmap
 
-### Phase 1: Data Pipeline (Days 1-2)
+### Phase 1: Data Pipeline
 - [x] Implement `cissn.data.dataset.BaseETTDataset` to download and process ETT datasets.
-- [ ] Create `DataLoaders` consistent with Autoformer/Informer standards (70/10/20 splot).
+- [x] Create `DataLoaders` consistent with Autoformer/Informer standards (70/10/20 split).
 
-### Phase 2: Benchmarking Engine (Days 2-3)
-- [ ] Create `experiments/bench_trainer.py`: A standardized trainer.
-- [ ] Implement **Rolling Window Evaluation** (crucial for time series).
-- [ ] Integrate **WandB** for logging.
+### Phase 2: Benchmarking Engine
+- [x] Create `experiments/run_benchmark.py`: standardised trainer with early stopping.
+- [x] Integrate **WandB** for logging (`--use_wandb` flag).
+- [x] Set global seeds for reproducibility (`--seed` argument).
+- [ ] Implement **Rolling Window Evaluation** (walk-forward, crucial for time series).
 
-### Phase 3: Ablation Studies (Day 4)
+### Phase 3: Ablation Studies
 - **w/o Structure**: Replace structured SSM with standard GRU.
 - **w/o Disentanglement Loss**: Train with only MSE.
 - **w/o SCCP**: Use standard Conformal Prediction (EnbPI) instead of State-Conditional.
 
-### Phase 4: Visualization & Paper (Day 5)
+### Phase 4: Visualization & Paper
 - [ ] Generate "Component Decomposition" plots (Level, Trend, Seasonal).
 - [ ] Generate "Interval Width vs. State" plots (Show how uncertainty adapts to regimes).
 
