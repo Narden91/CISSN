@@ -44,15 +44,37 @@ class Experiment:
     def _get_data(self, flag):
         return get_data_loader(self.args, flag)
 
-    def _forward_and_slice(self, batch_x, batch_y):
-        """Run encoder + head and slice to the prediction window."""
+    def _forward_and_slice(self, batch_x, batch_y, return_all_states=False):
+        """Run encoder + head and slice to the prediction window.
+
+        Args:
+            return_all_states: If True, return all intermediate states (B, L, S)
+                alongside the final-state-based outputs. Used during training
+                for the disentanglement loss.
+
+        Returns:
+            If return_all_states is False:
+                final_state, outputs, batch_y  (sliced)
+            If return_all_states is True:
+                all_states, final_state, outputs, batch_y  (sliced)
+        """
         batch_x = batch_x.float().to(self.device, non_blocking=True)
         batch_y = batch_y.float().to(self.device, non_blocking=True)
-        final_state = self.model(batch_x)
+
+        if return_all_states:
+            all_states = self.model(batch_x, return_all_states=True)
+            final_state = all_states[:, -1, :]
+        else:
+            final_state = self.model(batch_x)
+            all_states = None
+
         outputs = self.head(final_state)
         f_dim = -1 if self.args.features == 'MS' else 0
         outputs = outputs[:, -self.args.pred_len:, f_dim:]
         batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+
+        if return_all_states:
+            return all_states, final_state, outputs, batch_y
         return final_state, outputs, batch_y
 
     def _select_optimizer(self):
@@ -100,16 +122,9 @@ class Experiment:
                 iter_count += 1
                 model_optim.zero_grad()
 
-                batch_x = batch_x.float().to(self.device, non_blocking=True)
-                batch_y = batch_y.float().to(self.device, non_blocking=True)
-
-                states = self.model(batch_x, return_all_states=True)  # (B, L, State)
-                final_state = states[:, -1, :]                         # (B, State)
-                outputs = self.head(final_state)
-
-                f_dim = -1 if self.args.features == 'MS' else 0
-                outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+                states, final_state, outputs, batch_y = self._forward_and_slice(
+                    batch_x, batch_y, return_all_states=True
+                )
 
                 loss = criterion(outputs, batch_y) + disentangle_criterion(states)
                 train_loss.append(loss.item())

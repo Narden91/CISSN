@@ -83,7 +83,7 @@ class DeepState(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.eye_(self.C)
+        nn.init.xavier_uniform_(self.C)
         nn.init.zeros_(self.log_sigma_proj.bias)
 
     def _level_decay(self) -> torch.Tensor:

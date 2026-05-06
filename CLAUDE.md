@@ -121,12 +121,16 @@ cissn/
 │   ├── flat_conformal.py    # Marginal conformal baseline (no state-conditioning)
 │   ├── mc_dropout.py        # MC Dropout uncertainty (Gal & Ghahramani, ICML 2016)
 │   ├── deep_ensemble.py     # Deep Ensemble uncertainty (Lakshminarayanan et al., NeurIPS 2017)
-│   ├── patchtst.py          # Channel-independent patch Transformer (Nie et al., ICLR 2023) (92 lines)
-│   └── deepstate.py         # GRU + structured SSM with Gaussian intervals (Rangapuram et al., NeurIPS 2018) (142 lines)
+│   ├── patchtst.py          # Channel-independent patch Transformer (Nie et al., ICLR 2023)
+│   └── deepstate.py         # GRU + structured SSM with Gaussian intervals (Rangapuram et al., NeurIPS 2018)
+├── evaluation/
+│   ├── __init__.py          # Exports all metrics + plot functions
+│   ├── metrics.py           # MSE, MAE, RMSE, MAPE, PICP, MPIW, Winkler, CRPS, calibration error
+│   └── plots.py             # Calibration curve, reliability diagram, decomposition, refinement ratio, interval width
 └── data/
     ├── __init__.py          # Exports datasets + get_data_loader
-    ├── dataset.py           # BaseETTDataset + ETT_hour/minute/Custom (219 lines)
-    └── data_loader.py       # Factory for 10 benchmarks (82 lines)
+    ├── dataset.py           # BaseETTDataset + ETT_hour/minute/Custom
+    └── data_loader.py       # Factory for 10 benchmarks
 ```
 
 ## Key Files (Root)
