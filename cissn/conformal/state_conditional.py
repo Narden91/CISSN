@@ -31,7 +31,13 @@ class StateConditionalConformal:
         Args:
             alpha: Significance level (coverage = 1 - alpha)
             n_clusters: Number of state clusters
-            multivariate_strategy: 'per_feature', 'max', or 'mean'
+            multivariate_strategy: How to reduce multivariate residuals to a scalar
+                (or vector) quantile before interval construction. Options:
+                - 'per_feature': compute independent quantiles per output feature
+                - 'max': take the element-wise maximum residual across features
+                - 'mean': take the element-wise mean residual across features
+                - 'mahalanobis': fit a per-cluster covariance; use Mahalanobis
+                  distance as the scalar score, then back-project to per-feature widths
             random_state: Seed for KMeans reproducibility.
             correct_acf: If True, inflate cluster quantiles when within-cluster
                 ACF(1) exceeds 0.3 to compensate for reduced effective sample size (Theorem 1b).

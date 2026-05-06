@@ -368,7 +368,7 @@ def adjust_learning_rate(optimizer, epoch, args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CISSN Benchmark Runner')
 
-    parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset name')
+    parser.add_argument('--data', type=str, default='ETTh1', help='dataset name')
     parser.add_argument('--root_path', type=str, default='./data/ETT/', help='data root directory')
     parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data filename')
     parser.add_argument('--features', type=str, default='M', help='forecasting task [M, S, MS]')

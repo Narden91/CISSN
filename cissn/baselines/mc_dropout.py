@@ -29,7 +29,8 @@ class MCDropout:
         # z-score for Gaussian interval at coverage 1-alpha
         from scipy.stats import norm
         self.z_score = norm.ppf(1 - alpha / 2)
-        self.calibrated = True
+        # MC Dropout does not require a held-out calibration set.
+        self.requires_calibration = False
 
     @staticmethod
     def _enable_dropout(model: nn.Module):

@@ -7,7 +7,6 @@ empirical variance of their predictions to construct intervals.
 Reference: Lakshminarayanan et al., "Simple and Scalable Predictive Uncertainty", NeurIPS 2017.
 """
 import torch
-import numpy as np
 from typing import List, Tuple
 from scipy.stats import norm
 
@@ -25,7 +24,8 @@ class DeepEnsemble:
         """
         self.alpha = alpha
         self.z_score = norm.ppf(1 - alpha / 2)
-        self.calibrated = True
+        # Deep Ensemble does not require a held-out calibration set.
+        self.requires_calibration = False
 
     def predict(
         self,
