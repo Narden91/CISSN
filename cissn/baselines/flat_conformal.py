@@ -5,9 +5,12 @@ Uses the same CISSN encoder and forecast head, but applies a single global
 quantile (no state clustering) for interval construction. This isolates the
 contribution of state-conditioning in SCCP.
 """
+import logging
 import numpy as np
 import torch
 from typing import Union, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class FlatConformal:
@@ -38,7 +41,7 @@ class FlatConformal:
         q_level = min(q_level, 1.0)
         self.quantile_ = float(np.quantile(residuals, q_level, method='higher'))
         self.calibrated = True
-        print(f"Flat CP calibration: q={self.quantile_:.4f}, n={n}, alpha={self.alpha}")
+        logger.info("Flat CP calibration: q=%.4f, n=%d, alpha=%s", self.quantile_, n, self.alpha)
 
     def predict(
         self,

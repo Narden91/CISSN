@@ -231,8 +231,12 @@ class Experiment:
         test_data, test_loader = self._get_data(flag='test')
 
         path = os.path.join(self.args.checkpoints, setting)
-        self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device))
-        self.head.load_state_dict(torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device))
+        self.model.load_state_dict(
+            torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device, weights_only=True)
+        )
+        self.head.load_state_dict(
+            torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device, weights_only=True)
+        )
 
         preds = []
         trues = []
@@ -243,8 +247,19 @@ class Experiment:
 
         with torch.no_grad():
             if getattr(self.args, 'walk_forward', False):
+                n_windows = len(test_data)
+                n_covered = (n_windows // self.args.pred_len) * self.args.pred_len
+                if n_covered < n_windows:
+                    import warnings as _warn
+                    _warn.warn(
+                        f"Walk-forward evaluation: {n_windows - n_covered} of {n_windows} "
+                        f"trailing test samples are dropped because {n_windows} is not "
+                        f"divisible by pred_len={self.args.pred_len}.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 print("Running walk-forward rolling window evaluation...")
-                for i in range(0, len(test_data), self.args.pred_len):
+                for i in range(0, n_covered, self.args.pred_len):
                     bx, by, bxm, bym = test_data[i]
                     batch_x = torch.from_numpy(bx).unsqueeze(0)
                     batch_y = torch.from_numpy(by).unsqueeze(0)

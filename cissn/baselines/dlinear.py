@@ -39,17 +39,20 @@ class DLinear(nn.Module):
             x: (batch, seq_len, input_dim)
 
         Returns:
-            forecast: (batch, pred_len, output_dim) — last output_dim channels
+            forecast: (batch, pred_len, output_dim)
         """
-        x = x[:, :, -1:]  # (B, L, 1) — use last feature for univariate
-        x = x.permute(0, 2, 1)  # (B, 1, L)
+        # Channel-independent: process every variate with the same linear layers.
+        # x: (B, L, D) → permute → (B, D, L) for AvgPool1d, then back.
+        x = x.permute(0, 2, 1)                         # (B, D, L)
 
-        trend = self.decompose(x)
+        trend = self.decompose(x)                       # (B, D, L)  (padding keeps length)
         residual = x - trend
 
-        trend_out = self.linear_trend(trend).permute(0, 2, 1)   # (B, pred_len, 1)
-        residual_out = self.linear_residual(residual).permute(0, 2, 1)
-        return trend_out + residual_out
+        trend_out = self.linear_trend(trend)            # (B, D, pred_len)
+        residual_out = self.linear_residual(residual)   # (B, D, pred_len)
+
+        out = trend_out + residual_out                  # (B, D, pred_len)
+        return out.permute(0, 2, 1)                     # (B, pred_len, D)
 
     def get_contributions(self, state=None) -> dict:
         """DLinear has no interpretable state; returns empty dict."""

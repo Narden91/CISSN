@@ -9,13 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from cissn.constants import STRUCTURED_STATE_DIM
+
 
 class DisentangledStateEncoder(nn.Module):
     """
     Maps sequences to a 5-dimensional structural latent state with constrained dynamics.
     """
 
-    STRUCTURED_STATE_DIM = 5
+    STRUCTURED_STATE_DIM = STRUCTURED_STATE_DIM
 
     def __init__(
         self,

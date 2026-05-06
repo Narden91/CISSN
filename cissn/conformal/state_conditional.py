@@ -1,3 +1,4 @@
+import logging
 import warnings
 
 import torch
@@ -5,6 +6,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from typing import Union, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class StateConditionalConformal:
@@ -223,11 +226,12 @@ class StateConditionalConformal:
             for k in empty_clusters:
                 self.quantiles[k] = fallback_quantile
 
-        print(
-            f"SCCP calibration: {n_clusters} clusters, "
-            f"sizes={dict(self.cluster_sizes_)}, "
-            f"alpha={self.alpha}"
-            + (f", acf_corrections={dict(self.acf_corrections_)}" if self.acf_corrections_ else "")
+        logger.info(
+            "SCCP calibration: %d clusters, sizes=%s, alpha=%s%s",
+            n_clusters,
+            dict(self.cluster_sizes_),
+            self.alpha,
+            f", acf_corrections={dict(self.acf_corrections_)}" if self.acf_corrections_ else "",
         )
         self.calibrated = True
 
@@ -278,6 +282,9 @@ class StateConditionalConformal:
         """
         states = self._validate_states(self._to_numpy(states, "states"))
         residuals = self._to_numpy(residuals, "residuals")
+        # Reduce residuals the same way fit() does so ACF values are comparable.
+        n_samples = states.shape[0]
+        residuals, _ = self._prepare_residuals(residuals, n_samples)
         cluster_labels = self.kmeans.predict(self.scaler.transform(states))
 
         results = {}

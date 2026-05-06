@@ -1,8 +1,11 @@
+import logging
 import torch
 from torch.utils.data import DataLoader
 from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom
 from typing import Tuple, Union, Any, Dict
 from types import SimpleNamespace
+
+logger = logging.getLogger(__name__)
 
 _DATA_REGISTRY: dict = {
     'ETTh1':         (Dataset_ETT_hour,   'h'),
@@ -79,7 +82,7 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
             f"Training split contains only {dataset_length} samples, which is smaller than batch_size={batch_size}."
         )
     
-    print(f'{flag}: {dataset_length}')
+    logger.debug("%s split: %d samples", flag, dataset_length)
     
     data_loader = DataLoader(
         data_set,

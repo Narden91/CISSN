@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from cissn.constants import STRUCTURED_STATE_DIM
+
 
 class DisentanglementLoss(nn.Module):
     """
@@ -13,7 +15,7 @@ class DisentanglementLoss(nn.Module):
     Expects a 5-dimensional structured state (level, trend, seasonal pair, residual).
     """
 
-    EXPECTED_STATE_DIM = 5
+    STRUCTURED_STATE_DIM = STRUCTURED_STATE_DIM
 
     def __init__(self, lambda_cov: float = 1.0, lambda_temporal: float = 0.5):
         super().__init__()
@@ -21,8 +23,8 @@ class DisentanglementLoss(nn.Module):
         self.lambda_temporal = lambda_temporal
         self.register_buffer(
             "off_diag_mask",
-            torch.ones(self.EXPECTED_STATE_DIM, self.EXPECTED_STATE_DIM)
-            - torch.eye(self.EXPECTED_STATE_DIM),
+            torch.ones(self.STRUCTURED_STATE_DIM, self.STRUCTURED_STATE_DIM)
+            - torch.eye(self.STRUCTURED_STATE_DIM),
         )
 
     def covariance_loss(self, states: torch.Tensor) -> torch.Tensor:
@@ -43,7 +45,7 @@ class DisentanglementLoss(nn.Module):
 
         cov = torch.mm(centered.t(), centered) / (n - 1)
 
-        if state_dim == self.EXPECTED_STATE_DIM:
+        if state_dim == self.STRUCTURED_STATE_DIM:
             off_diag_mask = self.off_diag_mask
         else:
             off_diag_mask = (
@@ -103,9 +105,9 @@ class DisentanglementLoss(nn.Module):
             states: (batch, seq_len, state_dim) with state_dim == 5
             dynamics: (tuple, optional) structural dynamics scales from the encoder
         """
-        if states.shape[-1] != self.EXPECTED_STATE_DIM:
+        if states.shape[-1] != self.STRUCTURED_STATE_DIM:
             raise ValueError(
-                f"DisentanglementLoss expects state_dim={self.EXPECTED_STATE_DIM}; got {states.shape[-1]}."
+                f"DisentanglementLoss expects state_dim={self.STRUCTURED_STATE_DIM}; got {states.shape[-1]}."
             )
         return self.lambda_cov * self.covariance_loss(states) + self.lambda_temporal * self.temporal_consistency_loss(
             states, dynamics

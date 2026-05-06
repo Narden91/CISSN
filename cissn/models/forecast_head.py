@@ -7,13 +7,15 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
+from cissn.constants import STRUCTURED_STATE_DIM
+
 
 class ForecastHead(nn.Module):
     """
     Predicts multi-horizon outputs from final state: linear (interpretable) + MLP refinement.
     """
 
-    STRUCTURED_STATE_DIM = 5
+    STRUCTURED_STATE_DIM = STRUCTURED_STATE_DIM
 
     def __init__(
         self,
