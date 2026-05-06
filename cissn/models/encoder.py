@@ -10,9 +10,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cissn.constants import STRUCTURED_STATE_DIM
+from cissn.models._dynamics import StructuredDecayMixin
 
 
-class DisentangledStateEncoder(nn.Module):
+class DisentangledStateEncoder(StructuredDecayMixin):
     """
     Maps sequences to a 5-dimensional structural latent state with constrained dynamics.
     """
@@ -48,27 +49,10 @@ class DisentangledStateEncoder(nn.Module):
             nn.utils.spectral_norm(nn.Linear(hidden_dim, state_dim)),
         )
         self.raw_correction_scale = nn.Parameter(torch.tensor(-4.6))  # softplus⁻¹(0.01)
-
-        self.raw_alpha_L = nn.Parameter(torch.zeros(1))
-        self.raw_alpha_T = nn.Parameter(torch.zeros(1))
-        self.raw_gamma = nn.Parameter(torch.zeros(1))
-        self.raw_alpha_R = nn.Parameter(torch.zeros(1))
-        self.omega = nn.Parameter(torch.zeros(1))
+        self._register_decay_params(n_dims=1, include_residual=True)
 
         if sys.platform != 'win32' and hasattr(torch, 'compile'):
             self._run_sequence = torch.compile(self._run_sequence)
-
-    def _level_scale(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_alpha_L) * 0.15 + 0.85
-
-    def _trend_scale(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_alpha_T) * 0.25 + 0.70
-
-    def _gamma(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_gamma) * 0.20 + 0.80
-
-    def _residual_scale(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_alpha_R) * 0.40
 
     def _correction_scale(self) -> torch.Tensor:
         return F.softplus(self.raw_correction_scale)

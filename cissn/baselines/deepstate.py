@@ -17,8 +17,10 @@ import torch
 import torch.nn as nn
 from typing import Tuple, Optional
 
+from cissn.models._dynamics import StructuredDecayMixin
 
-class DeepState(nn.Module):
+
+class DeepState(StructuredDecayMixin):
     """
     GRU encoder + structured linear state decoder.
 
@@ -72,10 +74,9 @@ class DeepState(nn.Module):
         self.C = nn.Parameter(torch.randn(output_dim, self.STATE_DIM) * 0.02)
 
         # Structured transition: learn decay rates for each state component
-        self.raw_level_decay = nn.Parameter(torch.zeros(output_dim))
-        self.raw_trend_decay = nn.Parameter(torch.zeros(output_dim))
-        self.raw_gamma = nn.Parameter(torch.zeros(output_dim))
-        self.omega = nn.Parameter(torch.zeros(output_dim))
+        # (uses StructuredDecayMixin, which registers raw_alpha_L, raw_alpha_T,
+        # raw_gamma, and omega; no residual component in this 4-state model)
+        self._register_decay_params(n_dims=output_dim, include_residual=False)
 
         # Per-step log noise variance decoded from encoder
         self.log_sigma_proj = nn.Linear(hidden_dim, output_dim)
@@ -86,19 +87,10 @@ class DeepState(nn.Module):
         nn.init.xavier_uniform_(self.C)
         nn.init.zeros_(self.log_sigma_proj.bias)
 
-    def _level_decay(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_level_decay) * 0.15 + 0.85
-
-    def _trend_decay(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_trend_decay) * 0.25 + 0.70
-
-    def _gamma(self) -> torch.Tensor:
-        return torch.sigmoid(self.raw_gamma) * 0.20 + 0.80
-
     def _transition_step(self, s: torch.Tensor) -> torch.Tensor:
         """Apply one step of the block-diagonal transition matrix."""
-        a_l = self._level_decay()
-        a_t = self._trend_decay()
+        a_l = self._level_scale()
+        a_t = self._trend_scale()
         g = self._gamma()
         c, sn = torch.cos(self.omega), torch.sin(self.omega)
         rot00, rot01 = g * c, -g * sn

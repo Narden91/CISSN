@@ -55,9 +55,9 @@ class BaseETTDataset(Dataset):
         self.root_path = root_path
         self.data_path = data_path or self._DEFAULT_DATA_PATH
         self.kwargs = kwargs
-        self.__read_data__()
+        self._read_data()
 
-    def __read_data__(self):
+    def _read_data(self):
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
         if "date" not in df_raw.columns:
@@ -92,6 +92,8 @@ class BaseETTDataset(Dataset):
         else:
             data = df_data.values
 
+        # data_x and data_y slice the same array.  They are kept separate so
+        # that future subclasses can override one (e.g. multi-target setups).
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 

@@ -93,6 +93,16 @@ class StateConditionalConformal:
         return residuals, tuple(residuals.shape[1:])
 
     @staticmethod
+    def _compute_acf_correction(rho: float, n_k: int) -> float:
+        """Compute ACF(1)-based quantile inflation factor (Theorem 1b).
+
+        Returns a multiplicative correction > 1 when |rho| > 0.3, accounting
+        for the reduced effective sample size under AR(1) dependence.
+        """
+        se_inflation = max(0.0, float(np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho)))) - 1.0)
+        return 1.0 + se_inflation / np.sqrt(n_k)
+
+    @staticmethod
     def _compute_quantile(residuals: np.ndarray, q_level: float):
         return np.quantile(residuals, q_level, axis=0, method="higher")
 
@@ -197,8 +207,7 @@ class StateConditionalConformal:
                 if self.correct_acf:
                     rho = self._compute_acf1(distances)
                     if rho is not None and abs(rho) > 0.3:
-                        se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
-                        f_correction = 1.0 + se_inflation / np.sqrt(n_k)
+                        f_correction = self._compute_acf_correction(rho, n_k)
                         bounds = bounds * f_correction
                         self.acf_corrections_[k] = f_correction
                 
@@ -210,8 +219,7 @@ class StateConditionalConformal:
                 if self.correct_acf:
                     rho = self._compute_acf1(cluster_residuals)
                     if rho is not None and abs(rho) > 0.3:
-                        se_inflation = max(0.0, np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho))) - 1.0)
-                        f_correction = 1.0 + se_inflation / np.sqrt(n_k)
+                        f_correction = self._compute_acf_correction(rho, n_k)
                         q_k = q_k * f_correction
                         self.acf_corrections_[k] = f_correction
 

@@ -44,15 +44,7 @@ class DisentanglementLoss(nn.Module):
             return torch.tensor(0.0, device=states.device)
 
         cov = torch.mm(centered.t(), centered) / (n - 1)
-
-        if state_dim == self.STRUCTURED_STATE_DIM:
-            off_diag_mask = self.off_diag_mask
-        else:
-            off_diag_mask = (
-                torch.ones(state_dim, state_dim, device=states.device, dtype=states.dtype)
-                - torch.eye(state_dim, device=states.device, dtype=states.dtype)
-            )
-
+        off_diag_mask = self.off_diag_mask
         return torch.norm(cov * off_diag_mask, p="fro") ** 2
 
     def temporal_consistency_loss(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:

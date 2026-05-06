@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,8 +13,10 @@ from cissn.models.forecast_head import ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
+from cissn.utils import EarlyStopping
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
+    mean_absolute_percentage_error,
     compute_picp, compute_mpiw, winkler_score,
 )
 
@@ -250,8 +253,7 @@ class Experiment:
                 n_windows = len(test_data)
                 n_covered = (n_windows // self.args.pred_len) * self.args.pred_len
                 if n_covered < n_windows:
-                    import warnings as _warn
-                    _warn.warn(
+                    warnings.warn(
                         f"Walk-forward evaluation: {n_windows - n_covered} of {n_windows} "
                         f"trailing test samples are dropped because {n_windows} is not "
                         f"divisible by pred_len={self.args.pred_len}.",
@@ -281,7 +283,7 @@ class Experiment:
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
         rmse = np.sqrt(mse)
-        mape = np.mean(np.abs((trues.flatten() - preds.flatten()) / np.maximum(np.abs(trues.flatten()), 1e-8))) * 100
+        mape = mean_absolute_percentage_error(trues.flatten(), preds.flatten())
 
         coverage = None
         mean_width = None
@@ -326,55 +328,42 @@ class Experiment:
 
         return
 
-class EarlyStopping:
-    def __init__(self, patience=7, verbose=False, delta=0):
-        self.patience = patience
-        self.verbose = verbose
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.val_loss_min = np.inf
-        self.delta = delta
-
-    def __call__(self, val_loss, model, head, path):
-        score = -val_loss
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model, head, path)
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model, head, path)
-            self.counter = 0
-
-    def save_checkpoint(self, val_loss, model, head, path):
-        if self.verbose:
-            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), os.path.join(path, 'checkpoint.pth'))
-        torch.save(head.state_dict(), os.path.join(path, 'checkpoint_head.pth'))
-        self.val_loss_min = val_loss
 
 def adjust_learning_rate(optimizer, epoch, args):
-    lr_adjust = {}
+    """Adjust learning rate according to the chosen schedule.
+
+    Supported policies (--lradj):
+        type1   — halve LR every epoch: lr * 0.5^(epoch-1)
+        type2   — fixed milestone schedule (hardcoded for up to 20 epochs)
+        cosine  — cosine annealing over train_epochs; requires args.train_epochs
+    """
     if args.lradj == 'type1':
-        lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
+        lr = args.learning_rate * (0.5 ** ((epoch - 1) // 1))
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        print(f'Updating learning rate to {lr}')
     elif args.lradj == 'type2':
         lr_adjust = {
             2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6,
-            10: 5e-7, 15: 1e-7, 20: 5e-8
+            10: 5e-7, 15: 1e-7, 20: 5e-8,
         }
-    else:
-        raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1' or 'type2'.")
-
-    if epoch in lr_adjust.keys():
-        lr = lr_adjust[epoch]
+        if epoch in lr_adjust:
+            lr = lr_adjust[epoch]
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            print(f'Updating learning rate to {lr}')
+    elif args.lradj == 'cosine':
+        # Cosine annealing: smoothly decays to 0 over train_epochs.
+        # eta_min is set to 1% of the initial LR.
+        lr = args.learning_rate * 0.5 * (
+            1.0 + np.cos(np.pi * epoch / args.train_epochs)
+        )
+        lr = max(lr, args.learning_rate * 0.01)  # floor at 1% of initial
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        print('Updating learning rate to {}'.format(lr))
+        print(f'Updating learning rate to {lr:.2e} (cosine, epoch {epoch}/{args.train_epochs})')
+    else:
+        raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1', 'type2', or 'cosine'.")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CISSN Benchmark Runner')
@@ -404,7 +393,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32, help='batch size')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
-    parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2]')
+    parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2, cosine]')
 
     parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
     parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
