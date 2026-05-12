@@ -51,22 +51,31 @@ class MCDropout:
         Args:
             model: CISSN encoder (DisentangledStateEncoder)
             head: CISSN forecast head (ForecastHead)
-            state: Pre-computed final state (batch, state_dim)
+            state: Either raw inputs (batch, seq_len, input_dim) or a
+                pre-computed final state (batch, state_dim)
 
         Returns:
             mean: Mean prediction over N samples
             lower: Mean - z * std
             upper: Mean + z * std
         """
+        model_mode = model.training
+        head_mode = head.training
+        model.eval()
+        head.eval()
+        self._enable_dropout(model)
         self._enable_dropout(head)
         samples = []
         with torch.no_grad():
             for _ in range(self.n_samples):
-                samples.append(head(state))
+                sampled_state = model(state) if state.ndim == 3 else state
+                samples.append(head(sampled_state))
+        model.train(model_mode)
+        head.train(head_mode)
         samples = torch.stack(samples, dim=0)  # (N, B, H, D_out)
         mean = samples.mean(dim=0)
         std = samples.std(dim=0)
-        z = torch.tensor(self.z_score, device=state.device, dtype=state.dtype)
+        z = torch.tensor(self.z_score, device=mean.device, dtype=mean.dtype)
         lower = mean - z * std
         upper = mean + z * std
         return mean, lower, upper
