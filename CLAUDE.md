@@ -15,10 +15,12 @@
 
 ```bash
 uv run examples/demo_cissn.py                                                   # End-to-end demo
-uv run tests/run_tests.py                                                        # Run all 13 tests
+uv run python tests/run_tests.py                                                 # Run all 19 tests
 uv run python benchmark_encoder.py                                               # Encoder throughput benchmark
 uv run python scripts/download_datasets.py                                       # Download ETT/Weather/ILI datasets
 uv run python experiments/run_benchmark.py --data ETTh1 --train_epochs 10       # Train + evaluate CISSN
+uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 24 --train_epochs 1  # Baseline smoke / grid cell
+uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456              # Publication grid driver
 uv run python experiments/run_benchmark.py --data ETTh1 --lradj cosine          # Train with cosine LR schedule
 uv run python experiments/run_benchmark.py --data ETTh1 --walk_forward          # Walk-forward rolling evaluation
 ```
@@ -129,7 +131,8 @@ cissn/
 │   ├── mc_dropout.py        # MC Dropout uncertainty (Gal & Ghahramani, ICML 2016)
 │   ├── deep_ensemble.py     # Deep Ensemble uncertainty (Lakshminarayanan et al., NeurIPS 2017)
 │   ├── patchtst.py          # Channel-independent PatchTST (Nie et al., ICLR 2023)
-│   └── deepstate.py         # GRU + StructuredDecayMixin SSM (Rangapuram et al., NeurIPS 2018)
+│   ├── deepstate.py         # GRU + StructuredDecayMixin SSM (Rangapuram et al., NeurIPS 2018)
+│   └── training.py          # Shared baseline training/evaluation helpers
 ├── evaluation/
 │   ├── __init__.py          # Exports all metrics + plot functions
 │   ├── metrics.py           # MSE, MAE, RMSE, MAPE, PICP, MPIW, Winkler, CRPS, calibration error
@@ -137,7 +140,8 @@ cissn/
 └── data/
     ├── __init__.py          # Exports datasets + get_data_loader
     ├── dataset.py           # BaseETTDataset + ETT_hour/minute/Custom; uses _read_data()
-    └── data_loader.py       # DataLoader factory for 10 benchmarks; logging via logging module
+  ├── data_loader.py       # DataLoader factory for 10 benchmarks; logging via logging module
+  └── registry.py          # Canonical dataset metadata and defaults
 ```
 
 ## Key Files (Root)
@@ -145,7 +149,11 @@ cissn/
 | File | Purpose |
 |------|---------|
 | `pyproject.toml` | Package metadata + all dependencies (including `scipy>=1.10.0`) |
+| `document.md` | Canonical Q1 Journal 1 experiment master plan |
 | `experiments/run_benchmark.py` | Main training + evaluation script; imports EarlyStopping from cissn.utils |
+| `experiments/run_baseline.py` | Unified runner for implemented point and UQ baselines |
+| `experiments/run_multiseed.py` | Multi-seed CISSN grid runner with JSON and raw CSV aggregation |
+| `experiments/run_ablation.py` | Ablation runner for full vs. component-disabled variants |
 | `examples/demo_cissn.py` | End-to-end demo of all components |
 | `benchmark_encoder.py` | Encoder throughput benchmarking (eager vs. torch.compile) |
 | `scripts/download_datasets.py` | Download all benchmark datasets |
@@ -156,9 +164,10 @@ cissn/
 | `tests/test_utils.py` | Conformal predictor contract tests |
 | `architecture/architecture_and_flow.md` | Detailed architecture documentation |
 | `architecture/publication_strategy.md` | Target venues, baselines, experimental plan |
+| `docs/cissn_intuition.md` | Intuition-first explanation of the model |
 | `docs/cissn_technical_specification.md` | Full theoretical spec + pseudocode |
 | `docs/flow_diagram.md` | Mermaid architecture diagram |
-| `manuscript/README.md` | Paper outline + IMRaD structure + TODO checklist |
+| `manuscript/README.md` | Paper outline + writing gates |
 
 ## Conventions
 
@@ -182,9 +191,9 @@ cissn/
 
 ## Testing
 
-13 tests in 4 files, all passing:
+19 tests in 4 files, all passing:
 
 - `test_model.py` (4 tests): Encoder/head shapes, integration
-- `test_components.py` (2 tests): Explainer structure, dataset inheritance
-- `test_training.py` (4 tests): DataLoader policies, split validation, partial batches, variable batch concatenation
-- `test_utils.py` (3 tests): Conformal scalar/per-feature broadcast, incompatible shape rejection
+- `test_components.py` (4 tests): Explainer structure, dataset inheritance, Solar loader behavior, MS target ordering
+- `test_training.py` (5 tests): DataLoader policies, split validation, no test access during train, partial batches, variable batch concatenation
+- `test_utils.py` (6 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection

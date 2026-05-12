@@ -72,7 +72,12 @@ uv run examples/demo_cissn.py
 
 Run a benchmark experiment:
 ```bash
-uv run experiments/run_benchmark.py --data ETTh1 --train_epochs 10 --seed 42
+uv run python experiments/run_benchmark.py --data ETTh1 --train_epochs 10 --seed 42
+```
+
+Run a baseline experiment:
+```bash
+uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 24 --train_epochs 1 --seed 42
 ```
 
 ---
@@ -142,7 +147,7 @@ uv run scripts/download_datasets.py
 
 ## Baselines
 
-All six comparison models are implemented in `cissn/baselines/` and share the same `forward(x)` interface:
+All six comparison models are implemented in `cissn/baselines/`. The unified baseline runner lives in `experiments/run_baseline.py` for `dlinear`, `patchtst`, `deepstate`, `mc_dropout`, and `deep_ensemble`, while `flat_cp` is exercised through the ablation runner.
 
 | Baseline | Reference | Key idea |
 |----------|-----------|----------|
@@ -176,13 +181,13 @@ cissn/              # Package
 ├── baselines/      # DLinear, FlatConformal, MCDropout, DeepEnsemble, PatchTST, DeepState
 └── data/           # BaseETTDataset, data loader factory
 
-experiments/        # Benchmark runner + experiment plan
+experiments/        # Benchmark, baseline, multi-seed, and ablation runners
 examples/           # Demo script
-tests/              # 13 unit tests (4 test files)
+tests/              # 19 unit tests (4 test files)
 scripts/            # Dataset download utility
 docs/               # Technical specification, flow diagram, datasets info
 architecture/       # Architecture documentation, publication strategy
-manuscript/         # Paper outline (IMRaD) + experiment checklist
+manuscript/         # Paper outline and writing gates
 ```
 
 ---
@@ -190,10 +195,10 @@ manuscript/         # Paper outline (IMRaD) + experiment checklist
 ## Testing
 
 ```bash
-uv run tests/run_tests.py     # 13 tests, all passing
+uv run python tests/run_tests.py     # 19 tests, all passing
 ```
 
-Tests cover: encoder/head shapes and integration, ForecastExplainer structure, dataset inheritance, DataLoader evaluation policies, split validation, partial batches, conformal predictor scalar/per-feature broadcast, and incompatible shape rejection.
+Tests cover: encoder/head shapes and integration, ForecastExplainer structure, dataset inheritance, MS target ordering, Solar loader behavior, DataLoader evaluation policies, split validation, partial batches, train/test protocol separation, variable batch concatenation, and conformal predictor contracts.
 
 ---
 
@@ -201,13 +206,14 @@ Tests cover: encoder/head shapes and integration, ForecastExplainer structure, d
 
 | Document | Contents |
 |----------|----------|
-| `document.md` | Intuition and how CISSN works |
+| `document.md` | Canonical Q1 Journal 1 experiment master plan |
+| `docs/cissn_intuition.md` | Intuition-first overview of how CISSN works |
 | `CLAUDE.md` | Complete repository reference for AI assistants |
 | `architecture/architecture_and_flow.md` | Detailed architecture with formulas |
 | `architecture/publication_strategy.md` | Target venues, baselines, ablation plan |
 | `docs/cissn_technical_specification.md` | Full theoretical specification + pseudocode |
 | `docs/flow_diagram.md` | Mermaid architecture diagram |
-| `manuscript/README.md` | Paper outline + experiment TODO checklist |
+| `manuscript/README.md` | Paper outline + writing gates |
 
 ---
 

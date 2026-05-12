@@ -4,6 +4,8 @@
 
 Prepare CISSN for defensible experiments and publication by fixing protocol validity first, then hardening data, conformal calibration, experiment orchestration, artifacts, tests, and publication claims.
 
+The canonical execution plan for the first Q1 journal submission now lives in `document.md`. This file is kept as the repo-readiness summary rather than the runnable experiment checklist.
+
 Current baseline confirmed before implementation:
 - Existing 13 unit tests passed.
 - All benchmark files were present.
@@ -38,14 +40,15 @@ Current baseline confirmed before implementation:
 - Fixed multi-seed orchestration to avoid run overwrites and emit JSON plus raw CSV aggregation.
 - Fixed ablation toggles so 5D `no_structured_A` and `no_correction_mlp` actually change the encoder.
 - Added shared baseline training/evaluation helpers for parity across baselines.
+- Added `experiments/run_baseline.py` for `dlinear`, `patchtst`, `deepstate`, `mc_dropout`, and `deep_ensemble`, with smoke-validated artifact parity.
 - Revised publication-facing claims so coverage assumptions, ACF limitations, and unimplemented soft fallback are no longer overstated.
 
 ## Remaining Publication Work
 
+- Execute the locked Q1 journal experiment grids in `document.md`.
 - Run full smoke, pilot, and benchmark grids after tests pass.
 - Add table-generation scripts for main results, ablations, and calibration results.
 - Generate analysis figures: state PCA/t-SNE, reliability curves, interval width vs. state, contribution heatmaps, and runtime scaling.
-- Extend baselines beyond the shared helper layer into a fully automated baseline runner.
 - Validate the revised theory empirically: cluster-size sensitivity, ACF sensitivity, distribution shift, noise robustness, and missing-data robustness.
 - Add a reproducibility appendix with exact commands, configs, seed list, hardware, raw result paths, and environment snapshots.
 

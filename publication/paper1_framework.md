@@ -5,13 +5,15 @@
 | Field | Value |
 |-------|-------|
 | **Working Title** | Conformal Inference via State-Conditional Disentangled State-Space Networks for Time-Series Forecasting |
-| **Target Venues** | ICML 2026 (primary) → AISTATS 2026 → NeurIPS 2026 → JMLR (journal fallback) |
-| **Deadline** | ICML 2026: ~January 2026; AISTATS 2026: ~October 2025 |
+| **Target Venue** | First Q1 journal submission (primary); conference derivatives optional |
+| **Deadline** | Rolling journal submission window |
 | **Focus** | Theory-first: conditional coverage analysis, structured dynamics analysis, rigorous ablation |
-| **Target Length** | 8 pages ICML style + appendix for proofs |
-| **Status** | In preparation — codebase ready, baselines + proofs needed |
+| **Target Length** | Full journal manuscript + appendix for proofs |
+| **Status** | In preparation — executable core ready; full publication grids pending |
 
 ---
+
+Executable experiment source of truth: `../document.md`.
 
 ## Research Hypotheses
 
