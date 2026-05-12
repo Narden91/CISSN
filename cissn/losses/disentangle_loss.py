@@ -10,7 +10,8 @@ class DisentanglementLoss(nn.Module):
 
     Components:
     1. Covariance regularization (independence)
-    2. Temporal consistency (slow vs fast dynamics)
+    2. Temporal behavior regularization (smooth level/trend, stable seasonal radius,
+       low-autocorrelation residual)
 
     Expects a 5-dimensional structured state (level, trend, seasonal pair, residual).
     """
@@ -49,30 +50,16 @@ class DisentanglementLoss(nn.Module):
 
     def temporal_consistency_loss(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:
         """
-        Encourage appropriate temporal dynamics per dimension.
+        Encourage appropriate temporal behavior per component.
 
-        If dynamics (from DisentangledStateEncoder) is provided, penalizes
-        deviation from expected structural transitions. Otherwise, uses
-        simple finite differences.
+        The encoder transition includes both input innovation and a bounded
+        correction term, so this loss deliberately avoids penalizing deviation
+        from A @ s_prev directly. That direct penalty conflicts with legitimate
+        input-driven state changes.
         """
         if states.shape[1] < 2:
             return torch.tensor(0.0, device=states.device)
 
-        if dynamics is not None:
-            a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
-            s_prev = states[:, :-1, :]
-            s_curr = states[:, 1:, :]
-
-            level_loss = torch.mean((s_curr[:, :, 0] - s_prev[:, :, 0] * a_l) ** 2)
-            trend_loss = torch.mean((s_curr[:, :, 1] - s_prev[:, :, 1] * a_t) ** 2)
-            seasonal_loss = torch.mean(
-                (s_curr[:, :, 2] - (s_prev[:, :, 2] * rot00 + s_prev[:, :, 3] * rot10)) ** 2
-                + (s_curr[:, :, 3] - (s_prev[:, :, 2] * rot01 + s_prev[:, :, 3] * rot11)) ** 2
-            ) * 0.1
-            residual_loss = torch.mean(states[:, :, 4] ** 2)
-            return level_loss + trend_loss + seasonal_loss + residual_loss
-
-        # Fallback: finite differences
         diffs = states[:, 1:, :] - states[:, :-1, :]
         level_loss = torch.mean(diffs[:, :, 0] ** 2)
 
@@ -86,7 +73,14 @@ class DisentanglementLoss(nn.Module):
         mag_diff = seasonal_mag[:, 1:] - seasonal_mag[:, :-1]
         seasonal_loss = torch.mean(mag_diff ** 2) * 0.1
 
-        residual_loss = torch.mean(states[:, :, 4] ** 2)
+        residual = states[:, :, 4]
+        residual = residual - residual.mean(dim=1, keepdim=True)
+        if residual.shape[1] > 1:
+            residual_num = torch.mean(residual[:, 1:] * residual[:, :-1], dim=1)
+            residual_den = torch.mean(residual[:, 1:] ** 2 + residual[:, :-1] ** 2, dim=1).clamp_min(1e-8)
+            residual_loss = torch.mean((2.0 * residual_num / residual_den) ** 2)
+        else:
+            residual_loss = torch.tensor(0.0, device=states.device)
         return level_loss + trend_loss + seasonal_loss + residual_loss
 
     def forward(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:
@@ -116,7 +110,7 @@ class DisentanglementLoss(nn.Module):
             dict with mean_abs_off_diag_corr and per_dim_variance.
         """
         flat = states.reshape(-1, states.shape[-1])
-        corr = torch.corrcoef(flat.T)
+        corr = torch.nan_to_num(torch.corrcoef(flat.T), nan=0.0, posinf=0.0, neginf=0.0)
         eye = torch.eye(corr.shape[0], device=corr.device, dtype=corr.dtype)
         off_diag_abs = (corr * (1 - eye)).abs()
         return {

@@ -2,23 +2,157 @@ import os
 import sys
 import random
 import warnings
+import json
+import platform
+import subprocess
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import argparse
 import time
+from pathlib import Path
+from typing import Optional
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
+from cissn.data.registry import get_dataset_spec, supported_datasets
 from cissn.utils import EarlyStopping
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     mean_absolute_percentage_error,
     compute_picp, compute_mpiw, winkler_score,
+    calibration_error,
 )
+
+
+def _format_float_token(value: float) -> str:
+    return f"{value:g}".replace("-", "m").replace(".", "p")
+
+
+def build_setting_name(args) -> str:
+    return (
+        f"CISSN_{args.data}_{args.features}"
+        f"_sl{args.seq_len}_pl{args.pred_len}_sd{args.state_dim}_dm{args.d_model}"
+        f"_lc{_format_float_token(args.lambda_cov)}_lt{_format_float_token(args.lambda_temp)}"
+        f"_a{_format_float_token(args.conformal_alpha)}_{args.multivariate_strategy}"
+        f"_seed{args.seed}"
+    )
+
+
+def _json_default(value):
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, torch.device):
+        return str(value)
+    return str(value)
+
+
+def save_json(path, payload: dict) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True, default=_json_default)
+
+
+def load_config_defaults(path: Optional[str]) -> dict:
+    if not path:
+        return {}
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    text = config_path.read_text(encoding="utf-8")
+    if config_path.suffix.lower() == ".json":
+        data = json.loads(text)
+    else:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("YAML configs require PyYAML. Install it or use a JSON config.") from exc
+        data = yaml.safe_load(text) or {}
+    return _flatten_config(data)
+
+
+def _flatten_config(data: dict, prefix: str = "") -> dict:
+    flattened = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            flattened.update(_flatten_config(value, prefix=f"{prefix}{key}."))
+        else:
+            flattened[prefix + key] = value
+    aliases = {
+        "dataset.data": "data",
+        "dataset.root_path": "root_path",
+        "dataset.data_path": "data_path",
+        "dataset.features": "features",
+        "dataset.target": "target",
+        "dataset.freq": "freq",
+        "model.enc_in": "enc_in",
+        "model.c_out": "c_out",
+        "model.d_model": "d_model",
+        "model.state_dim": "state_dim",
+        "model.dropout": "dropout",
+        "training.train_epochs": "train_epochs",
+        "training.seq_len": "seq_len",
+        "training.label_len": "label_len",
+        "training.pred_len": "pred_len",
+        "training.batch_size": "batch_size",
+        "training.learning_rate": "learning_rate",
+        "training.patience": "patience",
+        "training.num_workers": "num_workers",
+        "training.lradj": "lradj",
+        "training.seed": "seed",
+        "training.grad_clip": "grad_clip",
+        "training.lambda_correction_scale": "lambda_correction_scale",
+        "loss.lambda_cov": "lambda_cov",
+        "loss.lambda_temp": "lambda_temp",
+        "conformal.alpha": "conformal_alpha",
+        "conformal.n_clusters": "n_clusters",
+        "conformal.multivariate_strategy": "multivariate_strategy",
+        "paths.checkpoints": "checkpoints",
+        "paths.results_dir": "results_dir",
+    }
+    return {aliases.get(k, k): v for k, v in flattened.items()}
+
+
+def provided_cli_options(argv: list[str]) -> set[str]:
+    options = set()
+    for token in argv:
+        if token.startswith("--"):
+            options.add(token[2:].split("=", 1)[0].replace("-", "_"))
+    return options
+
+
+def apply_dataset_defaults(args, protected_keys: set[str]) -> None:
+    spec = get_dataset_spec(args.data)
+    for key in ("root_path", "data_path", "freq", "target", "enc_in", "c_out"):
+        if key not in protected_keys:
+            setattr(args, key, spec[key])
+
+
+def environment_snapshot(device: torch.device) -> dict:
+    def _git_value(command: list[str]) -> Optional[str]:
+        try:
+            return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL).strip()
+        except Exception:
+            return None
+
+    return {
+        "python": sys.version,
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "numpy": np.__version__,
+        "device": str(device),
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "git_commit": _git_value(["git", "rev-parse", "HEAD"]),
+        "git_dirty": bool(_git_value(["git", "status", "--short"])),
+    }
+
 
 class Experiment:
     def __init__(self, args):
@@ -93,16 +227,33 @@ class Experiment:
             raise RuntimeError(f"No {name} batches were produced.")
         return np.concatenate(batches, axis=0)
 
+    @staticmethod
+    def _coverage_by_cluster(lower, upper, trues, cluster_labels):
+        covered = (trues >= lower) & (trues <= upper)
+        out = {}
+        for k in sorted(set(int(v) for v in cluster_labels.tolist())):
+            mask = cluster_labels == k
+            out[k] = {
+                "n_samples": int(mask.sum()),
+                "coverage": float(covered[mask].mean()),
+                "mean_width": float((upper[mask] - lower[mask]).mean()),
+            }
+        return out
+
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
-        test_data, test_loader = self._get_data(flag='test')
+        cal_data, cal_loader = self._get_data(flag='cal')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
+        self.checkpoint_path = path
+        save_json(Path(path) / "config.json", vars(self.args))
+        save_json(Path(path) / "environment.json", environment_snapshot(self.device))
 
         time_now = time.time()
+        train_start = time.time()
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
@@ -130,9 +281,17 @@ class Experiment:
                 )
 
                 loss = criterion(outputs, batch_y) + disentangle_criterion(states)
+                if self.args.lambda_correction_scale > 0 and hasattr(self.model, "_correction_scale"):
+                    target_scale = torch.tensor(0.01, device=self.device, dtype=outputs.dtype)
+                    loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - target_scale) ** 2
                 train_loss.append(loss.item())
 
                 loss.backward()
+                if self.args.grad_clip and self.args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        list(self.model.parameters()) + list(self.head.parameters()),
+                        max_norm=self.args.grad_clip,
+                    )
                 model_optim.step()
 
                 if (i + 1) % 100 == 0:
@@ -146,12 +305,11 @@ class Experiment:
             print(f"Epoch: {epoch+1} cost time: {time.time()-epoch_time:.2f}")
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_loader, criterion)
-            test_loss = self.vali(test_loader, criterion)
 
             disent_metrics = disentangle_criterion.get_metrics(states)
             refinement_ratio = self.head.get_refinement_ratio(final_state)
 
-            print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f} Test Loss: {test_loss:.7f}")
+            print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}")
             print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")
             print(f"  Refinement ratio: {refinement_ratio:.4f} ({'linear dominates' if refinement_ratio < 0.5 else 'refinement dominates'})")
 
@@ -161,7 +319,6 @@ class Experiment:
                     "epoch": epoch + 1,
                     "train_loss": train_loss,
                     "vali_loss": vali_loss,
-                    "test_loss": test_loss,
                     "lr": model_optim.param_groups[0]['lr'],
                     "disent_off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
                     "refinement_ratio": refinement_ratio,
@@ -174,8 +331,26 @@ class Experiment:
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
-        self._calibrate_conformal(vali_loader)
+        self._load_checkpoint(path)
+        calibration_start = time.time()
+        self._calibrate_conformal(cal_loader, path)
+        self.train_runtime_ = {
+            "train_seconds": time.time() - train_start,
+            "calibration_seconds": time.time() - calibration_start,
+            "train_samples": len(train_data),
+            "validation_samples": len(vali_data),
+            "calibration_samples": len(cal_data),
+        }
+        save_json(Path(path) / "runtime.json", self.train_runtime_)
         return self.model
+
+    def _load_checkpoint(self, path):
+        self.model.load_state_dict(
+            torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device, weights_only=True)
+        )
+        self.head.load_state_dict(
+            torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device, weights_only=True)
+        )
 
     def vali(self, vali_loader, criterion):
         total_loss = 0.0
@@ -194,11 +369,11 @@ class Experiment:
         self.head.train()
         return total_loss / total_weight
 
-    def _calibrate_conformal(self, vali_loader):
-        """Calibrate the StateConditionalConformal predictor on the validation set."""
+    def _calibrate_conformal(self, cal_loader, artifact_dir=None):
+        """Calibrate the StateConditionalConformal predictor on the held-out calibration split."""
         self.conformal = StateConditionalConformal(
-            alpha=0.1,
-            n_clusters=5,
+            alpha=self.args.conformal_alpha,
+            n_clusters=self.args.n_clusters,
             multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
         )
@@ -208,7 +383,7 @@ class Experiment:
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in vali_loader:
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in cal_loader:
                 final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 all_states.append(final_state.detach().cpu())
                 all_residuals.append((outputs - batch_y).abs().detach().cpu())
@@ -216,10 +391,17 @@ class Experiment:
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
         self.conformal.fit(all_states, all_residuals)
-        print("Conformal predictor calibrated on validation set.")
+        print("Conformal predictor calibrated on held-out calibration split.")
+
+        if artifact_dir is not None:
+            np.save(Path(artifact_dir) / "calibration_states.npy", all_states.numpy())
+            np.save(Path(artifact_dir) / "calibration_residuals.npy", all_residuals.numpy())
+            save_json(Path(artifact_dir) / "cluster_stats.json", self.conformal.get_cluster_stats())
 
         # Check exchangeability assumption
         exchange_results = self.conformal.check_exchangeability(all_states, all_residuals)
+        if artifact_dir is not None:
+            save_json(Path(artifact_dir) / "exchangeability.json", exchange_results)
         for k, v in exchange_results.items():
             acf1 = v.get("acf_lag1")
             if acf1 is not None and abs(acf1) > 0.3:
@@ -234,12 +416,8 @@ class Experiment:
         test_data, test_loader = self._get_data(flag='test')
 
         path = os.path.join(self.args.checkpoints, setting)
-        self.model.load_state_dict(
-            torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device, weights_only=True)
-        )
-        self.head.load_state_dict(
-            torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device, weights_only=True)
-        )
+        self._load_checkpoint(path)
+        test_start = time.time()
 
         preds = []
         trues = []
@@ -288,6 +466,9 @@ class Experiment:
         coverage = None
         mean_width = None
         winkler = None
+        calib_err = None
+        cluster_labels = None
+        coverage_by_cluster = {}
         if hasattr(self, 'conformal') and self.conformal.calibrated:
             lower, upper = self.conformal.predict(
                 torch.from_numpy(test_states).float(),
@@ -295,10 +476,16 @@ class Experiment:
             )
             lower_np = lower.numpy()
             upper_np = upper.numpy()
+            cluster_labels = self.conformal.last_predicted_clusters_
             coverage = compute_picp(lower_np, upper_np, trues)
             mean_width = compute_mpiw(lower_np, upper_np)
-            winkler = winkler_score(lower_np, upper_np, trues, alpha=0.1)
-            print(f'Coverage@90%: {coverage:.4f}, MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}')
+            winkler = winkler_score(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
+            calib_err = calibration_error(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
+            coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
+            print(
+                f'Coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%: {coverage:.4f}, '
+                f'MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}'
+            )
         else:
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
@@ -314,17 +501,47 @@ class Experiment:
                 "test_mean_width": mean_width if mean_width is not None else 0.0,
             })
 
-        folder_path = './results/' + setting + '/'
-        os.makedirs(folder_path, exist_ok=True)
+        folder_path = Path(self.args.results_dir) / setting
+        folder_path.mkdir(parents=True, exist_ok=True)
 
-        np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape]))
-        np.save(folder_path + 'conformal.npy', np.array([coverage if coverage is not None else -1,
+        point_metrics = {"mae": mae, "mse": mse, "rmse": rmse, "mape": mape}
+        interval_metrics = {
+            "coverage": coverage if coverage is not None else None,
+            "mean_width": mean_width if mean_width is not None else None,
+            "winkler": winkler if winkler is not None else None,
+            "calibration_error": calib_err if calib_err is not None else None,
+            "alpha": self.args.conformal_alpha,
+            "coverage_scope": getattr(self.conformal, "coverage_scope", None) if hasattr(self, "conformal") else None,
+        }
+        metrics_payload = {
+            "setting": setting,
+            "point": point_metrics,
+            "interval": interval_metrics,
+        }
+
+        np.save(folder_path / 'metrics.npy', np.array([mae, mse, rmse, mape]))
+        np.save(folder_path / 'conformal.npy', np.array([coverage if coverage is not None else -1,
                                                           mean_width if mean_width is not None else -1,
                                                           winkler if winkler is not None else -1]))
-        np.save(folder_path + 'pred.npy', preds)
-        np.save(folder_path + 'true.npy', trues)
-        np.save(folder_path + 'lower.npy', lower_np)
-        np.save(folder_path + 'upper.npy', upper_np)
+        np.save(folder_path / 'pred.npy', preds)
+        np.save(folder_path / 'true.npy', trues)
+        np.save(folder_path / 'lower.npy', lower_np)
+        np.save(folder_path / 'upper.npy', upper_np)
+        np.save(folder_path / 'states.npy', test_states)
+        np.save(folder_path / 'residuals.npy', np.abs(preds - trues))
+        if cluster_labels is not None:
+            np.save(folder_path / 'cluster_labels.npy', cluster_labels)
+
+        save_json(folder_path / "metrics.json", metrics_payload)
+        save_json(folder_path / "coverage_by_cluster.json", coverage_by_cluster)
+        save_json(folder_path / "config.json", vars(self.args))
+        save_json(folder_path / "environment.json", environment_snapshot(self.device))
+        runtime = dict(getattr(self, "train_runtime_", {}))
+        runtime["test_seconds"] = time.time() - test_start
+        runtime["test_samples"] = len(test_data)
+        save_json(folder_path / "runtime.json", runtime)
+        if hasattr(self, "conformal") and self.conformal.calibrated:
+            save_json(folder_path / "cluster_stats.json", self.conformal.get_cluster_stats())
 
         return
 
@@ -366,15 +583,23 @@ def adjust_learning_rate(optimizer, epoch, args):
         raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1', 'type2', or 'cosine'.")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='CISSN Benchmark Runner')
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument('--config', type=str, default=None, help='YAML/JSON config file')
+    pre_args, _ = pre_parser.parse_known_args()
+    config_defaults = load_config_defaults(pre_args.config)
+    cli_options = provided_cli_options(sys.argv[1:])
 
-    parser.add_argument('--data', type=str, default='ETTh1', help='dataset name')
+    parser = argparse.ArgumentParser(description='CISSN Benchmark Runner', parents=[pre_parser])
+    parser.set_defaults(**config_defaults)
+
+    parser.add_argument('--data', type=str, default='ETTh1', choices=supported_datasets(), help='dataset name')
     parser.add_argument('--root_path', type=str, default='./data/ETT/', help='data root directory')
     parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data filename')
     parser.add_argument('--features', type=str, default='M', help='forecasting task [M, S, MS]')
     parser.add_argument('--target', type=str, default='OT', help='target feature for S/MS tasks')
     parser.add_argument('--freq', type=str, default='h', help='time feature encoding frequency')
     parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='checkpoint directory')
+    parser.add_argument('--results_dir', type=str, default='./results/', help='results directory')
 
     parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
     parser.add_argument('--label_len', type=int, default=48, help='decoder start token length')
@@ -387,6 +612,7 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.05, help='dropout rate')
     parser.add_argument('--lambda_cov', type=float, default=1.0, help='covariance loss weight')
     parser.add_argument('--lambda_temp', type=float, default=0.5, help='temporal consistency loss weight')
+    parser.add_argument('--lambda_correction_scale', type=float, default=0.0, help='penalty weight keeping encoder correction scale near 0.01')
 
     parser.add_argument('--num_workers', type=int, default=0, help='dataloader workers')
     parser.add_argument('--train_epochs', type=int, default=10, help='training epochs')
@@ -394,6 +620,7 @@ if __name__ == '__main__':
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2, cosine]')
+    parser.add_argument('--grad_clip', type=float, default=1.0, help='max gradient norm; <=0 disables clipping')
 
     parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
     parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
@@ -401,9 +628,16 @@ if __name__ == '__main__':
     
     # New arguments for improvements
     parser.add_argument('--walk_forward', action='store_true', help='Enable walk-forward rolling window evaluation')
+    parser.add_argument('--conformal_alpha', type=float, default=0.1, help='conformal significance level')
+    parser.add_argument('--n_clusters', type=int, default=5, help='requested SCCP clusters')
     parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max, mean, mahalanobis]')
 
+    parser.set_defaults(**config_defaults)
     args = parser.parse_args()
+    protected = set(config_defaults) | cli_options
+    apply_dataset_defaults(args, protected)
+    if args.features == 'MS' and 'c_out' not in protected:
+        args.c_out = 1
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -415,13 +649,7 @@ if __name__ == '__main__':
     print('Args in experiment:')
     print(args)
 
-    setting = 'CISSN_{}_{}_sl{}_pl{}_sd{}'.format(
-        args.data,
-        args.features,
-        args.seq_len,
-        args.pred_len,
-        args.state_dim
-    )
+    setting = build_setting_name(args)
     
     if args.use_wandb:
         import wandb

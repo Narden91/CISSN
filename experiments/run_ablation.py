@@ -24,6 +24,7 @@ from cissn.models.forecast_head import ForecastHead
 from cissn.conformal import StateConditionalConformal
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.data.data_loader import get_data_loader
+from cissn.data.registry import get_dataset_spec, supported_datasets
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     compute_picp, compute_mpiw, winkler_score, calibration_error,
@@ -99,7 +100,7 @@ def run_ablation(args, config_key, config):
     state_dim = config["state_dim"]
     hidden_dim = args.d_model
 
-    if state_dim == 5:
+    if state_dim == 5 and config["structured_A"] and config["correction_mlp"]:
         encoder = DisentangledStateEncoder(
             input_dim=input_dim, state_dim=5, hidden_dim=hidden_dim, dropout=args.dropout,
         ).to(device)
@@ -118,6 +119,7 @@ def run_ablation(args, config_key, config):
     # ── Data ────────────────────────────────────────────────────────────────
     _, train_loader = get_data_loader(args, 'train')
     _, vali_loader = get_data_loader(args, 'val')
+    _, cal_loader = get_data_loader(args, 'cal')
     _, test_loader = get_data_loader(args, 'test')
 
     criterion = nn.MSELoss()
@@ -167,7 +169,7 @@ def run_ablation(args, config_key, config):
     encoder.eval()
     head.eval()
     with torch.no_grad():
-        for batch_x, batch_y, _, _ in vali_loader:
+        for batch_x, batch_y, _, _ in cal_loader:
             batch_x = batch_x.float().to(device, non_blocking=True)
             batch_y = batch_y.float().to(device, non_blocking=True)
             final_state = encoder(batch_x)
@@ -182,11 +184,16 @@ def run_ablation(args, config_key, config):
     all_residuals = torch.cat(all_residuals, dim=0)
 
     if config["sccp"]:
-        conformal = StateConditionalConformal(alpha=0.1, n_clusters=5, random_state=args.seed)
+        conformal = StateConditionalConformal(
+            alpha=args.conformal_alpha,
+            n_clusters=args.n_clusters,
+            multivariate_strategy=args.multivariate_strategy,
+            random_state=args.seed,
+        )
         conformal.fit(all_states, all_residuals)
     else:
         from cissn.baselines import FlatConformal
-        conformal = FlatConformal(alpha=0.1)
+        conformal = FlatConformal(alpha=args.conformal_alpha)
         conformal.fit(all_residuals)
 
     # ── Test evaluation ────────────────────────────────────────────────────
@@ -229,8 +236,8 @@ def run_ablation(args, config_key, config):
 
     coverage = compute_picp(lower, upper, trues)
     width = compute_mpiw(lower, upper)
-    winkler = winkler_score(lower, upper, trues, alpha=0.1)
-    calib_err = calibration_error(lower, upper, trues, alpha=0.1)
+    winkler = winkler_score(lower, upper, trues, alpha=args.conformal_alpha)
+    calib_err = calibration_error(lower, upper, trues, alpha=args.conformal_alpha)
 
     result = {
         "config": config_key,
@@ -338,17 +345,17 @@ class DisentangledStateEncoderCustom(nn.Module):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CISSN Ablation Study Runner')
-    parser.add_argument('--data', type=str, default='ETTh1')
-    parser.add_argument('--root_path', type=str, default='./data/ETT/')
-    parser.add_argument('--data_path', type=str, default='ETTh1.csv')
+    parser.add_argument('--data', type=str, default='ETTh1', choices=supported_datasets())
+    parser.add_argument('--root_path', type=str, default=None)
+    parser.add_argument('--data_path', type=str, default=None)
     parser.add_argument('--features', type=str, default='M')
-    parser.add_argument('--target', type=str, default='OT')
-    parser.add_argument('--freq', type=str, default='h')
+    parser.add_argument('--target', type=str, default=None)
+    parser.add_argument('--freq', type=str, default=None)
     parser.add_argument('--seq_len', type=int, default=96)
     parser.add_argument('--label_len', type=int, default=48)
     parser.add_argument('--pred_len', type=int, default=96)
-    parser.add_argument('--enc_in', type=int, default=7)
-    parser.add_argument('--c_out', type=int, default=7)
+    parser.add_argument('--enc_in', type=int, default=None)
+    parser.add_argument('--c_out', type=int, default=None)
     parser.add_argument('--d_model', type=int, default=64)
     parser.add_argument('--dropout', type=float, default=0.05)
     parser.add_argument('--lambda_cov', type=float, default=1.0)
@@ -358,11 +365,20 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--conformal_alpha', type=float, default=0.1)
+    parser.add_argument('--n_clusters', type=int, default=5)
+    parser.add_argument('--multivariate_strategy', type=str, default='per_feature')
     parser.add_argument('--output', type=str, default='./results/ablations.json')
     parser.add_argument('--ablations', type=str, default='all',
                         help='Comma-separated ablation keys, or "all" for all six')
 
     args = parser.parse_args()
+    spec = get_dataset_spec(args.data)
+    for key in ("root_path", "data_path", "freq", "target", "enc_in", "c_out"):
+        if getattr(args, key) is None:
+            setattr(args, key, spec[key])
+    if args.features == "MS" and args.c_out == spec["c_out"]:
+        args.c_out = 1
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

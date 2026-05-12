@@ -4,6 +4,7 @@ Early stopping callback for CISSN training loops.
 Monitors validation loss and saves the best checkpoint whenever it improves.
 """
 import os
+from typing import Optional
 
 import numpy as np
 import torch
@@ -26,7 +27,7 @@ class EarlyStopping:
         self.verbose = verbose
         self.delta = delta
         self.counter = 0
-        self.best_score: float | None = None
+        self.best_score: Optional[float] = None
         self.early_stop = False
         self.val_loss_min = np.inf
 

@@ -7,12 +7,13 @@ refinement ratio visualization, and interval width analysis.
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
+from typing import Optional
 
 
 def calibration_curve(
     empirical_coverages: list[float],
     nominal_alphas: list[float],
-    ax: plt.Axes | None = None,
+    ax: Optional[plt.Axes] = None,
     **kwargs,
 ) -> plt.Axes:
     """
@@ -39,7 +40,7 @@ def calibration_curve(
 def reliability_diagram(
     pincp: list[float],
     bins: int = 10,
-    ax: plt.Axes | None = None,
+    ax: Optional[plt.Axes] = None,
     label: str = 'CISSN',
     **kwargs,
 ) -> plt.Axes:
@@ -76,9 +77,9 @@ def decomposition_plot(
     trend: np.ndarray,
     seasonal: np.ndarray,
     residual: np.ndarray,
-    lower: np.ndarray | None = None,
-    upper: np.ndarray | None = None,
-    ax: plt.Axes | None = None,
+    lower: Optional[np.ndarray] = None,
+    upper: Optional[np.ndarray] = None,
+    ax: Optional[plt.Axes] = None,
     title: str = 'Forecast Decomposition',
     **kwargs,
 ) -> plt.Axes:
@@ -126,7 +127,7 @@ def decomposition_plot(
 def refinement_ratio_plot(
     epochs: list[int],
     refinement_ratios: list[float],
-    ax: plt.Axes | None = None,
+    ax: Optional[plt.Axes] = None,
     prefix: str = 'CISSN',
     **kwargs,
 ) -> plt.Axes:
@@ -148,8 +149,8 @@ def refinement_ratio_plot(
 def interval_width_plot(
     state_norm: np.ndarray,
     interval_width: np.ndarray,
-    cluster_labels: np.ndarray | None = None,
-    ax: plt.Axes | None = None,
+    cluster_labels: Optional[np.ndarray] = None,
+    ax: Optional[plt.Axes] = None,
     **kwargs,
 ) -> plt.Axes:
     """
