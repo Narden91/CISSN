@@ -1,4 +1,5 @@
 import unittest
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -49,6 +50,7 @@ class TestTrainingPipeline(unittest.TestCase):
         with patch.object(Dataset_ETT_hour, '_get_borders', return_value=borders):
             _, train_loader = get_data_loader(args, 'train')
             _, val_loader = get_data_loader(args, 'val')
+            _, cal_loader = get_data_loader(args, 'cal')
             _, test_loader = get_data_loader(args, 'test')
             _, pred_loader = get_data_loader(args, 'pred')
 
@@ -57,6 +59,9 @@ class TestTrainingPipeline(unittest.TestCase):
 
         self.assertFalse(val_loader.drop_last)
         self.assertIsInstance(val_loader.sampler, SequentialSampler)
+
+        self.assertFalse(cal_loader.drop_last)
+        self.assertIsInstance(cal_loader.sampler, SequentialSampler)
 
         self.assertFalse(test_loader.drop_last)
         self.assertIsInstance(test_loader.sampler, SequentialSampler)
@@ -111,6 +116,12 @@ class TestTrainingPipeline(unittest.TestCase):
         self.assertEqual(combined.shape, (3, 1, 1))
         self.assertEqual(combined[0, 0, 0], 0.0)
         self.assertEqual(combined[-1, 0, 0], 1.0)
+
+    def test_train_protocol_does_not_touch_test_split(self):
+        source = inspect.getsource(Experiment.train)
+        self.assertNotIn("_get_data(flag='test')", source)
+        self.assertNotIn("test_loss", source)
+        self.assertIn("_get_data(flag='cal')", source)
 
 
 if __name__ == '__main__':

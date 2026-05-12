@@ -178,7 +178,7 @@ Under covariate shift where $P(\mathbf{y} \mid \mathbf{x})$ is invariant, the pe
 \[
 |\Pbb_{\text{test}}(r_{\text{new}} \leq q_k) - \Pbb_{\text{cal}}(r_{\text{new}} \leq q_k)| \leq \text{TV}(P_{\text{cal}}, P_{\text{test}}).
 \]
-Since $\Pbb_{\text{cal}}(r_{\text{new}} \leq q_k) \geq 1-\alpha$, the bound follows. In practice, the per-cluster coverage degrades only for test samples whose state $\mathbf{s}_{\text{new}}$ lies far from any calibration cluster center — the soft nearest-cluster fallback described below inflates intervals proportionally to this distance.
+Since $\Pbb_{\text{cal}}(r_{\text{new}} \leq q_k) \geq 1-\alpha$, the bound follows under the stated covariate-shift assumptions. In the current implementation, test samples are assigned to the nearest fitted K-Means cluster; no distance-based soft fallback is implemented.
 \end{proof}
 
 \begin{theorem}[Coverage Deficit Under Residual Autocorrelation]\label{thm:autocorrelation}
@@ -208,7 +208,7 @@ When the constructor parameter \texttt{correct\_acf=True} (default), the \texttt
 \[
 q_k = q_k^{\text{base}} \cdot \Big(1 + \frac{\sqrt{(1+|\rho_k|)/(1-|\rho_k|)} - 1}{\sqrt{n_k}}\Big).
 \]
-The correction factors are stored in \texttt{self.acf\_corrections\_} and reported by \texttt{check\_exchangeability()}. This implements the compensation dictated by Theorem~\ref{thm:autocorrelation}: the quantile inflation restores the $1-\alpha$ coverage guarantee by widening intervals proportional to the standard-error inflation from autocorrelation.
+The correction factors are stored in \texttt{self.acf\_corrections\_} and reported by \texttt{check\_exchangeability()}. This implements a conservative ACF-aware inflation heuristic motivated by Theorem~\ref{thm:autocorrelation}; it should be validated empirically rather than presented as an unconditional restoration of the $1-\alpha$ guarantee.
 
 Empirical validation on ETTh1 (hourly, strong seasonality): with $\rho_k \approx 0.80$--$0.87$ across 5 clusters and $n_k \approx 450$--$680$, the correction factors are $1.091$--$1.104$ (~9--10\% quantile inflation), and empirical coverage rises from $0.908$ (uncorrected, at risk of violating the bound) to $0.934$ (corrected, comfortably above $1-\alpha = 0.9$).
 
@@ -267,7 +267,7 @@ Using the GRADE-inspired evidence assessment framework and bias detection protoc
 \subsection*{External Validity (Generalizability)}
 
 \begin{itemize}
-    \item Distribution shift (concept drift, regime change) is bounded by Corollary~\ref{cor:distribution-shift}: coverage degrades by at most $\text{TV}(P_{\text{cal}}, P_{\text{test}})$. For new regimes not seen in calibration, the soft nearest-cluster fallback provides conservative intervals.
+    \item Distribution shift (concept drift, regime change) is bounded by Corollary~\ref{cor:distribution-shift}: coverage degrades by at most $\text{TV}(P_{\text{cal}}, P_{\text{test}})$ under covariate-shift assumptions. New regimes not represented in calibration remain a practical failure mode.
 \end{itemize}
 
 \subsection*{GRADE Downgrade Assessment}
@@ -286,7 +286,7 @@ Publication bias & Not applicable & \\
 \end{tabular}
 \end{center}
 
-\textbf{Overall evidence quality:} HIGH. Lemma~\ref{lem:cluster-exchangeable} resolves the clustering-information-leakage concern. Theorem~\ref{thm:autocorrelation} provides a quantitative bound on coverage loss from temporal dependence. Corollary~\ref{cor:simultaneous} guarantees simultaneous multivariate coverage via the \texttt{max} strategy. Corollary~\ref{cor:distribution-shift} bounds coverage degradation under distribution shift. The remaining limitation is the cluster-size condition (A3), which is enforced by the code's minimum-sample-per-cluster guarantee.
+\textbf{Overall evidence quality:} MODERATE until the full empirical validation suite is complete. Lemma~\ref{lem:cluster-exchangeable} resolves the clustering-information-leakage concern under split independence. Theorem~\ref{thm:autocorrelation} motivates diagnostics for temporal dependence. Corollary~\ref{cor:simultaneous} supports simultaneous multivariate coverage via the \texttt{max} strategy under its assumptions. Remaining limitations are the cluster-size condition (A3), approximate exchangeability in time series, and distribution shift.
 
 % ------------------------------------------------------------------------------
 \section{Theorem 2 — Structured Dynamics Stability}
@@ -414,7 +414,7 @@ Apply spectral normalization (\texttt{nn.utils.spectral\_norm}) to each linear l
 \norm{\frac{\partial \mathbf{s}_t}{\partial \mathbf{s}_{t-1}}}_2 \;\leq\; \norm{A}_2 + \beta \cdot \norm{\operatorname{diag}(1-\tanh^2)}_{2} \cdot \norm{J_{\text{MLP}}}_{2}
 \;\leq\; 1 + \beta.
 \]
-For sequence length $L$, the gradient norm is bounded by $(1+\beta)^L$. With $\beta \leq 0.1$ (enforced by $\beta_{\text{raw}}$ initialization and optional L2 penalty $\lambda_\beta (\beta - \beta_0)^2$), gradients remain well-behaved for practical sequence lengths (e.g., $(1.01)^{720} \approx 1.3\times 10^3$, within float32 range).
+For sequence length $L$, the gradient norm is controlled by the recurrent Jacobian and correction scale. The implementation now supports gradient clipping and optional correction-scale regularization; these engineering controls should be reported alongside any long-horizon stability claims.
 \end{theorem}
 \begin{proof}
 Spectral normalization constrains each linear layer $W$ to satisfy $\norm{W}_2 \leq 1$ (Miyato et al., 2018). For a two-layer MLP with GELU activation (1-Lipschitz), $\norm{J_{\text{MLP}}}_2 \leq \norm{W_2}_2 \cdot \norm{\operatorname{GELU}'}_\infty \cdot \norm{W_1}_2 \leq 1 \cdot 1 \cdot 1 = 1$. The $\tanh$ derivative satisfies $\norm{\operatorname{diag}(1-\tanh^2)}_2 \leq 1$ element-wise. The softplus gate ensures $\beta \geq 0$. Differentiating the recurrence (Definition~\ref{def:transition}):
@@ -450,7 +450,7 @@ This matches the matrix form. Note: the code uses $\gamma\cos\omega$ and $\gamma
 
 \subsection*{Correction Boundedness and Gradient Stability}
 
-The correction term at line~100 clips the MLP output via $\tanh$ and scales by $\beta = \texttt{softplus}(\beta_{\text{raw}})$ (initialized to yield $\beta = 0.01$). Since $\tanh(\cdot) \in (-1, 1)^5$, $\norm{\text{correction}}_\infty \leq \beta$ element-wise, and $\norm{\text{correction}}_2 \leq \beta\sqrt{5}$. The softplus gate ensures $\beta \geq 0$, tightens the bound in the proof, and prevents sign flips. Each linear layer of the correction MLP is wrapped with \texttt{nn.utils.spectral\_norm}, guaranteeing $\norm{J_{\text{MLP}}}_2 \leq 1$ and thus the per-step Jacobian bound of Theorem~\ref{thm:gradient-stability}. The combined $\beta$-gate and spectral normalization eliminate the need for gradient clipping on the recurrent path when $\beta$ is modest ($\leq 0.1$, achieved by L2 penalty on $\beta_{\text{raw}}$).
+The correction term clips the MLP output via $\tanh$ and scales by $\beta = \texttt{softplus}(\beta_{\text{raw}})$ (initialized to yield $\beta \approx 0.01$). Since $\tanh(\cdot) \in (-1, 1)^5$, $\norm{\text{correction}}_\infty \leq \beta$ element-wise. Spectral normalization constrains the linear layers, but the full nonlinear Jacobian still depends on activations and composition, so the implementation also exposes gradient clipping and optional correction-scale regularization.
 
 \subsection*{Innovation Boundedness Verification}
 

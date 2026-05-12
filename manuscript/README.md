@@ -22,11 +22,11 @@
 
 - [ ] Motivate reliable uncertainty quantification in time-series forecasting (finance, health, energy)
 - [ ] Gap: most deep-learning forecasting models produce point estimates; conformal prediction is distribution-free but does not exploit latent structure
-- [ ] Claim: structured disentanglement + state-conditional conformal = principled, efficient UQ
+- [ ] Claim: structured disentanglement + state-conditional conformal = interpretable, empirically calibrated UQ with explicit assumptions
 - [ ] Contributions (bullet list):
   - Novel Disentangled State-Space Encoder (CISSN encoder) with a structured-SSM dynamics layer
   - State-Conditional Conformal Prediction (SCCP) framework that leverages encoder hidden states
-  - Theoretical coverage guarantee (exchangeability argument) under distribution shift bounded by state similarity
+  - Conditional coverage analysis for SCCP under split independence, sufficient per-cluster calibration size, and approximate within-cluster exchangeability
   - Empirical evaluation on ETT, Exchange, Weather, Traffic, ILI benchmarks
 
 ### 2. Related Work
@@ -56,7 +56,7 @@
 #### 3.4 State-Conditional Conformal Prediction
 - [ ] Calibration: residual computation per state cluster / KDE weighting
 - [x] Multivariate strategies: `max`, `mean`, `per_output`, `mahalanobis`
-- [ ] Coverage guarantee proof sketch (finite-sample, distribution-free)
+- [ ] Coverage proof sketch with assumptions: held-out calibration split, cluster-size threshold, exchangeability diagnostics
 - [ ] Computational cost of SCCP at inference
 
 #### 3.5 Training Procedure
@@ -97,7 +97,7 @@
 ### 5. Discussion
 
 - [ ] Interpret H1–H3 in light of results
-- [ ] Limitations: exchangeability assumption, calibration set size, computational cost of KDE-based SCCP
+- [ ] Limitations: approximate exchangeability in time series, calibration set size, cluster instability, computational cost of SCCP
 - [ ] Failure modes: heavy distribution shift, very short calibration sets
 - [ ] Future work: online/streaming conformal, multi-step state conditioning, plug-in to other SSMs
 

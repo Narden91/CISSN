@@ -5,7 +5,7 @@ import numpy as np
 from unittest.mock import MagicMock, patch
 
 
-from cissn.data.dataset import BaseETTDataset, Dataset_ETT_hour, Dataset_ETT_minute
+from cissn.data.dataset import BaseETTDataset, Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Solar
 from cissn.models import ForecastHead
 from cissn.explanations import ForecastExplainer
 
@@ -64,6 +64,32 @@ class TestComponents(unittest.TestCase):
              ds_min = Dataset_ETT_minute(root_path='.', flag='train', size=[5, 2, 2])
              self.assertIsInstance(ds_min, BaseETTDataset)
              self.assertEqual(ds_min.data_stamp.shape[1], 5) # 5 time features (w/ minute)
+
+    @patch('cissn.data.dataset.pd.read_csv')
+    def test_ms_target_is_moved_to_last_column(self, mock_read_csv):
+        dates = pd.date_range(start='2020-01-01', periods=64, freq='h')
+        df = pd.DataFrame({
+            'date': dates,
+            'OT': np.arange(64, dtype=float),
+            'A': np.arange(100, 164, dtype=float),
+            'B': np.arange(200, 264, dtype=float),
+        })
+        mock_read_csv.return_value = df
+
+        borders = ([0, 20, 32, 44], [20, 32, 44, 56])
+        with patch.object(Dataset_Custom, '_get_borders', return_value=borders):
+            ds = Dataset_Custom(root_path='.', flag='train', size=[5, 2, 2], features='MS', target='OT', scale=False)
+
+        self.assertTrue(np.array_equal(ds.data_x[:5, -1], df['OT'].values[:5]))
+
+    @patch('cissn.data.dataset.pd.read_csv')
+    def test_solar_loader_adds_synthetic_datetime_index(self, mock_read_csv):
+        mock_read_csv.return_value = pd.DataFrame(np.random.rand(128, 4))
+
+        ds = Dataset_Solar(root_path='.', data_path='solar_AL.txt', flag='train', size=[8, 4, 4], features='M', scale=False)
+
+        self.assertEqual(ds.data_x.shape[1], 4)
+        self.assertEqual(ds.data_stamp.shape[1], 5)
 
 if __name__ == '__main__':
     unittest.main()

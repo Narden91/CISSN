@@ -7,7 +7,7 @@
 | **Working Title** | Conformal Inference via State-Conditional Disentangled State-Space Networks for Time-Series Forecasting |
 | **Target Venues** | ICML 2026 (primary) → AISTATS 2026 → NeurIPS 2026 → JMLR (journal fallback) |
 | **Deadline** | ICML 2026: ~January 2026; AISTATS 2026: ~October 2025 |
-| **Focus** | Theory-first: coverage proof, structured dynamics analysis, rigorous ablation |
+| **Focus** | Theory-first: conditional coverage analysis, structured dynamics analysis, rigorous ablation |
 | **Target Length** | 8 pages ICML style + appendix for proofs |
 | **Status** | In preparation — codebase ready, baselines + proofs needed |
 
@@ -92,7 +92,7 @@ Coverage_test ≥ 1 - α - ε.
 
 **Proof:** Under covariate shift where P(Y|X) is invariant, per-cluster coverage transfers up to TV distance (Tibshirani et al., 2019).
 
-**Status:** ✅ FORMAL PROOF COMPLETE. Provides a quantitative bound on coverage degradation. In practice, samples far from any calibration cluster center receive appropriately conservative intervals via the soft nearest-cluster fallback.
+**Status:** FORMAL ANALYSIS REQUIRES EMPIRICAL VALIDATION. Provides a quantitative bound on coverage degradation under stated covariate-shift assumptions. The current implementation uses nearest-cluster assignment; no soft distance-based fallback is implemented.
 
 ---
 
@@ -103,7 +103,7 @@ For within-cluster residuals following AR(1) with coefficient ρ_k, the coverage
 
 **Proof:** Via Bartlett's formula for the variance of the sample mean under autocorrelation, extended to quantile estimators via the Bahadur representation.
 
-**Status:** ✅ FORMAL PROOF COMPLETE + IMPLEMENTED. The ACF(1) diagnostic at line~261 now provides a theoretically grounded coverage-deficit estimate. The \texttt{correct\_acf=True} parameter (default) automatically inflates cluster quantiles by factor $1 + (\sqrt{(1+|\rho|)/(1-|\rho|)} - 1)/\sqrt{n_k}$ when ACF(1) > 0.3, restoring the $1-\alpha$ guarantee. On ETTh1 with $\rho_k \approx 0.80$--$0.87$, correction factors are 1.091--1.104 (~9--10\% inflation) and empirical coverage rises from 0.908 (uncorrected) to 0.934 (corrected).
+**Status:** DIAGNOSTIC + HEURISTIC CORRECTION IMPLEMENTED. The ACF(1) diagnostic reports temporal dependence and the \texttt{correct\_acf=True} parameter inflates cluster quantiles when ACF(1) > 0.3. This is a conservative heuristic that must be reported as empirical robustness support, not as an unconditional restoration of the $1-\alpha$ guarantee.
 
 ---
 

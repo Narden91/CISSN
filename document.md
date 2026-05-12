@@ -58,7 +58,7 @@ CISSN solves this with **State-Conditional Conformal Prediction (SCCP)**:
 3. For each cluster, compute how wrong the model was on average — this becomes the interval width for that regime
 4. At prediction time: encode the new input, find which regime (cluster) it belongs to, and use that regime's interval width
 
-The result: narrow intervals in predictable regimes, wide intervals in volatile regimes — all with a mathematical guarantee that at least (1-α)% of true values will fall inside.
+The result: narrow intervals in predictable regimes and wide intervals in volatile regimes, with conformal coverage guarantees under the stated calibration assumptions: held-out calibration data, sufficient samples per cluster, and approximate exchangeability within each regime.
 
 ### 5. Disentanglement is enforced, not just hoped for
 

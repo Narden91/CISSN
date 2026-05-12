@@ -17,6 +17,7 @@ dependencies = [
     "numba>=0.59.0",
     "statsmodels>=0.14.0",
     "neuralforecast>=1.6.0",
+    "pyyaml>=6.0",
 ]
 authors = [
     { name = "Emanuele Nardone", email = "emanuele.nardone@unicas.it" }
