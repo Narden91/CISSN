@@ -1,0 +1,36 @@
+dataset:
+  data: ETTh1
+  features: M
+  target: OT
+
+model:
+  state_dim: 5
+  d_model: 64
+  dropout: 0.05
+
+loss:
+  lambda_cov: 1.0
+  lambda_temp: 0.5
+
+training:
+  seq_len: 96
+  label_len: 48
+  pred_len: 96
+  train_epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+  patience: 3
+  lradj: type1
+  grad_clip: 1.0
+  lambda_correction_scale: 0.0
+  num_workers: 0
+  seed: 42
+
+conformal:
+  alpha: 0.1
+  n_clusters: 5
+  multivariate_strategy: per_feature
+
+paths:
+  checkpoints: ./checkpoints/
+  results_dir: ./results/

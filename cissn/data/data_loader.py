@@ -1,7 +1,8 @@
 import logging
 import torch
 from torch.utils.data import DataLoader
-from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom
+from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Solar
+from cissn.data.registry import supported_datasets
 from typing import Tuple, Union, Any, Dict
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ _DATA_REGISTRY: dict = {
     'ECL':           (Dataset_Custom,     'h'),
     'traffic':       (Dataset_Custom,     'h'),
     'ILI':           (Dataset_Custom,     'w'),
-    'solar':         (Dataset_Custom,     't'),
+    'solar':         (Dataset_Solar,      't'),
 }
 
 def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> Tuple[Any, DataLoader]:
@@ -41,11 +42,11 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         raise ValueError(f"batch_size must be a positive integer; got {getattr(args, 'batch_size', None)}.")
 
     if args.data not in _DATA_REGISTRY:
-        supported = ', '.join(sorted(_DATA_REGISTRY))
+        supported = ', '.join(supported_datasets())
         raise ValueError(f"Unknown dataset {args.data!r}. Supported datasets: {supported}.")
 
-    if flag not in {'train', 'val', 'test', 'pred'}:
-        raise ValueError(f"flag must be one of 'train', 'val', 'test', 'pred'; got {flag!r}.")
+    if flag not in {'train', 'val', 'cal', 'test', 'pred'}:
+        raise ValueError(f"flag must be one of 'train', 'val', 'cal', 'test', 'pred'; got {flag!r}.")
 
     Data, default_freq = _DATA_REGISTRY[args.data]
     freq = getattr(args, 'freq', default_freq) or default_freq
@@ -71,7 +72,7 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         features=args.features,
         target=args.target,
     )
-    if Data is Dataset_Custom:
+    if issubclass(Data, Dataset_Custom):
         dataset_kwargs['freq'] = freq
 
     data_set = Data(**dataset_kwargs)

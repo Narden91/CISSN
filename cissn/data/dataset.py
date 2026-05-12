@@ -44,10 +44,10 @@ class BaseETTDataset(Dataset):
                 f"label_len must be <= seq_len for overlapping decoder context; got label_len={self.label_len}, seq_len={self.seq_len}."
             )
 
-        type_map = {"train": 0, "val": 1, "test": 2, "pred": 2}
-        if flag not in type_map:
-            raise ValueError(f"flag must be one of {sorted(type_map)}; got {flag!r}.")
-        self.set_type = type_map[flag]
+        if flag not in {"train", "val", "cal", "test", "pred"}:
+            raise ValueError(f"flag must be one of ['cal', 'pred', 'test', 'train', 'val']; got {flag!r}.")
+        self.flag = flag
+        self.set_type = 0
 
         self.features = features
         self.target = target
@@ -57,9 +57,35 @@ class BaseETTDataset(Dataset):
         self.kwargs = kwargs
         self._read_data()
 
+    def _load_raw_dataframe(self) -> pd.DataFrame:
+        return pd.read_csv(os.path.join(self.root_path, self.data_path))
+
+    def _resolve_split_index(self, n_splits: int) -> int:
+        if n_splits == 4:
+            return {"train": 0, "val": 1, "cal": 2, "test": 3, "pred": 3}[self.flag]
+        if n_splits == 3:
+            return {"train": 0, "val": 1, "cal": 1, "test": 2, "pred": 2}[self.flag]
+        raise ValueError(f"Expected 3 or 4 chronological split borders; got {n_splits}.")
+
+    def _select_data_columns(self, df_raw: pd.DataFrame) -> pd.DataFrame:
+        data_columns = list(df_raw.columns[1:])
+
+        if self.features == "M":
+            return df_raw[data_columns]
+        if self.features == "MS":
+            if self.target not in data_columns:
+                raise ValueError(f"Target column {self.target!r} not found in dataset columns.")
+            ordered_columns = [col for col in data_columns if col != self.target] + [self.target]
+            return df_raw[ordered_columns]
+        if self.features == "S":
+            if self.target not in df_raw.columns:
+                raise ValueError(f"Target column {self.target!r} not found in dataset columns.")
+            return df_raw[[self.target]]
+        raise ValueError(f"features must be one of 'M', 'MS', or 'S'; got {self.features!r}.")
+
     def _read_data(self):
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        df_raw = self._load_raw_dataframe()
         if "date" not in df_raw.columns:
             raise ValueError("Dataset must contain a 'date' column for time feature extraction.")
 
@@ -67,6 +93,10 @@ class BaseETTDataset(Dataset):
             border1s, border2s = self.kwargs["borders"]
         else:
             border1s, border2s = self._get_borders(df_raw)
+
+        if len(border1s) != len(border2s):
+            raise ValueError("Split border start/end lists must have the same length.")
+        self.set_type = self._resolve_split_index(len(border1s))
 
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
@@ -76,14 +106,7 @@ class BaseETTDataset(Dataset):
                 f"Invalid split borders for {self.data_path}: border1={border1}, border2={border2}, rows={n_rows}."
             )
 
-        if self.features in ("M", "MS"):
-            df_data = df_raw[df_raw.columns[1:]]
-        elif self.features == "S":
-            if self.target not in df_raw.columns:
-                raise ValueError(f"Target column {self.target!r} not found in dataset columns.")
-            df_data = df_raw[[self.target]]
-        else:
-            raise ValueError(f"features must be one of 'M', 'MS', or 'S'; got {self.features!r}.")
+        df_data = self._select_data_columns(df_raw)
 
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
@@ -143,13 +166,15 @@ class BaseETTDataset(Dataset):
         dates = pd.to_datetime(df_raw["date"])
         start_date = dates.iloc[0]
         train_end = start_date + pd.DateOffset(months=12)
-        val_end = train_end + pd.DateOffset(months=4)
-        test_end = val_end + pd.DateOffset(months=4)
+        val_end = train_end + pd.DateOffset(months=2)
+        cal_end = val_end + pd.DateOffset(months=2)
+        test_end = cal_end + pd.DateOffset(months=4)
         train_n = int((dates < train_end).sum())
         val_n = int((dates < val_end).sum())
+        cal_n = int((dates < cal_end).sum())
         test_n = int((dates < test_end).sum())
-        border1s = [0, train_n - self.seq_len, val_n - self.seq_len]
-        border2s = [train_n, val_n, test_n]
+        border1s = [0, train_n - self.seq_len, val_n - self.seq_len, cal_n - self.seq_len]
+        border2s = [train_n, val_n, cal_n, test_n]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
@@ -219,7 +244,7 @@ class Dataset_Custom(BaseETTDataset):
     Generic dataset class for non-ETT benchmark datasets (Weather, Exchange-Rate,
     Electricity/ECL, Traffic, ILI, Solar-Energy, etc.).
 
-    Split policy: 70% train / 10% val / 20% test.
+    Split policy: 60% train / 10% validation / 10% calibration / 20% test.
 
     Args:
         freq: Sampling frequency string used to select time features.
@@ -244,11 +269,15 @@ class Dataset_Custom(BaseETTDataset):
 
     def _get_borders(self, df_raw: pd.DataFrame):
         n = len(df_raw)
-        num_train = int(n * 0.7)
+        num_train = int(n * 0.6)
+        num_vali = int(n * 0.1)
+        num_cal = int(n * 0.1)
         num_test = int(n * 0.2)
-        num_vali = n - num_train - num_test
-        border1s = [0, num_train - self.seq_len, n - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, n]
+        test_start = n - num_test
+        cal_start = test_start - num_cal
+        val_start = cal_start - num_vali
+        border1s = [0, val_start - self.seq_len, cal_start - self.seq_len, test_start - self.seq_len]
+        border2s = [val_start, cal_start, test_start, n]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
@@ -262,3 +291,36 @@ class Dataset_Custom(BaseETTDataset):
         else:
             fields = _HOURLY_FIELDS
         return self._build_time_features(df_stamp, fields)
+
+
+class Dataset_Solar(Dataset_Custom):
+    """Solar-Energy benchmark loader for the raw LSTNet `solar_AL.txt` file.
+
+    The source file has no date column or header. We create a deterministic
+    10-minute synthetic index and name the final channel `OT` so `S`/`MS`
+    target selection behaves like the other benchmark CSV files.
+    """
+
+    def __init__(
+        self,
+        root_path: str,
+        flag: str = "train",
+        size: Optional[List[int]] = None,
+        features: str = "S",
+        data_path: str = "solar_AL.txt",
+        target: str = "OT",
+        scale: bool = True,
+        freq: str = "t",
+        **kwargs,
+    ):
+        super().__init__(root_path, flag, size, features, data_path, target, scale, freq, **kwargs)
+
+    def _load_raw_dataframe(self) -> pd.DataFrame:
+        path = os.path.join(self.root_path, self.data_path)
+        df = pd.read_csv(path, header=None)
+        if df.empty:
+            raise ValueError(f"Solar dataset at {path!r} is empty.")
+        columns = [str(i) for i in range(df.shape[1] - 1)] + [self.target]
+        df.columns = columns
+        date = pd.DataFrame({"date": pd.date_range("2006-01-01", periods=len(df), freq="10min")})
+        return pd.concat([date, df], axis=1)

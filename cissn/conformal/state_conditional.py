@@ -49,18 +49,31 @@ class StateConditionalConformal:
         if multivariate_strategy not in self.VALID_MULTIVARIATE_STRATEGIES:
             supported = ", ".join(sorted(self.VALID_MULTIVARIATE_STRATEGIES))
             raise ValueError(f"Unknown multivariate strategy {multivariate_strategy!r}. Supported values: {supported}.")
+        if multivariate_strategy == "mahalanobis":
+            warnings.warn(
+                "multivariate_strategy='mahalanobis' is experimental: intervals are covariance-scaled "
+                "axis-aligned bands, not a formally proven simultaneous conformal set.",
+                UserWarning,
+            )
 
         self.alpha = alpha
         self.n_clusters = n_clusters
         self.multivariate_strategy = multivariate_strategy
+        self.coverage_scope = "simultaneous" if multivariate_strategy == "max" else "marginal"
         self.random_state = random_state
         self.correct_acf = correct_acf
-        self.kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+        self._reset_fit_state()
+
+    def _reset_fit_state(self) -> None:
+        self.kmeans: Optional[KMeans] = None
+        self.scaler: Optional[StandardScaler] = None
         self.quantiles: dict = {}
         self.quantile_shape: tuple = ()
         self.acf_corrections_: dict = {}
         self.cov_matrices_: dict = {}
         self.inv_cov_matrices_: dict = {}
+        self.cluster_sizes_: dict = {}
+        self.last_predicted_clusters_: Optional[np.ndarray] = None
         self.calibrated = False
 
     @staticmethod
@@ -121,7 +134,11 @@ class StateConditionalConformal:
         if r.ndim > 1:
             r = r.reshape(r.shape[0], -1).mean(axis=1)
         diff_r = r - r.mean()
-        return float(np.corrcoef(diff_r[:-1], diff_r[1:])[0, 1])
+        denom = float(np.linalg.norm(diff_r[:-1]) * np.linalg.norm(diff_r[1:]))
+        if denom <= 1e-12:
+            return 0.0
+        rho = float(np.dot(diff_r[:-1], diff_r[1:]) / denom)
+        return 0.0 if not np.isfinite(rho) else rho
 
     def _build_quantile_tensor(self, q_values, point_forecasts: torch.Tensor) -> torch.Tensor:
         q_array = np.stack(q_values, axis=0) if self.quantile_shape else np.asarray(q_values)
@@ -158,20 +175,22 @@ class StateConditionalConformal:
         """
         states = self._validate_states(self._to_numpy(states, "states"))
         residuals = self._to_numpy(residuals, "residuals")
+        self._reset_fit_state()
 
         n_samples = states.shape[0]
         residuals, self.quantile_shape = self._prepare_residuals(residuals, n_samples)
         min_samples_per_cluster = max(5, int(np.ceil(1.0 / max(self.alpha, 0.01))))
-        n_clusters = max(2, min(self.n_clusters, n_samples // min_samples_per_cluster))
-        self.kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state)
+        n_clusters = min(self.n_clusters, n_samples)
+        if self.n_clusters > 1:
+            max_clusters_by_samples = max(1, n_samples // min_samples_per_cluster)
+            n_clusters = min(n_clusters, max_clusters_by_samples)
+        self.kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
         self.scaler = StandardScaler()
-        self.quantiles = {}
 
         scaled_states = self.scaler.fit_transform(states)
         self.kmeans.fit(scaled_states)
         cluster_labels = self.kmeans.predict(scaled_states)
 
-        self.cluster_sizes_: dict = {}
         empty_clusters = []
         for k in range(self.kmeans.n_clusters):
             mask = cluster_labels == k
@@ -249,6 +268,35 @@ class StateConditionalConformal:
         )
         self.calibrated = True
 
+    def assign_clusters(self, states: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
+        """Assign states to fitted conformal clusters."""
+        if not self.calibrated or self.kmeans is None or self.scaler is None:
+            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        states_np = self._validate_states(self._to_numpy(states, "states"))
+        return self.kmeans.predict(self.scaler.transform(states_np))
+
+    def get_cluster_stats(self) -> dict:
+        """Return JSON-serializable fitted cluster diagnostics."""
+        if not self.calibrated:
+            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        stats = {}
+        for k, n_k in self.cluster_sizes_.items():
+            q = self.quantiles.get(k)
+            stats[int(k)] = {
+                "n_samples": int(n_k),
+                "quantile_shape": list(np.asarray(q).shape),
+                "quantile_mean": float(np.asarray(q).mean()) if q is not None else None,
+                "acf_correction": float(self.acf_corrections_[k]) if k in self.acf_corrections_ else None,
+            }
+        return {
+            "alpha": float(self.alpha),
+            "requested_n_clusters": int(self.n_clusters),
+            "fitted_n_clusters": int(self.kmeans.n_clusters),
+            "multivariate_strategy": self.multivariate_strategy,
+            "coverage_scope": self.coverage_scope,
+            "clusters": stats,
+        }
+
     def predict(
         self,
         states: Union[torch.Tensor, np.ndarray],
@@ -278,7 +326,8 @@ class StateConditionalConformal:
                 f"got {states_np.shape[0]} and {point_forecasts.shape[0]}."
             )
 
-        cluster_labels = self.kmeans.predict(self.scaler.transform(states_np))
+        cluster_labels = self.assign_clusters(states_np)
+        self.last_predicted_clusters_ = cluster_labels
         q_values = [self.quantiles[k] for k in cluster_labels]
         q_tensor = self._build_quantile_tensor(q_values, point_forecasts)
         return point_forecasts - q_tensor, point_forecasts + q_tensor
@@ -299,7 +348,9 @@ class StateConditionalConformal:
         # Reduce residuals the same way fit() does so ACF values are comparable.
         n_samples = states.shape[0]
         residuals, _ = self._prepare_residuals(residuals, n_samples)
-        cluster_labels = self.kmeans.predict(self.scaler.transform(states))
+        if not self.calibrated:
+            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        cluster_labels = self.assign_clusters(states)
 
         results = {}
         for k in range(self.kmeans.n_clusters):
