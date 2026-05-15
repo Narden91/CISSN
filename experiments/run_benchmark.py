@@ -582,12 +582,14 @@ def adjust_learning_rate(optimizer, epoch, args):
     else:
         raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1', 'type2', or 'cosine'.")
 
-if __name__ == '__main__':
+def parse_args(argv: Optional[list[str]] = None):
+    cli_argv = argv if argv is not None else sys.argv[1:]
+
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument('--config', type=str, default=None, help='YAML/JSON config file')
-    pre_args, _ = pre_parser.parse_known_args()
+    pre_args, _ = pre_parser.parse_known_args(args=cli_argv)
     config_defaults = load_config_defaults(pre_args.config)
-    cli_options = provided_cli_options(sys.argv[1:])
+    cli_options = provided_cli_options(cli_argv)
 
     parser = argparse.ArgumentParser(description='CISSN Benchmark Runner', parents=[pre_parser])
     parser.set_defaults(**config_defaults)
@@ -633,11 +635,17 @@ if __name__ == '__main__':
     parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max, mean, mahalanobis]')
 
     parser.set_defaults(**config_defaults)
-    args = parser.parse_args()
+    args = parser.parse_args(args=cli_argv)
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)
     if args.features == 'MS' and 'c_out' not in protected:
         args.c_out = 1
+
+    return args
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    args = parse_args(argv)
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -663,3 +671,7 @@ if __name__ == '__main__':
     
     if args.use_wandb:
         wandb.finish()
+
+
+if __name__ == '__main__':
+    main()
