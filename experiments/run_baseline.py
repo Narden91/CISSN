@@ -14,15 +14,26 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from run_benchmark import (
-    _format_float_token,
-    adjust_learning_rate,
-    apply_dataset_defaults,
-    environment_snapshot,
-    load_config_defaults,
-    provided_cli_options,
-    save_json,
-)
+try:
+    from .run_benchmark import (
+        _format_float_token,
+        adjust_learning_rate,
+        apply_dataset_defaults,
+        environment_snapshot,
+        load_config_defaults,
+        provided_cli_options,
+        save_json,
+    )
+except ImportError:
+    from run_benchmark import (
+        _format_float_token,
+        adjust_learning_rate,
+        apply_dataset_defaults,
+        environment_snapshot,
+        load_config_defaults,
+        provided_cli_options,
+        save_json,
+    )
 
 from cissn.baselines import (
     DLinear,
@@ -106,6 +117,12 @@ def concatenate_batches(batches: list[np.ndarray], name: str) -> np.ndarray:
     return np.concatenate(batches, axis=0)
 
 
+def infer_coverage_scope(lower: Optional[np.ndarray] = None, upper: Optional[np.ndarray] = None) -> Optional[str]:
+    if lower is None or upper is None:
+        return None
+    return "marginal"
+
+
 def compute_metrics(args, preds: np.ndarray, trues: np.ndarray, lower: Optional[np.ndarray] = None, upper: Optional[np.ndarray] = None):
     mae = mean_absolute_error(trues.flatten(), preds.flatten())
     mse = mean_squared_error(trues.flatten(), preds.flatten())
@@ -124,7 +141,7 @@ def compute_metrics(args, preds: np.ndarray, trues: np.ndarray, lower: Optional[
         "winkler": None,
         "calibration_error": None,
         "alpha": args.conformal_alpha,
-        "coverage_scope": None,
+        "coverage_scope": infer_coverage_scope(lower=lower, upper=upper),
     }
     if lower is not None and upper is not None:
         interval_metrics.update(

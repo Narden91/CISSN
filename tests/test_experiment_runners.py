@@ -1,6 +1,10 @@
 import unittest
+from types import SimpleNamespace
+
+import numpy as np
 
 from experiments.run_benchmark import parse_args as parse_benchmark_args
+from experiments.run_baseline import compute_metrics
 from experiments.run_multiseed import build_benchmark_run_argv, parse_multiseed_args
 
 
@@ -49,6 +53,28 @@ class TestExperimentRunners(unittest.TestCase):
         self.assertAlmostEqual(args.dropout, 0.2)
         self.assertTrue(args.walk_forward)
         self.assertEqual(args.lradj, 'cosine')
+
+    def test_baseline_interval_metrics_report_marginal_scope(self):
+        args = SimpleNamespace(conformal_alpha=0.1)
+        preds = np.array([[1.0], [2.0]], dtype=np.float32)
+        trues = np.array([[1.5], [2.5]], dtype=np.float32)
+        lower = np.array([[0.5], [1.5]], dtype=np.float32)
+        upper = np.array([[1.5], [2.5]], dtype=np.float32)
+
+        _point_metrics, interval_metrics = compute_metrics(args, preds, trues, lower=lower, upper=upper)
+
+        self.assertEqual(interval_metrics['coverage_scope'], 'marginal')
+        self.assertIsNotNone(interval_metrics['coverage'])
+
+    def test_point_baseline_metrics_keep_empty_coverage_scope(self):
+        args = SimpleNamespace(conformal_alpha=0.1)
+        preds = np.array([[1.0], [2.0]], dtype=np.float32)
+        trues = np.array([[1.5], [2.5]], dtype=np.float32)
+
+        _point_metrics, interval_metrics = compute_metrics(args, preds, trues)
+
+        self.assertIsNone(interval_metrics['coverage_scope'])
+        self.assertIsNone(interval_metrics['coverage'])
 
 
 if __name__ == '__main__':
