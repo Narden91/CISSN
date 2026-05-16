@@ -228,6 +228,18 @@ class Experiment:
         return np.concatenate(batches, axis=0)
 
     @staticmethod
+    def _summarize_epoch_diagnostics(disentangle_criterion, head, state_batches, final_state_batches):
+        if not state_batches or not final_state_batches:
+            raise RuntimeError("Epoch diagnostics require at least one training batch.")
+
+        epoch_states = torch.cat(state_batches, dim=0)
+        epoch_final_states = torch.cat(final_state_batches, dim=0)
+        with torch.no_grad():
+            disent_metrics = disentangle_criterion.get_metrics(epoch_states)
+            refinement_ratio = head.get_refinement_ratio(epoch_final_states)
+        return disent_metrics, refinement_ratio
+
+    @staticmethod
     def _coverage_by_cluster(lower, upper, trues, cluster_labels):
         covered = (trues >= lower) & (trues <= upper)
         out = {}
@@ -267,6 +279,8 @@ class Experiment:
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
+            epoch_states = []
+            epoch_final_states = []
 
             self.model.train()
             self.head.train()
@@ -285,6 +299,8 @@ class Experiment:
                     target_scale = torch.tensor(0.01, device=self.device, dtype=outputs.dtype)
                     loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - target_scale) ** 2
                 train_loss.append(loss.item())
+                epoch_states.append(states.detach().cpu())
+                epoch_final_states.append(final_state.detach())
 
                 loss.backward()
                 if self.args.grad_clip and self.args.grad_clip > 0:
@@ -306,8 +322,12 @@ class Experiment:
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_loader, criterion)
 
-            disent_metrics = disentangle_criterion.get_metrics(states)
-            refinement_ratio = self.head.get_refinement_ratio(final_state)
+            disent_metrics, refinement_ratio = self._summarize_epoch_diagnostics(
+                disentangle_criterion,
+                self.head,
+                epoch_states,
+                epoch_final_states,
+            )
 
             print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}")
             print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")

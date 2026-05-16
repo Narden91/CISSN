@@ -25,6 +25,11 @@ class IdentityHead(nn.Module):
         return state.unsqueeze(1)
 
 
+class MeanFirstFeatureHead:
+    def get_refinement_ratio(self, state):
+        return float(state[:, 0].mean().item())
+
+
 class TestTrainingPipeline(unittest.TestCase):
     @patch('cissn.data.dataset.pd.read_csv')
     def test_get_data_loader_uses_deterministic_eval_policy(self, mock_read_csv):
@@ -116,6 +121,36 @@ class TestTrainingPipeline(unittest.TestCase):
         self.assertEqual(combined.shape, (3, 1, 1))
         self.assertEqual(combined[0, 0, 0], 0.0)
         self.assertEqual(combined[-1, 0, 0], 1.0)
+
+    def test_epoch_diagnostics_aggregate_all_training_batches(self):
+        criterion = nn.MSELoss()
+        disentangle = type(
+            'DisentangleProbe',
+            (),
+            {
+                'get_metrics': staticmethod(lambda states: {'mean_abs_off_diag_corr': float(states[:, :, 0].mean().item())}),
+            },
+        )()
+        state_batches = [
+            torch.ones(2, 1, 5),
+            torch.full((1, 1, 5), 4.0),
+        ]
+        final_state_batches = [
+            torch.ones(2, 5),
+            torch.full((1, 5), 4.0),
+        ]
+
+        metrics, refinement_ratio = Experiment._summarize_epoch_diagnostics(
+            disentangle,
+            MeanFirstFeatureHead(),
+            state_batches,
+            final_state_batches,
+        )
+
+        self.assertAlmostEqual(metrics['mean_abs_off_diag_corr'], 2.0, places=6)
+        self.assertAlmostEqual(refinement_ratio, 2.0, places=6)
+        self.assertNotAlmostEqual(metrics['mean_abs_off_diag_corr'], 4.0, places=6)
+        self.assertNotAlmostEqual(refinement_ratio, 4.0, places=6)
 
     def test_train_protocol_does_not_touch_test_split(self):
         source = inspect.getsource(Experiment.train)
