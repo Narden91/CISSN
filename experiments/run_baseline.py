@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import random
 import sys
 import time
 from pathlib import Path
@@ -23,6 +22,7 @@ try:
         load_config_defaults,
         provided_cli_options,
         save_json,
+        set_random_seed,
     )
 except ImportError:
     from run_benchmark import (
@@ -33,6 +33,7 @@ except ImportError:
         load_config_defaults,
         provided_cli_options,
         save_json,
+        set_random_seed,
     )
 
 from cissn.baselines import (
@@ -70,15 +71,6 @@ SUPPORTED_MODELS = (
 )
 POINT_MODELS = {"dlinear", "patchtst", "deepstate"}
 BACKBONE_MODELS = {"mc_dropout", "deep_ensemble"}
-
-
-def set_random_seed(seed: int) -> None:
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def build_setting_name(args) -> str:

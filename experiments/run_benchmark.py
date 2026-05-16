@@ -134,6 +134,15 @@ def apply_dataset_defaults(args, protected_keys: set[str]) -> None:
             setattr(args, key, spec[key])
 
 
+def set_random_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def environment_snapshot(device: torch.device) -> dict:
     def _git_value(command: list[str]) -> Optional[str]:
         try:
@@ -666,13 +675,7 @@ def parse_args(argv: Optional[list[str]] = None):
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
-
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    set_random_seed(args.seed)
 
     print('Args in experiment:')
     print(args)
