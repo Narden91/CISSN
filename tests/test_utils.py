@@ -1,4 +1,5 @@
 import unittest
+import warnings
 
 import torch
 
@@ -9,9 +10,10 @@ from cissn.conformal import StateConditionalConformal
 class TestConformalContracts(unittest.TestCase):
     def test_scalar_quantiles_broadcast_over_horizon_and_output(self):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=1, multivariate_strategy='max')
-        states = torch.tensor([[0.0, 0.0], [0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32)
-        residuals = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
-        forecasts = torch.zeros(4, 3, 2, dtype=torch.float32)
+        # 11 samples >= ceil(1/alpha)=10 to avoid spurious small-cluster warning
+        states = torch.linspace(0.0, 1.0, 11).unsqueeze(1).expand(-1, 2)
+        residuals = torch.linspace(1.0, 4.0, 11)
+        forecasts = torch.zeros(11, 3, 2, dtype=torch.float32)
 
         conformal.fit(states, residuals)
         lower, upper = conformal.predict(states, forecasts)
@@ -23,12 +25,11 @@ class TestConformalContracts(unittest.TestCase):
 
     def test_per_feature_quantiles_broadcast_across_horizon(self):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=1, multivariate_strategy='per_feature')
-        states = torch.tensor([[0.0, 0.0], [0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32)
-        residuals = torch.tensor(
-            [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]],
-            dtype=torch.float32,
-        )
-        forecasts = torch.zeros(4, 3, 2, dtype=torch.float32)
+        # 11 samples >= ceil(1/alpha)=10 to avoid spurious small-cluster warning
+        t = torch.linspace(0.0, 1.0, 11)
+        states = t.unsqueeze(1).expand(-1, 2)
+        residuals = torch.stack([t + 1.0, (t + 1.0) * 10.0], dim=1)
+        forecasts = torch.zeros(11, 3, 2, dtype=torch.float32)
 
         conformal.fit(states, residuals)
         lower, upper = conformal.predict(states, forecasts)
@@ -40,13 +41,14 @@ class TestConformalContracts(unittest.TestCase):
 
     def test_predict_rejects_incompatible_forecast_shape(self):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=1, multivariate_strategy='per_feature')
-        states = torch.tensor([[0.0, 0.0], [0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32)
-        residuals = torch.ones(4, 2, 2, dtype=torch.float32)
+        # 11 samples >= ceil(1/alpha)=10 to avoid spurious small-cluster warning
+        states = torch.linspace(0.0, 1.0, 11).unsqueeze(1).expand(-1, 2)
+        residuals = torch.ones(11, 2, 2, dtype=torch.float32)
 
         conformal.fit(states, residuals)
 
         with self.assertRaisesRegex(ValueError, 'incompatible'):
-            conformal.predict(states, torch.zeros(4, 2, dtype=torch.float32))
+            conformal.predict(states, torch.zeros(11, 2, dtype=torch.float32))
 
     def test_requested_single_cluster_is_respected(self):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=1, multivariate_strategy='max')
@@ -67,10 +69,12 @@ class TestConformalContracts(unittest.TestCase):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=3, multivariate_strategy='max')
         states = torch.randn(30, 2)
         residuals = torch.arange(30, dtype=torch.float32).abs()
-        conformal.fit(states, residuals)
-        first_clusters = conformal.kmeans.n_clusters
-
-        conformal.fit(states[:8], torch.ones(8))
+        # Suppress small-cluster warnings — KMeans can produce uneven splits on small fixtures
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            conformal.fit(states, residuals)
+            first_clusters = conformal.kmeans.n_clusters
+            conformal.fit(states[:8], torch.ones(8))
 
         self.assertLessEqual(conformal.kmeans.n_clusters, first_clusters)
         self.assertEqual(set(conformal.cluster_sizes_), set(range(conformal.kmeans.n_clusters)))
