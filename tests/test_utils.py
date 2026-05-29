@@ -76,6 +76,39 @@ class TestConformalContracts(unittest.TestCase):
         self.assertEqual(set(conformal.cluster_sizes_), set(range(conformal.kmeans.n_clusters)))
         self.assertEqual(conformal.acf_corrections_, {})
 
+    def test_quantile_level_matches_textbook_and_empirical_coverage_holds(self):
+        """q_level must equal ceil((n+1)(1-a))/(n+1); empirical coverage on i.i.d. draw >= 1-alpha."""
+        import math, numpy as np
+
+        alpha = 0.1
+        n = 99  # chosen so (n+1)(1-alpha)=90 is exact integer
+        rng = np.random.default_rng(0)
+
+        conformal = StateConditionalConformal(alpha=alpha, n_clusters=1, multivariate_strategy='max')
+        states = torch.as_tensor(rng.standard_normal((n, 2)), dtype=torch.float32)
+        # i.i.d. U[0,1] residuals — known quantile is analytic
+        residuals = torch.as_tensor(rng.uniform(0, 1, n), dtype=torch.float32)
+        conformal.fit(states, residuals)
+
+        # Verify q_level formula: ceil((n+1)(1-alpha))/(n+1)
+        expected_q_level = math.ceil((n + 1) * (1 - alpha)) / (n + 1)
+        cal_residuals_np = residuals.numpy()
+        recomputed_q = float(np.quantile(cal_residuals_np, expected_q_level, method="higher"))
+        stored_q = float(list(conformal.quantiles.values())[0])
+        self.assertAlmostEqual(stored_q, recomputed_q, places=6,
+                               msg="Stored quantile does not match textbook split-conformal level")
+
+        # Empirical coverage on held-out i.i.d. draw must be >= 1-alpha
+        n_test = 2000
+        test_states = torch.as_tensor(rng.standard_normal((n_test, 2)), dtype=torch.float32)
+        test_residuals = torch.as_tensor(rng.uniform(0, 1, n_test), dtype=torch.float32)
+        forecasts = torch.zeros(n_test, 1, 1)
+        targets = test_residuals.unsqueeze(1).unsqueeze(1)
+        lower, upper = conformal.predict(test_states, forecasts)
+        covered = ((lower <= targets) & (targets <= upper)).float().mean().item()
+        self.assertGreaterEqual(covered, 1 - alpha,
+                                msg=f"Empirical coverage {covered:.4f} < 1-alpha={1-alpha}")
+
 
 if __name__ == '__main__':
     unittest.main()

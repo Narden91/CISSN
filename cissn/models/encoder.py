@@ -43,6 +43,9 @@ class DisentangledStateEncoder(StructuredDecayMixin):
             nn.Dropout(dropout),
         )
         self.innovation = nn.Linear(hidden_dim, state_dim)
+        # Spectral norm bounds each linear layer to ||W||_2 <= 1, but GELU has
+        # Lipschitz constant L_G ~= 1.77, so the composite MLP Lipschitz constant
+        # is L_G (not 1). The per-step Jacobian bound is 1 + L_G*beta, not 1+beta.
         self.correction_mlp = nn.Sequential(
             nn.utils.spectral_norm(nn.Linear(state_dim + hidden_dim, hidden_dim)),
             nn.GELU(),

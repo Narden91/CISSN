@@ -223,7 +223,8 @@ class StateConditionalConformal:
                 self.inv_cov_matrices_[k] = inv_cov
                 
                 distances = np.sqrt(np.einsum('ij,jk,ik->i', flattened, inv_cov, flattened))
-                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / n_k, 1.0)
+                # Standard split-conformal level: ceil((n+1)(1-alpha))/(n+1)-th order statistic
+                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / (n_k + 1), 1.0)
                 q_k = self._compute_quantile(distances, q_level)
                 
                 bounds = q_k * np.sqrt(np.diag(cov))
@@ -238,7 +239,8 @@ class StateConditionalConformal:
                 
                 self.quantiles[k] = bounds
             else:
-                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / n_k, 1.0)
+                # Standard split-conformal level: ceil((n+1)(1-alpha))/(n+1)-th order statistic
+                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / (n_k + 1), 1.0)
                 q_k = self._compute_quantile(cluster_residuals, q_level)
 
                 if self.correct_acf:
@@ -254,7 +256,9 @@ class StateConditionalConformal:
             if self.quantiles:
                 fallback_quantile = np.stack(list(self.quantiles.values()), axis=0).max(axis=0)
             else:
-                q_level = min(np.ceil((residuals.shape[0] + 1) * (1 - self.alpha)) / residuals.shape[0], 1.0)
+                n_all = residuals.shape[0]
+                # Standard split-conformal level for fallback
+                q_level = min(np.ceil((n_all + 1) * (1 - self.alpha)) / (n_all + 1), 1.0)
                 fallback_quantile = self._compute_quantile(residuals, q_level)
             for k in empty_clusters:
                 self.quantiles[k] = fallback_quantile

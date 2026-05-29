@@ -95,6 +95,8 @@ build/
 *.pyc
 .agent/*
 .github/
+.claude/
+*.pdf
 
 # Latex
 *.aux
