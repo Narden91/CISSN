@@ -15,7 +15,7 @@
 
 ```bash
 uv run examples/demo_cissn.py                                                   # End-to-end demo
-uv run python tests/run_tests.py                                                 # Run all 19 tests
+uv run python tests/run_tests.py                                                 # Run all 25 tests
 uv run python benchmark_encoder.py                                               # Encoder throughput benchmark
 uv run python scripts/download_datasets.py                                       # Download ETT/Weather/ILI datasets
 uv run python experiments/run_benchmark.py --data ETTh1 --train_epochs 10       # Train + evaluate CISSN
@@ -48,7 +48,7 @@ s_t = A · s_{t-1}  +  B(x_t)  +  β · tanh(MLP(A·s_{t-1} + B(x_t), h_t))
       ⎣ structured ⎦  ⎣innov.⎦    ⎣        small tanh-MLP correction       ⎦
 ```
 
-The matrix A is block-diagonal with constrained eigenvalues. The correction MLP is spectrally normalised (`nn.utils.spectral_norm`) guaranteeing `‖J_MLP‖₂ ≤ 1`. Combined with `‖A‖₂ ≤ 1`, the per-step Jacobian is bounded by `1 + β` (where β is initialised at 0.01 via softplus).
+The matrix A is block-diagonal with constrained eigenvalues. The correction MLP is spectrally normalised (`nn.utils.spectral_norm`) bounding each linear layer to `‖W‖₂ ≤ 1`, but GELU has Lipschitz constant `L_G ≈ 1.77`, so `‖J_MLP‖₂ ≤ L_G`. Combined with `‖A‖₂ ≤ 1`, the per-step Jacobian is bounded by `1 + L_G·β` (`L_G ≈ 1.77`, the GELU Lipschitz constant; β is initialised at 0.01 via softplus).
 
 ### Core Modules
 
@@ -78,7 +78,7 @@ Input X (B, T, D_in)
 ### Conformal Prediction (SCCP)
 
 1. **Calibration**: Encode validation set → cluster states via K-Means → per-cluster quantile of absolute residuals
-2. **Finite-sample correction**: q_k = Quantile(R_k, ⌈(n_k+1)(1−α)⌉ / n_k) with clipping at 1.0
+2. **Finite-sample correction**: q_k = Quantile(R_k, ⌈(n_k+1)(1−α)⌉ / (n_k+1)) with clipping at 1.0
 3. **ACF-aware quantile inflation** (Theorem 1b): When within-cluster ACF(1) exceeds 0.3, quantiles are inflated by `1 + (√((1+|ρ|)/(1−|ρ|)) − 1) / √n_k` to compensate for reduced effective sample size. Enabled by default via `correct_acf=True`. The correction formula is centralised in `_compute_acf_correction(rho, n_k)`.
 4. **Multivariate strategies**: `per_feature` (default), `max`, `mean`, or `mahalanobis` (Mahalanobis distance + covariance back-projection)
 5. **Empty-cluster fallback**: max-of-nonempty-cluster-quantile ensures coverage ≥ 1−α
@@ -191,9 +191,10 @@ cissn/
 
 ## Testing
 
-19 tests in 4 files, all passing:
+25 tests in 5 files, all passing:
 
 - `test_model.py` (4 tests): Encoder/head shapes, integration
 - `test_components.py` (4 tests): Explainer structure, dataset inheritance, Solar loader behavior, MS target ordering
-- `test_training.py` (5 tests): DataLoader policies, split validation, no test access during train, partial batches, variable batch concatenation
-- `test_utils.py` (6 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection
+- `test_experiment_runners.py` (4 tests): Multi-seed arg propagation, baseline interval metric scopes
+- `test_training.py` (6 tests): DataLoader policies, split validation, no test access during train, partial batches, variable batch concatenation, epoch diagnostics
+- `test_utils.py` (7 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection, coverage property test

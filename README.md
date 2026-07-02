@@ -195,10 +195,10 @@ manuscript/         # Paper outline and writing gates
 ## Testing
 
 ```bash
-uv run python tests/run_tests.py     # 19 tests, all passing
+uv run python tests/run_tests.py     # 25 tests, all passing
 ```
 
-Tests cover: encoder/head shapes and integration, ForecastExplainer structure, dataset inheritance, MS target ordering, Solar loader behavior, DataLoader evaluation policies, split validation, partial batches, train/test protocol separation, variable batch concatenation, and conformal predictor contracts.
+Tests cover: encoder/head shapes and integration, ForecastExplainer structure, dataset inheritance, MS target ordering, Solar loader behavior, multi-seed arg propagation, baseline interval metric scopes, DataLoader evaluation policies, split validation, partial batches, train/test protocol separation, variable batch concatenation, epoch diagnostics, and conformal predictor contracts (including textbook split-conformal coverage).
 
 ---
 

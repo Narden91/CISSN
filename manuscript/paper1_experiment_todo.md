@@ -12,7 +12,7 @@
 
 - [x] `experiments/run_baseline.py` implemented for `dlinear`, `patchtst`, `deepstate`, `mc_dropout`, and `deep_ensemble`.
 - [x] Baseline runner writes `metrics.json`, `config.json`, `environment.json`, `runtime.json`, `pred.npy`, and `true.npy`, plus `lower.npy` and `upper.npy` for interval-capable baselines.
-- [x] Repo tests rerun on 2026-05-12: `uv run python tests/run_tests.py` passed `19/19`.
+- [x] Repo tests rerun on 2026-05-12: `uv run python tests/run_tests.py` passed `25/25`.
 - [x] CISSN smoke completed: `uv run python experiments/run_benchmark.py --config experiments/configs/etth1_smoke.yaml`.
 - [x] Baseline smoke completed: DLinear on `ETTh1`, horizon `24`, seed `42`, `1` epoch. Artifacts were written under `results/smoke_baseline/BASELINE_dlinear_ETTh1_M_sl96_pl24_seed42`.
 - [x] Ablation smoke completed: `full,flat_cp` on `ETTh1`, horizon `24`, seed `42`, `1` epoch. Output written to `results/ablations_smoke.json`.

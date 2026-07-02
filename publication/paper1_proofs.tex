@@ -56,9 +56,9 @@ The dataset is partitioned into a \emph{training set} $\cD_{\text{train}}$, \emp
     \item Cluster states via K-Means: $\{c_i = \kappa(\mathbf{s}_i)\}_{i=1}^{n}$ where $c_i \in \{1,\dots,M\}$ and $M \geq 2$.
     \item For each cluster $k$ with $n_k = |\{i \colon c_i = k\}|$ calibration samples, define $q_k^{1-\alpha}$ as:
     \[
-    q_k^{1-\alpha} = \text{Quantile}\Big(\{r_i \colon c_i = k\},\; \frac{\ceil{(n_k+1)(1-\alpha)}}{n_k}\Big)
+    q_k^{1-\alpha} = \text{Quantile}\Big(\{r_i \colon c_i = k\},\; \frac{\ceil{(n_k+1)(1-\alpha)}}{n_k + 1}\Big)
     \]
-    where $\text{Quantile}(\cdot, p)$ returns the $p$-th empirical quantile with interpolation method ``higher'' (i.e., $r_{(\ceil{p \cdot n_k})}$ in sorted order).
+    where $\text{Quantile}(\cdot, p)$ returns the $p$-th empirical quantile with interpolation method ``higher'' on the $n_k$ calibration residuals (i.e., the value at index $\ceil{p \cdot n_k}$ in sorted order).
 \end{enumerate}
 
 \textbf{Prediction Phase:}
@@ -73,21 +73,21 @@ The dataset is partitioned into a \emph{training set} $\cD_{\text{train}}$, \emp
 The algorithm above maps to specific lines in \texttt{cissn/conformal/state\_conditional.py}:
 \begin{itemize}
     \item Step 3: \texttt{StandardScaler} $\hookrightarrow$ line~158; \texttt{KMeans.fit} $\hookrightarrow$ line~159.
-    \item Step 4 — quantile computation: $q_k^{1-\alpha}$ is computed at lines~181--183 with \texttt{np.quantile(..., method='higher')}.
-    \item Finite-sample correction $\ceil{(n_k+1)(1-\alpha)}/n_k$ is implemented at line~181.
-    \item The finite-sample corrected quantile level $q_k^{1-\alpha} = \ceil{(n_k+1)(1-\alpha)}/n_k$ appears at line~181 and is clipped to $[0,\,1.0]$ at line~182. The clipping is necessary because for $n_k < 1/\alpha - 1$, the unclipped level exceeds~1.
+    \item Step 4 — quantile computation: $q_k^{1-\alpha}$ is computed at lines~227--228, 243--244, and 261--262 with \texttt{np.quantile(..., method='higher')}.
+    \item Finite-sample correction $\ceil{(n_k+1)(1-\alpha)}/(n_k+1)$ is implemented at those lines.
+    \item The quantile level $p_k = \min\big(\ceil{(n_k+1)(1-\alpha)}/(n_k+1),\; 1.0\big)$ is clipped to $[0,\,1.0]$. When $p_k = 1.0$ (equivalently $\ceil{(n_k+1)(1-\alpha)} = n_k+1$), the threshold equals $\max(\text{cal residuals})$ and coverage degrades to $n_k/(n_k+1)$; this occurs when $n_k < \ceil{1/\alpha} - 1$.
 \end{itemize}
 \end{remark}
 
 \begin{lemma}[Finite-Sample Correction Monotonicity]\label{lem:correction}
-For $n_k \geq 1$ and $\alpha \in (0,1)$, let $m = \ceil{(n_k+1)(1-\alpha)}$ as in line~181 of the code. Then the effective quantile level is $\min(m/n_k,\; 1.0)$ (clipping at line~182). The coverage guarantee is:
+For $n_k \geq 1$ and $\alpha \in (0,1)$, let $m = \ceil{(n_k+1)(1-\alpha)}$ as in the code. The effective quantile level is $p_k = \min(m/(n_k+1),\; 1.0)$. When $m \leq n_k$ (equivalently $n_k \geq \ceil{1/\alpha} - 1$), the coverage guarantee is:
 \[
-\Pbb(r_{\text{new}} \leq q_k^{1-\alpha}) = \frac{\min(m,\; n_k)}{n_k + 1} \;\geq\; \frac{m}{n_k + 1} \;\geq\; 1 - \alpha,
+\Pbb(r_{\text{new}} \leq q_k^{1-\alpha}) = \frac{m}{n_k + 1} \;\geq\; 1 - \alpha.
 \]
-where the final inequality holds provided $m \leq n_k$ (no clipping), which is equivalent to $n_k \geq \ceil{1/\alpha} - 1$. When clipping occurs ($n_k < \ceil{1/\alpha} - 1$), coverage equals $n_k/(n_k+1)$, which may fall below $1-\alpha$.
+When $m = n_k + 1$ (i.e., $p_k = 1.0$ and $n_k < \ceil{1/\alpha} - 1$), the threshold is $\max(\text{cal residuals})$ and coverage equals $n_k/(n_k+1)$, which may fall below $1-\alpha$.
 \end{lemma}
 \begin{proof}
-The coverage bound follows from the rank-uniformity argument in Theorem~\ref{thm:coverage}. Clipping at~$1.0$ replaces $m$ by $n_k$ whenever $m > n_k$. This corresponds to using the maximum calibration residual as the quantile, which yields coverage $n_k/(n_k+1)$. The condition $m \leq n_k$ is equivalent to $\ceil{(n_k+1)(1-\alpha)} \leq n_k$, which requires $n_k \geq \ceil{1/\alpha} - 1$ (solving $(n_k+1)(1-\alpha) \leq n_k$). The clipping logic and condition are verified at lines~181--182 and~176--179 respectively.
+The coverage bound follows from the rank-uniformity argument in Theorem~\ref{thm:coverage}. When $m \leq n_k$, the event $\{r_{\text{new}} \leq q_k^{1-\alpha}\}$ is exactly $\{\text{rank}(r_{\text{new}}) \leq m\}$, giving probability $m/(n_k+1) \geq 1-\alpha$ by the ceiling property. When $m = n_k+1$, the quantile at level~$1.0$ equals the maximum calibration residual, so coverage is $n_k/(n_k+1)$. The condition $m \leq n_k$ is equivalent to $\ceil{(n_k+1)(1-\alpha)} \leq n_k$, which requires $n_k \geq \ceil{1/\alpha} - 1$. The clipping logic is verified at lines~227, 243, and 261; the small-cluster warning at lines~209--213.
 \end{proof}
 
 % ------------------------------------------------------------------------------
@@ -131,7 +131,7 @@ Fix a cluster $k$ and let $\mathcal{R}_k = \{r_i \colon c_i = k\} \cup \{r_{\tex
 \Pbb(r_{\text{new}} = r_{(j)}) = \frac{1}{n_k + 1}, \quad \forall j \in \{1,\dots,n_k+1\}.
 \]
 
-\textbf{Step 2 — Coverage event.} Let $m = \ceil{(n_k+1)(1-\alpha)}$. The quantile $q_k^{1-\alpha}$ is computed at the effective level $\min(m/n_k,\; 1.0)$ (Lemma~\ref{lem:correction}). By assumption (A3), $n_k \geq \ceil{1/\alpha} - 1$, which implies $m \leq n_k$ (no clipping). Under this condition, $q_k^{1-\alpha}$ is the $m$-th order statistic of the $n_k$ calibration residuals, and the event $\{r_{\text{new}} \leq q_k^{1-\alpha}\}$ is exactly the event that $r_{\text{new}}$ has rank at most $m$ in the combined set $\mathcal{R}_k$.
+\textbf{Step 2 — Coverage event.} Let $m = \ceil{(n_k+1)(1-\alpha)}$. The quantile $q_k^{1-\alpha}$ is computed at the effective level $\min(m/(n_k+1),\; 1.0)$ (Lemma~\ref{lem:correction}) via \texttt{np.quantile(..., method='higher')}. By assumption (A3), $n_k \geq \ceil{1/\alpha} - 1$, which implies $m \leq n_k$ and $p_k < 1.0$. Under this condition, the event $\{r_{\text{new}} \leq q_k^{1-\alpha}\}$ is exactly the event that $r_{\text{new}}$ has rank at most $m$ in the combined set $\mathcal{R}_k$.
 
 \textbf{Step 3 — Probability bound.} Since the rank is uniform:
 \[
@@ -214,11 +214,11 @@ Empirical validation on ETTh1 (hourly, strong seasonality): with $\rho_k \approx
 
 \subsection*{Quantile Computation}
 
-The code at line~181 computes:
+The code at lines~227, 243, and 261 computes:
 \[
-q\_level = \frac{\ceil{(n_k + 1) \times (1 - \text{alpha})}}{n_k},
+q\_level = \min\!\Big(\frac{\ceil{(n_k + 1) \times (1 - \text{alpha})}}{n_k + 1},\; 1.0\Big),
 \]
-with clipping to $[0,\,1.0]$ at line~182 (\texttt{min(q\_level, 1.0)}). The \texttt{np.quantile(..., method='higher')} call at line~96 returns the value $r_{(\ceil{q\_level \cdot n_k})}$. When $q\_level \leq 1$ (no clipping, guaranteed by condition~A3), this is the $m$-th order statistic where $m = \ceil{(n_k+1)(1-\alpha)}$, matching Theorem~\ref{thm:coverage}. When $q\_level > 1$ (clipped), the quantile is the maximum calibration residual, yielding reduced coverage as analyzed in Lemma~\ref{lem:correction}.
+with \texttt{np.quantile(..., method='higher')} at line~126. When $q\_level < 1$ (guaranteed by condition~A3), the event $\{r_{\text{new}} \leq q_k\}$ corresponds to rank $\leq m$ where $m = \ceil{(n_k+1)(1-\alpha)}$, matching Theorem~\ref{thm:coverage}. When $q\_level = 1.0$ ($m = n_k+1$), the quantile is the maximum calibration residual, yielding reduced coverage as analyzed in Lemma~\ref{lem:correction}.
 
 \subsection*{Multivariate Coverage Strategies}
 
@@ -230,7 +230,7 @@ When $n_k = 0$ (line~171), the code falls back to the maximum quantile across al
 
 \subsection*{Small-Cluster Warning}
 
-The warning at line~176 flags $n_k < 1/\alpha$. The theoretical condition for guaranteed coverage is $n_k \geq \ceil{1/\alpha} - 1$ (A3 in Theorem~\ref{thm:coverage}). When $n_k$ falls below this threshold, the effective quantile level $m/n_k$ exceeds~1.0 and is clipped to~1.0 (line~182), yielding $q_k = \max(\text{cal residuals})$. In this regime the coverage bound becomes $n_k/(n_k+1)$, which is strictly less than $1-\alpha$ when $n_k < \ceil{1/\alpha} - 1$. For example, $n_k = 5$ with $\alpha = 0.1$ gives coverage $5/6 \approx 0.833 < 0.9$. This is not an algebraic error — the formal guarantee simply requires a minimum cluster size. The code's warning at $n_k < 1/\alpha$ is slightly conservative (one sample earlier than the theoretical breakpoint) to provide a safety margin.
+The warning at lines~209--213 flags $n_k < 1/\alpha$. The theoretical condition for guaranteed coverage is $n_k \geq \ceil{1/\alpha} - 1$ (A3 in Theorem~\ref{thm:coverage}). When $n_k$ falls below this threshold, $\ceil{(n_k+1)(1-\alpha)} = n_k+1$, so the effective level $m/(n_k+1) = 1.0$ and $q_k = \max(\text{cal residuals})$. In this regime the coverage bound becomes $n_k/(n_k+1)$, which is strictly less than $1-\alpha$ when $n_k < \ceil{1/\alpha} - 1$. For example, $n_k = 5$ with $\alpha = 0.1$ gives coverage $5/6 \approx 0.833 < 0.9$. This is not an algebraic error --- the formal guarantee simply requires a minimum cluster size. The code's warning at $n_k < 1/\alpha$ is slightly conservative (one sample earlier than the theoretical breakpoint) to provide a safety margin.
 
 % ------------------------------------------------------------------------------
 \section{Scientific Validity Assessment of Theorem 1}
@@ -405,23 +405,23 @@ The homogeneous part preserves the norm: $\norm{R(\omega,\gamma) \mathbf{v}}_2 =
 \end{proof}
 
 \begin{remark}[Implications for Training]
-The structured dynamics guarantee that the forward state does not diverge during training. The eigenvalues of $A$ are bounded at $\leq 1$ by the sigmoid gates. With spectral normalization applied to the correction MLP (Theorem~\ref{thm:gradient-stability}), the per-step Jacobian is bounded by $1 + \beta$, providing formal gradient stability along the full recurrent path. With $\beta$ near its initialization of 0.01 via softplus gating and optional L2 penalty, the gradient norm over $L=720$ steps is at most $(1.01)^{720} \approx 1.3\times 10^3$ — well within float32 range without gradient clipping. The BIBO stability also ensures that the encoder generalizes to input lengths not seen during training, provided the innovation function $B(\cdot)$ is bounded (guaranteed by the LayerNorm + GELU activation chain at lines 36--39).
+The structured dynamics guarantee that the forward state does not diverge during training. The eigenvalues of $A$ are bounded at $\leq 1$ by the sigmoid gates. With spectral normalization applied to the correction MLP (Theorem~\ref{thm:gradient-stability}), the per-step Jacobian is bounded by $1 + L_G\beta$ where $L_G \approx 1.77$ is the GELU Lipschitz constant, providing a valid bound on gradient magnitudes. At $\beta \approx 0.01$ (softplus initialization), the per-step bound is $\approx 1.0177$. Note: computing $(1.0177)^{720} \approx 2.5\times 10^5$ gives a worst-case cumulative growth ceiling; in practice, gradient norms are controlled by the structured eigenvalues of $A$ being $\leq 1$. The BIBO stability also ensures that the encoder generalizes to input lengths not seen during training, provided the innovation function $B(\cdot)$ is bounded (guaranteed by the LayerNorm + GELU activation chain at lines 36--39).
 \end{remark}
 
 \begin{theorem}[Gradient Stability Under Spectral-Normalized Correction]\label{thm:gradient-stability}
 Apply spectral normalization (\texttt{nn.utils.spectral\_norm}) to each linear layer of the correction MLP, and apply a softplus gate $\beta = \texttt{softplus}(\beta_{\text{raw}})$ to the correction scale. Then the per-step Jacobian of the state recurrence satisfies:
 \[
 \norm{\frac{\partial \mathbf{s}_t}{\partial \mathbf{s}_{t-1}}}_2 \;\leq\; \norm{A}_2 + \beta \cdot \norm{\operatorname{diag}(1-\tanh^2)}_{2} \cdot \norm{J_{\text{MLP}}}_{2}
-\;\leq\; 1 + \beta.
+\;\leq\; 1 + L_G \beta \approx 1 + 1.77\beta.
 \]
-For sequence length $L$, the gradient norm is controlled by the recurrent Jacobian and correction scale. The implementation now supports gradient clipping and optional correction-scale regularization; these engineering controls should be reported alongside any long-horizon stability claims.
+For sequence length $L$, the gradient norm is controlled by the recurrent Jacobian and correction scale. The implementation supports gradient clipping and optional correction-scale regularization; these engineering controls should be reported alongside any long-horizon stability claims.
 \end{theorem}
 \begin{proof}
-Spectral normalization constrains each linear layer $W$ to satisfy $\norm{W}_2 \leq 1$ (Miyato et al., 2018). For a two-layer MLP with GELU activation (1-Lipschitz), $\norm{J_{\text{MLP}}}_2 \leq \norm{W_2}_2 \cdot \norm{\operatorname{GELU}'}_\infty \cdot \norm{W_1}_2 \leq 1 \cdot 1 \cdot 1 = 1$. The $\tanh$ derivative satisfies $\norm{\operatorname{diag}(1-\tanh^2)}_2 \leq 1$ element-wise. The softplus gate ensures $\beta \geq 0$. Differentiating the recurrence (Definition~\ref{def:transition}):
+Spectral normalization constrains each linear layer $W$ to satisfy $\norm{W}_2 \leq 1$ (Miyato et al., 2018). GELU is not 1-Lipschitz: $L_G = \sup_x |\operatorname{GELU}'(x)| \approx 1.77$. For a two-layer MLP with GELU activation, $\norm{J_{\text{MLP}}}_2 \leq \norm{W_2}_2 \cdot L_G \cdot \norm{W_1}_2 \leq L_G \approx 1.77$. The $\tanh$ derivative satisfies $\norm{\operatorname{diag}(1-\tanh^2)}_2 \leq 1$ element-wise. The softplus gate ensures $\beta \geq 0$. Differentiating the recurrence (Definition~\ref{def:transition}):
 \[
 \frac{\partial \mathbf{s}_t}{\partial \mathbf{s}_{t-1}} = A + \beta \cdot \frac{\partial}{\partial \mathbf{s}_{t-1}}\Big[\tanh\big(\text{MLP}_\phi(A\mathbf{s}_{t-1} + B(\mathbf{x}_t), \mathbf{h}_t)\big)\Big].
 \]
-The chain rule through $\tanh$, MLP, and the $A\mathbf{s}_{t-1}$ term yields the bound. Substituting $\norm{A}_2 \leq 1$ (since $\max(\alpha_L, \alpha_T, \gamma, \alpha_R) \leq 1$) and the spectral-normed MLP bound gives $\norm{\partial \mathbf{s}_t / \partial \mathbf{s}_{t-1}}_2 \leq 1 + \beta$.
+The chain rule through $\tanh$, MLP, and the $A\mathbf{s}_{t-1}$ term yields the bound. Substituting $\norm{A}_2 \leq 1$ (since $\max(\alpha_L, \alpha_T, \gamma, \alpha_R) \leq 1$) and the spectral-normed MLP bound gives $\norm{\partial \mathbf{s}_t / \partial \mathbf{s}_{t-1}}_2 \leq 1 + L_G\beta \approx 1 + 1.77\beta$.
 \end{proof}
 
 % ------------------------------------------------------------------------------

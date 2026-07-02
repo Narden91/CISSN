@@ -55,6 +55,7 @@ output/
 results/
 data/*
 explanations/*
+.cursor/
 
 # Jupyter Notebook
 .ipynb_checkpoints

@@ -36,13 +36,13 @@ Let `D_cal = {(s_i, r_i)}_{i=1}^{n}` be a calibration set where `s_i` are latent
 ```
 P(r_{new} ≤ q_k^{1-α}) ≥ 1 - α
 ```
-where `q_k^{1-α} = Quantile({r_i : cluster(s_i) = k}, ⌈(n_k+1)(1-α)⌉/n_k)`.
+where `q_k^{1-α} = Quantile({r_i : cluster(s_i) = k}, ⌈(n_k+1)(1-α)⌉/(n_k+1))`.
 
 **Proof sketch to formalize:**
 1. Within cluster k, the n_k calibration residuals plus the new residual form an exchangeable set of n_k+1 variables (assumption).
 2. By standard split conformal (Vovk et al., 2005), the rank of r_{new} among the n_k+1 residuals is uniform over {1, ..., n_k+1}.
-3. Let m = ⌈(n_k+1)(1-α)⌉. With quantile level min(m/n_k, 1.0), the event {r_new ≤ q_k} occurs when r_new has rank ≤ min(m, n_k) in the combined set.
-4. When n_k ≥ ⌈1/α⌉ − 1 (guaranteeing m ≤ n_k, no clipping), P(r_new ≤ q_k) = m/(n_k+1) ≥ 1−α. Below this threshold, P = n_k/(n_k+1) which may fall below 1−α.
+3. Let m = ⌈(n_k+1)(1-α)⌉. With quantile level min(m/(n_k+1), 1.0), the event {r_new ≤ q_k} occurs when r_new has rank ≤ m in the combined set of n_k+1 residuals.
+4. When n_k ≥ ⌈1/α⌉ − 1 (guaranteeing m ≤ n_k and level < 1.0), P(r_new ≤ q_k) = m/(n_k+1) ≥ 1−α. Below this threshold, level = 1.0 and P = n_k/(n_k+1) which may fall below 1−α.
 5. Marginalizing over clusters, the overall coverage is a weighted average of per-cluster coverages, each ≥ 1−α.
 
 **Edge cases to address:**
@@ -112,11 +112,11 @@ For within-cluster residuals following AR(1) with coefficient ρ_k, the coverage
 ### Theorem 2d — Gradient Stability Under Spectral-Normalized Correction
 
 **Statement:**
-Apply spectral normalization to the correction MLP and softplus-gate the correction scale β. Then ||∂s_t/∂s_{t-1}||₂ ≤ 1 + β. For β ≤ 0.1 and L = 720, the gradient norm is bounded by (1.01)^720 ≈ 1.3×10³.
+Apply spectral normalization to the correction MLP and softplus-gate the correction scale β. Then ||∂s_t/∂s_{t-1}||₂ ≤ 1 + L_G·β, where L_G = Lip(GELU) ≈ 1.77 is the GELU Lipschitz constant.
 
-**Proof:** Spectral normalization bounds ||J_MLP||₂ ≤ 1. Combined with ||A||₂ ≤ 1 and |diag(1-tanh²)| ≤ 1, the chain rule gives the per-step Jacobian bound.
+**Proof:** Spectral normalization bounds each linear layer ||W||₂ ≤ 1, but GELU is not 1-Lipschitz: L_G = sup|GELU'(x)| ≈ 1.77. For the two-layer correction MLP, ||J_MLP||₂ ≤ ||W_2||₂ · L_G · ||W_1||₂ ≤ L_G. Combined with ||A||₂ ≤ 1 and ||diag(1-tanh²)||₂ ≤ 1, the chain rule gives ||∂s_t/∂s_{t-1}||₂ ≤ 1 + L_G·β.
 
-**Status:** ✅ FORMAL PROOF COMPLETE. Implemented via `nn.utils.spectral_norm` and `F.softplus` gate in `encoder.py`. Eliminates the need for gradient clipping on the recurrent path.
+**Status:** Bound holds; constant corrected (was erroneously stated as 1+β; correct bound is 1+L_G·β ≈ 1+1.77β). At β=0.01 (softplus initialization), the per-step bound is ≈ 1.0177. Note: the previously stated (1.01)^720 ≈ 1.3×10³ is a worst-case *growth* ceiling, not a stability guarantee — gradient norms in practice are controlled by the structured A eigenvalues being ≤ 1.
 
 ---
 
@@ -147,7 +147,7 @@ where for sub-Gaussian residuals, $Q_k \leq \sigma_k \cdot \sqrt{2 \log(1/\sqrt{
 **Proof sketch:**
 1. The empirical quantile is $\sqrt{n_k}$-consistent for the population quantile (Bahadur representation).
 2. For sub-Gaussian tails, the population quantile $Q_k$ is bounded by $\sigma_k \cdot \sqrt{2 \log(1/\sqrt{\alpha})}$ (via Chernoff bound on the tail).
-3. The finite-sample correction term $\lceil (n_k+1)(1-\alpha) \rceil / n_k - (1-\alpha)$ is $O(1/n_k)$, negligible compared to the $O_p(1/\sqrt{n_k})$ estimation error.
+3. The finite-sample correction term $\lceil (n_k+1)(1-\alpha) \rceil / (n_k+1) - (1-\alpha)$ is $O(1/n_k)$, negligible compared to the $O_p(1/\sqrt{n_k})$ estimation error.
 4. The SCCP interval width in cluster $k$ tracks $\sigma_k$, explaining adaptivity: clusters with lower conditional variance yield narrower intervals.
 
 **Status:** Not started — **1 week work.**
@@ -208,7 +208,7 @@ where for sub-Gaussian residuals, $Q_k \leq \sigma_k \cdot \sqrt{2 \log(1/\sqrt{
 - **Calibration Algorithm** (Algorithm 1 in LaTeX)
 - **Theorem 1**: Coverage guarantee (see theory gaps above)
 - **Theorem 2**: Interval width bound (see theory gaps above)
-- **Finite-sample correction**: ⌈(n_k+1)(1-α)⌉/n_k
+- **Finite-sample correction**: ⌈(n_k+1)(1-α)⌉/(n_k+1)
 - **Exchangeability validation**: Per-cluster ACF(1) test
 - **Multivariate strategies**: per_feature, max, mean, mahalanobis
 
