@@ -48,7 +48,7 @@ s_t = A · s_{t-1}  +  B(x_t)  +  β · tanh(MLP(A·s_{t-1} + B(x_t), h_t))
       ⎣ structured ⎦  ⎣innov.⎦    ⎣        small tanh-MLP correction       ⎦
 ```
 
-The matrix A is block-diagonal with constrained eigenvalues. The correction MLP is spectrally normalised (`nn.utils.spectral_norm`) bounding each linear layer to `‖W‖₂ ≤ 1`, but GELU has Lipschitz constant `L_G ≈ 1.77`, so `‖J_MLP‖₂ ≤ L_G`. Combined with `‖A‖₂ ≤ 1`, the per-step Jacobian is bounded by `1 + L_G·β` (`L_G ≈ 1.77`, the GELU Lipschitz constant; β is initialised at 0.01 via softplus).
+The matrix A is block-diagonal with constrained eigenvalues. The correction MLP is spectrally normalised (`nn.utils.spectral_norm`) bounding each linear layer to `‖W‖₂ ≤ 1`, but GELU has Lipschitz constant `L_G ≈ 1.13` (exact supremum `Φ(√2)+√2·φ(√2) ≈ 1.1286`), so `‖J_MLP‖₂ ≤ L_G`. Combined with `‖A‖₂ ≤ 1`, the per-step Jacobian is bounded by `1 + L_G·β` (`L_G ≈ 1.13`; β is initialised at 0.01 via softplus).
 
 ### Core Modules
 
@@ -191,10 +191,10 @@ cissn/
 
 ## Testing
 
-25 tests in 5 files, all passing:
+27 tests in 5 files, all passing:
 
 - `test_model.py` (4 tests): Encoder/head shapes, integration
 - `test_components.py` (4 tests): Explainer structure, dataset inheritance, Solar loader behavior, MS target ordering
 - `test_experiment_runners.py` (4 tests): Multi-seed arg propagation, baseline interval metric scopes
 - `test_training.py` (6 tests): DataLoader policies, split validation, no test access during train, partial batches, variable batch concatenation, epoch diagnostics
-- `test_utils.py` (7 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection, coverage property test
+- `test_utils.py` (9 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection, coverage property test, FlatConformal vs SCCP parity, joint PICP calculation

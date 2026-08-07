@@ -33,6 +33,20 @@ def compute_picp(lower: np.ndarray, upper: np.ndarray, y_true: np.ndarray) -> fl
     return float(np.mean(covered))
 
 
+def compute_joint_picp(lower: np.ndarray, upper: np.ndarray, y_true: np.ndarray) -> float:
+    """
+    Joint Prediction Interval Coverage Probability:
+    fraction of samples where ALL horizon and feature elements are simultaneously covered.
+    """
+    covered = (y_true >= lower) & (y_true <= upper)
+    if covered.ndim > 1:
+        axes = tuple(range(1, covered.ndim))
+        covered_joint = np.all(covered, axis=axes)
+    else:
+        covered_joint = covered
+    return float(np.mean(covered_joint))
+
+
 def compute_mpiw(lower: np.ndarray, upper: np.ndarray) -> float:
     """
     Mean Prediction Interval Width (MPIW):

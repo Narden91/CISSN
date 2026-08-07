@@ -23,6 +23,7 @@ class ForecastHead(nn.Module):
         output_dim: int = 1,
         horizon: int = 1,
         hidden_dim: Optional[int] = None,
+        dropout: float = 0.0,
     ):
         super().__init__()
         if hidden_dim is None:
@@ -30,12 +31,14 @@ class ForecastHead(nn.Module):
         self.state_dim = state_dim
         self.output_dim = output_dim
         self.horizon = horizon
+        self.dropout = dropout
 
         self.lin_weight = nn.Parameter(torch.randn(state_dim, horizon, output_dim) * 0.02)
         self.lin_bias = nn.Parameter(torch.zeros(horizon, output_dim))
         self.refine = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, horizon * output_dim),
         )
         self.refinement_scale = nn.Parameter(torch.tensor(0.1))

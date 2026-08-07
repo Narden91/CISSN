@@ -113,6 +113,41 @@ class TestConformalContracts(unittest.TestCase):
         self.assertGreaterEqual(covered, 1 - alpha,
                                 msg=f"Empirical coverage {covered:.4f} < 1-alpha={1-alpha}")
 
+    def test_flat_vs_sccp_parity(self):
+        """FlatConformal and single-cluster SCCP must produce identical quantiles on same 1D residuals."""
+        import numpy as np
+        from cissn.baselines.flat_conformal import FlatConformal
+
+        rng = np.random.default_rng(42)
+        residuals = rng.uniform(0.1, 5.0, 50)
+        states = rng.standard_normal((50, 2))
+
+        flat = FlatConformal(alpha=0.1)
+        flat.fit(residuals)
+
+        sccp = StateConditionalConformal(alpha=0.1, n_clusters=1, multivariate_strategy="max")
+        sccp.fit(states, residuals)
+
+        stored_sccp_q = float(list(sccp.quantiles.values())[0])
+        self.assertAlmostEqual(flat.quantile_, stored_sccp_q, places=6,
+                               msg="FlatConformal and SCCP single-cluster quantiles differ")
+
+    def test_compute_joint_picp(self):
+        """compute_joint_picp requires all elements in sample window to be covered."""
+        import numpy as np
+        from cissn.evaluation.metrics import compute_joint_picp, compute_picp
+
+        lower = np.zeros((4, 2, 2))
+        upper = np.ones((4, 2, 2))
+        y_true = np.zeros((4, 2, 2))
+        # Set 1 element out of bounds in sample 0
+        y_true[0, 1, 1] = 2.0
+
+        # Element-wise marginal coverage: 15 out of 16 covered = 15/16 = 0.9375
+        self.assertEqual(compute_picp(lower, upper, y_true), 15.0 / 16.0)
+        # Joint sample coverage: 3 out of 4 samples fully covered = 0.75
+        self.assertEqual(compute_joint_picp(lower, upper, y_true), 0.75)
+
 
 if __name__ == '__main__':
     unittest.main()

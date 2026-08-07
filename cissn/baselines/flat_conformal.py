@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from typing import Union, Tuple
 
+from cissn.conformal import split_conformal_q_level
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,7 @@ class FlatConformal:
         self.alpha = alpha
         self.quantile_ = None
         self.calibrated = False
+        self.coverage_scope = "marginal"
 
     def fit(self, residuals: Union[torch.Tensor, np.ndarray]):
         """Calibrate: compute the (1-alpha) quantile of absolute residuals."""
@@ -37,8 +40,7 @@ class FlatConformal:
             raise ValueError("residuals must be non-negative absolute errors.")
 
         n = residuals.shape[0]
-        q_level = np.ceil((n + 1) * (1 - self.alpha)) / n
-        q_level = min(q_level, 1.0)
+        q_level = split_conformal_q_level(n, self.alpha)
         self.quantile_ = float(np.quantile(residuals, q_level, method='higher'))
         self.calibrated = True
         logger.info("Flat CP calibration: q=%.4f, n=%d, alpha=%s", self.quantile_, n, self.alpha)

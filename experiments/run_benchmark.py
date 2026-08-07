@@ -23,7 +23,7 @@ from cissn.utils import EarlyStopping
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     mean_absolute_percentage_error,
-    compute_picp, compute_mpiw, winkler_score,
+    compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
     calibration_error,
 )
 
@@ -184,7 +184,8 @@ class Experiment:
             state_dim=self.args.state_dim,
             output_dim=self.args.c_out,
             horizon=self.args.pred_len,
-            hidden_dim=self.args.d_model // 2
+            hidden_dim=self.args.d_model // 2,
+            dropout=self.args.dropout,
         )
 
     def _get_data(self, flag):
@@ -507,15 +508,17 @@ class Experiment:
             upper_np = upper.numpy()
             cluster_labels = self.conformal.last_predicted_clusters_
             coverage = compute_picp(lower_np, upper_np, trues)
+            coverage_joint = compute_joint_picp(lower_np, upper_np, trues)
             mean_width = compute_mpiw(lower_np, upper_np)
             winkler = winkler_score(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
             calib_err = calibration_error(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
             coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
             print(
-                f'Coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%: {coverage:.4f}, '
+                f'Coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%: {coverage:.4f} (joint: {coverage_joint:.4f}), '
                 f'MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}'
             )
         else:
+            coverage_joint = None
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
 
@@ -536,11 +539,13 @@ class Experiment:
         point_metrics = {"mae": mae, "mse": mse, "rmse": rmse, "mape": mape}
         interval_metrics = {
             "coverage": coverage if coverage is not None else None,
+            "coverage_joint": coverage_joint if coverage_joint is not None else None,
             "mean_width": mean_width if mean_width is not None else None,
             "winkler": winkler if winkler is not None else None,
             "calibration_error": calib_err if calib_err is not None else None,
+            "crps": None,
             "alpha": self.args.conformal_alpha,
-            "coverage_scope": getattr(self.conformal, "coverage_scope", None) if hasattr(self, "conformal") else None,
+            "coverage_scope": getattr(self.conformal, "coverage_scope", "marginal") if hasattr(self, "conformal") else None,
         }
         metrics_payload = {
             "setting": setting,

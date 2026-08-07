@@ -10,6 +10,15 @@ from typing import Union, Tuple, Optional
 logger = logging.getLogger(__name__)
 
 
+def split_conformal_q_level(n: int, alpha: float) -> float:
+    """Compute exact finite-sample split-conformal quantile level: ceil((n+1)(1-alpha)) / (n+1)."""
+    if n <= 0:
+        raise ValueError(f"n must be a positive integer; got {n}.")
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha must lie strictly between 0 and 1; got {alpha}.")
+    return min(np.ceil((n + 1) * (1 - alpha)) / (n + 1), 1.0)
+
+
 class StateConditionalConformal:
     """
     State-Conditional Conformal Prediction (SCCP).
@@ -59,7 +68,12 @@ class StateConditionalConformal:
         self.alpha = alpha
         self.n_clusters = n_clusters
         self.multivariate_strategy = multivariate_strategy
-        self.coverage_scope = "simultaneous" if multivariate_strategy == "max" else "marginal"
+        if multivariate_strategy == "max":
+            self.coverage_scope = "simultaneous"
+        elif multivariate_strategy == "per_feature":
+            self.coverage_scope = "marginal"
+        else:
+            self.coverage_scope = "heuristic"
         self.random_state = random_state
         self.correct_acf = correct_acf
         self._reset_fit_state()
@@ -223,8 +237,7 @@ class StateConditionalConformal:
                 self.inv_cov_matrices_[k] = inv_cov
                 
                 distances = np.sqrt(np.einsum('ij,jk,ik->i', flattened, inv_cov, flattened))
-                # Standard split-conformal level: ceil((n+1)(1-alpha))/(n+1)-th order statistic
-                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / (n_k + 1), 1.0)
+                q_level = split_conformal_q_level(n_k, self.alpha)
                 q_k = self._compute_quantile(distances, q_level)
                 
                 bounds = q_k * np.sqrt(np.diag(cov))
@@ -239,8 +252,7 @@ class StateConditionalConformal:
                 
                 self.quantiles[k] = bounds
             else:
-                # Standard split-conformal level: ceil((n+1)(1-alpha))/(n+1)-th order statistic
-                q_level = min(np.ceil((n_k + 1) * (1 - self.alpha)) / (n_k + 1), 1.0)
+                q_level = split_conformal_q_level(n_k, self.alpha)
                 q_k = self._compute_quantile(cluster_residuals, q_level)
 
                 if self.correct_acf:
@@ -257,8 +269,7 @@ class StateConditionalConformal:
                 fallback_quantile = np.stack(list(self.quantiles.values()), axis=0).max(axis=0)
             else:
                 n_all = residuals.shape[0]
-                # Standard split-conformal level for fallback
-                q_level = min(np.ceil((n_all + 1) * (1 - self.alpha)) / (n_all + 1), 1.0)
+                q_level = split_conformal_q_level(n_all, self.alpha)
                 fallback_quantile = self._compute_quantile(residuals, q_level)
             for k in empty_clusters:
                 self.quantiles[k] = fallback_quantile

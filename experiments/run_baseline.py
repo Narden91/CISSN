@@ -50,8 +50,10 @@ from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import supported_datasets
 from cissn.evaluation.metrics import (
     calibration_error,
+    compute_joint_picp,
     compute_mpiw,
     compute_picp,
+    crps_gaussian,
     mean_absolute_error,
     mean_absolute_percentage_error,
     mean_squared_error,
@@ -129,19 +131,30 @@ def compute_metrics(args, preds: np.ndarray, trues: np.ndarray, lower: Optional[
     }
     interval_metrics = {
         "coverage": None,
+        "coverage_joint": None,
         "mean_width": None,
         "winkler": None,
         "calibration_error": None,
+        "crps": None,
         "alpha": args.conformal_alpha,
-        "coverage_scope": infer_coverage_scope(lower=lower, upper=upper),
+        "coverage_scope": "marginal" if lower is not None else None,
     }
     if lower is not None and upper is not None:
+        crps_val = None
+        if getattr(args, "model", None) in ("mc_dropout", "deep_ensemble", "deepstate"):
+            from scipy.stats import norm
+            z = norm.ppf(1.0 - args.conformal_alpha / 2.0)
+            std = (upper - lower) / (2.0 * z)
+            crps_val = crps_gaussian(preds, std, trues)
+
         interval_metrics.update(
             {
                 "coverage": compute_picp(lower, upper, trues),
+                "coverage_joint": compute_joint_picp(lower, upper, trues),
                 "mean_width": compute_mpiw(lower, upper),
                 "winkler": winkler_score(lower, upper, trues, alpha=args.conformal_alpha),
                 "calibration_error": calibration_error(lower, upper, trues, alpha=args.conformal_alpha),
+                "crps": crps_val,
             }
         )
     return point_metrics, interval_metrics
@@ -358,6 +371,7 @@ def build_backbone(args):
         output_dim=args.c_out,
         horizon=args.pred_len,
         hidden_dim=args.d_model // 2,
+        dropout=args.dropout,
     )
     return encoder, head
 
