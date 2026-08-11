@@ -53,7 +53,15 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
 
     if flag == 'train':
         shuffle_flag = True
-        drop_last = True
+        # Never drop training data. drop_last exists to shield batch-statistics
+        # layers from a short final batch, but these models use LayerNorm (which
+        # normalises per sample) and a covariance loss computed over
+        # batch x seq_len, so even a single-sample batch yields finite,
+        # well-conditioned gradients. Dropping the remainder would discard
+        # len(split) % batch_size samples every epoch -- 45% of exchange_rate at
+        # batch 2048 -- making results incomparable to baselines trained on the
+        # full split.
+        drop_last = False
         batch_size = args.batch_size
     elif flag == 'pred':
         shuffle_flag = False
@@ -82,7 +90,7 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         raise ValueError(
             f"Training split contains only {dataset_length} samples, which is smaller than batch_size={batch_size}."
         )
-    
+
     logger.debug("%s split: %d samples", flag, dataset_length)
     
     data_loader = DataLoader(

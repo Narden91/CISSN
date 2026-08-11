@@ -365,7 +365,8 @@ if __name__ == '__main__':
     parser.add_argument('--require_gpu', action='store_true',
                         help='fail instead of falling back to CPU when no GPU is available')
     parser.add_argument('--train_epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='batch size (matches the CISSN default so ablations stay comparable)')
     parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--conformal_alpha', type=float, default=0.1)

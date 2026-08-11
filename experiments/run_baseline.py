@@ -397,6 +397,7 @@ def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer,
     encoder.train()
     head.train()
     losses = []
+    weights = []
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
         optimizer.zero_grad()
         states, _final_state, outputs, targets = forward_backbone(
@@ -414,9 +415,11 @@ def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer,
             )
         optimizer.step()
         losses.append(float(loss.item()))
+        # Element-weighted so a final partial batch does not skew the epoch mean.
+        weights.append(outputs.numel())
     if not losses:
         raise RuntimeError("Backbone training loader produced no batches.")
-    return float(np.mean(losses))
+    return float(np.average(losses, weights=weights))
 
 
 def validate_backbone(encoder: nn.Module, head: nn.Module, loader, criterion: nn.Module, device: torch.device, args) -> float:
@@ -662,7 +665,8 @@ def parse_args():
     parser.add_argument("--require_gpu", action="store_true",
                         help="fail instead of falling back to CPU when no GPU is available")
     parser.add_argument("--train_epochs", type=int, default=10, help="training epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="batch size")
+    parser.add_argument("--batch_size", type=int, default=128,
+                        help="batch size (matches the CISSN default so baselines stay comparable)")
     parser.add_argument("--patience", type=int, default=3, help="early stopping patience")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="learning rate")
     parser.add_argument("--lradj", type=str, default="type1", help="lr schedule [type1, type2, cosine]")

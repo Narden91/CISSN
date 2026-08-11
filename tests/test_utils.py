@@ -1,6 +1,7 @@
 import unittest
 import warnings
 
+import numpy as np
 import torch
 
 
@@ -59,6 +60,39 @@ class TestConformalContracts(unittest.TestCase):
 
         self.assertEqual(conformal.kmeans.n_clusters, 1)
         self.assertEqual(conformal.get_cluster_stats()["fitted_n_clusters"], 1)
+
+    def test_no_cluster_falls_below_finite_sample_threshold(self):
+        """Every fitted cluster must retain enough samples for a valid quantile.
+
+        Budgeting clusters as n // min_samples only bounds the average size;
+        K-Means on imbalanced states could still leave a cluster below 1/alpha,
+        where the finite-sample quantile has no coverage guarantee. Reproduces
+        exchange_rate at pred_len=720, which yields 39 calibration samples.
+        """
+        rng = np.random.default_rng(1)
+        states = torch.tensor(
+            np.vstack([
+                rng.normal(0.0, 0.1, size=(9, 5)),
+                rng.normal(5.0, 0.1, size=(10, 5)),
+                rng.normal(-5.0, 2.0, size=(20, 5)),
+            ]),
+            dtype=torch.float32,
+        )
+        residuals = torch.tensor(np.abs(rng.normal(size=(39, 4, 2))), dtype=torch.float32)
+
+        conformal = StateConditionalConformal(
+            alpha=0.1, n_clusters=5, multivariate_strategy='max', random_state=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            conformal.fit(states, residuals)
+
+        min_required = max(5, int(np.ceil(1.0 / 0.1)))
+        smallest = min(conformal.cluster_sizes_.values())
+        self.assertGreaterEqual(
+            smallest, min_required,
+            f"cluster of {smallest} samples is below the {min_required} needed for alpha=0.1",
+        )
 
     def test_constant_residual_acf_is_zero_not_nan(self):
         rho = StateConditionalConformal._compute_acf1(torch.ones(12).numpy())

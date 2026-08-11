@@ -39,6 +39,7 @@ def train_baseline_epoch(
     """Train one epoch for baselines exposing `forward(x) -> forecast`."""
     model.train()
     losses: list[float] = []
+    weights: list[int] = []
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
@@ -50,9 +51,11 @@ def train_baseline_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         losses.append(float(loss.item()))
+        # Element-weighted so a final partial batch does not skew the epoch mean.
+        weights.append(outputs.numel())
     if not losses:
         raise RuntimeError("Baseline training loader produced no batches.")
-    return float(np.mean(losses))
+    return float(np.average(losses, weights=weights))
 
 
 def evaluate_baseline(

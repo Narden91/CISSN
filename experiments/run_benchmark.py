@@ -289,6 +289,7 @@ class Experiment:
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
+            train_loss_weights = []
             epoch_states = []
             epoch_final_states = []
 
@@ -309,6 +310,10 @@ class Experiment:
                     target_scale = torch.tensor(0.01, device=self.device, dtype=outputs.dtype)
                     loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - target_scale) ** 2
                 train_loss.append(loss.item())
+                # Weight by element count so the final partial batch does not
+                # dominate the epoch mean (it holds fewer samples but would
+                # otherwise count as one full batch), matching self.vali().
+                train_loss_weights.append(outputs.numel())
                 epoch_states.append(states.detach().cpu())
                 epoch_final_states.append(final_state.detach())
 
@@ -329,7 +334,7 @@ class Experiment:
                     time_now = time.time()
 
             print(f"Epoch: {epoch+1} cost time: {time.time()-epoch_time:.2f}")
-            train_loss = np.average(train_loss)
+            train_loss = float(np.average(train_loss, weights=train_loss_weights))
             vali_loss = self.vali(vali_loader, criterion)
 
             disent_metrics, refinement_ratio = self._summarize_epoch_diagnostics(
@@ -654,7 +659,9 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--require_gpu', action='store_true',
                         help='fail instead of falling back to CPU when no GPU is available')
     parser.add_argument('--train_epochs', type=int, default=10, help='training epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='batch size (128 keeps GPU step time amortised without starving '
+                             'the optimiser of updates; see CLAUDE.md)')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2, cosine]')

@@ -33,6 +33,15 @@ uv pip install -e .
 
 **Requirements**: Python ≥ 3.9, PyTorch ≥ 2.0.0. Uses `uv` for dependency management.
 
+**GPU**: `pyproject.toml` pins the CUDA 12.8 wheel index, because the default PyPI `torch` wheel is CPU-only on Windows and would silently run every experiment on the CPU. Verify with:
+
+```bash
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# expect a '+cuXXX' build and True; '+cpu' means no GPU acceleration
+```
+
+Pass `--require_gpu` to any experiment script (or set `CISSN_REQUIRE_GPU=1`) to fail fast instead of falling back to the CPU.
+
 ---
 
 ## Quick Start
@@ -195,7 +204,7 @@ manuscript/         # Paper outline and writing gates
 ## Testing
 
 ```bash
-uv run python tests/run_tests.py     # 25 tests, all passing
+uv run python tests/run_tests.py     # 33 tests, all passing
 ```
 
 Tests cover: encoder/head shapes and integration, ForecastExplainer structure, dataset inheritance, MS target ordering, Solar loader behavior, multi-seed arg propagation, baseline interval metric scopes, DataLoader evaluation policies, split validation, partial batches, train/test protocol separation, variable batch concatenation, epoch diagnostics, and conformal predictor contracts (including textbook split-conformal coverage).

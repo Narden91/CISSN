@@ -17,7 +17,7 @@ training:
   label_len: 48
   pred_len: 96
   train_epochs: 10
-  batch_size: 32
+  batch_size: 128
   learning_rate: 0.001
   patience: 3
   lradj: type1

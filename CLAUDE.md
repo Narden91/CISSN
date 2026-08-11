@@ -178,6 +178,9 @@ cissn/
 - **Seed**: Set via `--seed` CLI arg (default 42); all torch/numpy/random/cudnn seeds
 - **Device**: `select_device()` from `cissn.utils` — `cuda` if available, else warns loudly and falls back to `cpu`; `non_blocking=True` for device transfers. Pass `--require_gpu` (or set `CISSN_REQUIRE_GPU=1`) to make a missing GPU a hard error instead of a silent CPU run.
 - **CUDA wheels**: `pyproject.toml` pins the cu128 index for `torch`. The default PyPI wheel is CPU-only on Windows, which silently runs every experiment on the CPU; cu128 is also required for Blackwell/sm_120 (RTX 50-series).
+- **Batch size**: default `128` for all runners. The encoder recurrence is launch-bound, not compute-bound, so GPU step time is nearly flat in batch size (~68 ms from bs=32 to bs=512) and epoch time falls almost linearly (ETTh1 h96: 44.9 s at bs=32 → 11.3 s at bs=128). 128 was chosen over larger values to keep enough gradient updates per epoch (68 on ETTh1, ~29 on exchange_rate); MSE matched bs=32 to four decimals in a 3-epoch check. Raising it further trades optimisation quality for throughput and must be re-validated per dataset.
+- **No silent sample loss**: the train loader keeps the final partial batch (`drop_last` only when the remainder is exactly 1). The models use LayerNorm, not BatchNorm, so short batches are harmless. `drop_last=True` would discard `len(split) % batch_size` samples per epoch — 45% of exchange_rate at bs=2048 — making results incomparable to baselines trained on the full split.
+- **CUDA graphs**: `encoder.enable_cuda_graph()` replays a captured graph for eval-mode, no-grad, fixed-shape CUDA forwards (~8x on inference). Training, autograd, CPU, and changed shapes fall back to eager automatically.
 - **torch.compile**: Applied on non-Windows systems for the encoder's inner sequence loop
 - **Checkpoints**: `torch.load(..., weights_only=True)` — two files per run: `checkpoint.pth` (encoder) + `checkpoint_head.pth` (head)
 - **Results**: Saved to `./results/{setting}/` as `.npy` files
@@ -188,14 +191,16 @@ cissn/
 
 - Walk-forward rolling window evaluation (`--walk_forward`) silently drops trailing samples when `len(test_data) % pred_len != 0`; a `UserWarning` is now emitted with the exact count.
 - ACF-aware quantile correction addresses AR(1) autocorrelation (Theorem 1b); stronger temporal dependence (long-memory) may require block-conformal extensions.
-- `torch.compile` is skipped on Windows unless `cl.exe` (MSVC) is on PATH — run `benchmark_encoder.py` to verify.
+- `torch.compile` is skipped on Windows: Triton has no Windows build, so Inductor cannot compile. `enable_cuda_graph()` covers the inference case instead.
+- **`exchange_rate` at `pred_len=720` has only 39 calibration samples** (the `cal` window spans 854 rows, of which `seq_len + pred_len = 816` are consumed). SCCP now reduces `n_clusters` until every cluster holds at least `1/alpha` samples, so the coverage guarantee stays valid (measured 0.99 at nominal 0.90), but it warns that state-conditional adaptivity is reduced — at `H=720` it falls back to 2 clusters. Intervals there are wide (MPIW ~19) because ACF inflation reaches ~3x on 39 strongly autocorrelated residuals. This is a data-scarcity limit, not a defect: report the reduced cluster count, or raise `--conformal_alpha` if wide intervals are unacceptable.
 
 ## Testing
 
-27 tests in 5 files, all passing:
+33 tests in 6 files, all passing:
 
 - `test_model.py` (4 tests): Encoder/head shapes, integration
 - `test_components.py` (4 tests): Explainer structure, dataset inheritance, Solar loader behavior, MS target ordering
 - `test_experiment_runners.py` (4 tests): Multi-seed arg propagation, baseline interval metric scopes
-- `test_training.py` (6 tests): DataLoader policies, split validation, no test access during train, partial batches, variable batch concatenation, epoch diagnostics
+- `test_training.py` (7 tests): DataLoader policies, split validation, no test access during train, every-sample-seen invariant, partial batches, variable batch concatenation, epoch diagnostics
+- `test_encoder_perf.py` (3 tests): Spectral norm applied once per forward, all-states/final-state consistency, gradient flow
 - `test_utils.py` (9 tests): Conformal scalar/per-feature broadcast, cluster reset, constant-residual ACF, requested single cluster, incompatible shape rejection, coverage property test, FlatConformal vs SCCP parity, joint PICP calculation

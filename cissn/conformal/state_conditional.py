@@ -198,12 +198,37 @@ class StateConditionalConformal:
         if self.n_clusters > 1:
             max_clusters_by_samples = max(1, n_samples // min_samples_per_cluster)
             n_clusters = min(n_clusters, max_clusters_by_samples)
-        self.kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
         self.scaler = StandardScaler()
-
         scaled_states = self.scaler.fit_transform(states)
-        self.kmeans.fit(scaled_states)
-        cluster_labels = self.kmeans.predict(scaled_states)
+
+        # n_samples // min_samples_per_cluster only bounds the *average* cluster
+        # size; K-Means on real states is routinely imbalanced, so a run that
+        # satisfies the budget can still yield an under-populated cluster whose
+        # quantile has no finite-sample guarantee. Retry with progressively
+        # fewer clusters until every cluster clears the threshold, so coverage
+        # stays valid instead of merely warning about the violation.
+        while True:
+            kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
+            kmeans.fit(scaled_states)
+            cluster_labels = kmeans.labels_
+            counts = np.bincount(cluster_labels, minlength=n_clusters)
+            if n_clusters == 1 or counts.min() >= min_samples_per_cluster:
+                break
+            n_clusters -= 1
+            logger.info(
+                "Reducing n_clusters to %d: a cluster held %d < %d calibration samples.",
+                n_clusters, counts.min(), min_samples_per_cluster,
+            )
+
+        if n_clusters < self.n_clusters:
+            warnings.warn(
+                f"Requested n_clusters={self.n_clusters} but only {n_samples} calibration "
+                f"samples are available; using n_clusters={n_clusters} so every cluster keeps "
+                f"at least {min_samples_per_cluster} samples for a valid {1 - self.alpha:.0%} "
+                "interval. State-conditional adaptivity is correspondingly reduced."
+            )
+
+        self.kmeans = kmeans
 
         empty_clusters = []
         for k in range(self.kmeans.n_clusters):
@@ -288,7 +313,13 @@ class StateConditionalConformal:
         if not self.calibrated or self.kmeans is None or self.scaler is None:
             raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
         states_np = self._validate_states(self._to_numpy(states, "states"))
-        return self.kmeans.predict(self.scaler.transform(states_np))
+        # sklearn requires the predict dtype to match the fitted centroids, so a
+        # caller passing float32 states to a float64-fitted KMeans (or vice
+        # versa) would hit a buffer dtype mismatch.
+        scaled = np.asarray(
+            self.scaler.transform(states_np), dtype=self.kmeans.cluster_centers_.dtype
+        )
+        return self.kmeans.predict(scaled)
 
     def get_cluster_stats(self) -> dict:
         """Return JSON-serializable fitted cluster diagnostics."""

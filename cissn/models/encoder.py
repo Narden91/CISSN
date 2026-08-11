@@ -44,7 +44,7 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         )
         self.innovation = nn.Linear(hidden_dim, state_dim)
         # Spectral norm bounds each linear layer to ||W||_2 <= 1, but GELU has
-        # Lipschitz constant L_G ~= 1.77, so the composite MLP Lipschitz constant
+        # Lipschitz constant L_G ~= 1.13, so the composite MLP Lipschitz constant
         # is L_G (not 1). The per-step Jacobian bound is 1 + L_G*beta, not 1+beta.
         self.correction_mlp = nn.Sequential(
             nn.utils.spectral_norm(nn.Linear(state_dim + hidden_dim, hidden_dim)),
@@ -56,6 +56,56 @@ class DisentangledStateEncoder(StructuredDecayMixin):
 
         if sys.platform != 'win32' and hasattr(torch, 'compile'):
             self._run_sequence = torch.compile(self._run_sequence)
+
+        # CUDA-graph cache for inference. The recurrence is launch-bound, so
+        # replaying a captured graph removes nearly all per-step launch cost.
+        # Opt-in via enable_cuda_graph(): capture requires static shapes.
+        self._cuda_graph_enabled = False
+        self._cuda_graphs: dict = {}
+
+    def enable_cuda_graph(self, enabled: bool = True) -> "DisentangledStateEncoder":
+        """Enable CUDA-graph replay for no-grad inference forwards.
+
+        Only affects eval-mode forwards under ``torch.no_grad`` on CUDA with a
+        fixed input shape; every other path runs eagerly. Call again after
+        loading new weights, which invalidates captured graphs.
+        """
+        self._cuda_graph_enabled = enabled
+        self._cuda_graphs.clear()
+        return self
+
+    def _graphed_forward(self, x: torch.Tensor, return_all_states: bool):
+        """Replay (or capture) a CUDA graph for this input shape."""
+        key = (tuple(x.shape), x.dtype, return_all_states)
+        entry = self._cuda_graphs.get(key)
+
+        if entry is None:
+            # Warm up on a side stream before capture, as required by the CUDA
+            # graph API; capture would otherwise record allocator/cuBLAS setup.
+            static_in = x.clone()
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    self._forward_eager(static_in, return_all_states)
+            torch.cuda.current_stream().wait_stream(side)
+
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                static_out = self._forward_eager(static_in, return_all_states)
+            entry = (graph, static_in, static_out)
+            self._cuda_graphs[key] = entry
+
+        graph, static_in, static_out = entry
+        static_in.copy_(x)
+        graph.replay()
+        # The graph always writes into the same buffer, so hand back a copy.
+        return static_out.clone()
+
+    def _forward_eager(self, x: torch.Tensor, return_all_states: bool):
+        projected = self.input_proj(x)
+        dynamics = self._structured_dynamics()
+        return self._run_sequence(projected, dynamics, return_all_states)
 
     def _correction_scale(self) -> torch.Tensor:
         return F.softplus(self.raw_correction_scale)
@@ -72,14 +122,27 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         """Apply block-diagonal A: level, trend, 2D rotation (seasonal), residual."""
         if dynamics is None:
             dynamics = self._structured_dynamics()
-        a_l, a_t, rot00, rot01, rot10, rot11, a_r = dynamics
+        return s @ self._dynamics_matrix(dynamics).T
+
+    @staticmethod
+    def _dynamics_matrix(dynamics) -> torch.Tensor:
+        """Assemble the block-diagonal A as a single (5, 5) matrix.
+
+        A single matmul replaces the per-slice stack, cutting ~10 kernel launches
+        per timestep to one. The state dimension is 5, so building A costs far
+        less than the launches it saves across a 96-step sequence.
+        """
+        # Decay params carry a trailing singleton dim; reshape to scalars so the
+        # assembled matrix is exactly (state_dim, state_dim).
+        a_l, a_t, rot00, rot01, rot10, rot11, a_r = (d.reshape(()) for d in dynamics)
+        zero = torch.zeros_like(a_l)
         return torch.stack([
-            s[:, 0] * a_l,
-            s[:, 1] * a_t,
-            s[:, 2] * rot00 + s[:, 3] * rot10,
-            s[:, 2] * rot01 + s[:, 3] * rot11,
-            s[:, 4] * a_r,
-        ], dim=-1)
+            torch.stack([a_l, zero, zero, zero, zero]),
+            torch.stack([zero, a_t, zero, zero, zero]),
+            torch.stack([zero, zero, rot00, rot10, zero]),
+            torch.stack([zero, zero, rot01, rot11, zero]),
+            torch.stack([zero, zero, zero, zero, a_r]),
+        ])
 
     def _step_from_hidden(self, h_t: torch.Tensor, s_prev: torch.Tensor, dynamics) -> torch.Tensor:
         b_x = self.innovation(h_t)
@@ -88,6 +151,19 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         correction = self._correction_scale() * torch.tanh(self.correction_mlp(corr_in))
         return s_linear + correction
 
+    @staticmethod
+    def _resolved_weight(module: nn.Module) -> torch.Tensor:
+        """Return a linear layer's effective weight, applying spectral norm once.
+
+        ``spectral_norm`` installs a forward pre-hook that recomputes ``weight``
+        from ``weight_orig``; reading ``module.weight`` directly would bypass it
+        and use a stale tensor. Firing the hooks explicitly resolves the weight
+        exactly once so it can be reused across the whole sequence.
+        """
+        for hook in module._forward_pre_hooks.values():
+            hook(module, None)
+        return module.weight
+
     def step(self, x_t: torch.Tensor, s_prev: torch.Tensor) -> torch.Tensor:
         h_t = self.input_proj(x_t)
         return self._step_from_hidden(h_t, s_prev, dynamics=self._structured_dynamics())
@@ -95,14 +171,36 @@ class DisentangledStateEncoder(StructuredDecayMixin):
     def _run_sequence(self, projected: torch.Tensor, dynamics: tuple, return_all_states: bool) -> torch.Tensor:
         batch, seq_len, _ = projected.shape
         s = torch.zeros(batch, self.state_dim, device=projected.device, dtype=projected.dtype)
-        if return_all_states:
-            outs = projected.new_empty(batch, seq_len, self.state_dim)
-            for t in range(seq_len):
-                s = self._step_from_hidden(projected[:, t, :], s, dynamics)
-                outs[:, t, :] = s
-            return outs
+
+        # Hoist everything that does not depend on s out of the loop. The inner
+        # loop is launch-bound (per-step kernels do ~1us of work), so each op
+        # removed from it saves seq_len kernel launches.
+        #
+        # 1. innovation() is applied to every timestep independently: run it once
+        #    as a single batched matmul instead of seq_len small ones.
+        b_x_all = self.innovation(projected)                    # (B, T, state_dim)
+        # 2. spectral_norm recomputes the normalised weight in a forward pre-hook,
+        #    so calling correction_mlp per step re-runs the power iteration every
+        #    timestep. That is both wasteful and wrong: it re-normalises
+        #    mid-sequence, breaking the fixed ||W||_2 <= 1 assumption behind the
+        #    1 + L_G*beta Lipschitz bound. Resolve the weights exactly once here.
+        w0, b0 = self._resolved_weight(self.correction_mlp[0]), self.correction_mlp[0].bias
+        w1, b1 = self._resolved_weight(self.correction_mlp[2]), self.correction_mlp[2].bias
+        a_mat = self._dynamics_matrix(dynamics).T
+        scale = self._correction_scale()
+
+        outs = [] if return_all_states else None
         for t in range(seq_len):
-            s = self._step_from_hidden(projected[:, t, :], s, dynamics)
+            h_t = projected[:, t, :]
+            s_linear = s @ a_mat + b_x_all[:, t, :]
+            corr_in = torch.cat([s_linear, h_t], dim=-1)
+            hidden = F.gelu(F.linear(corr_in, w0, b0))
+            s = s_linear + scale * torch.tanh(F.linear(hidden, w1, b1))
+            if return_all_states:
+                outs.append(s)
+
+        if return_all_states:
+            return torch.stack(outs, dim=1)
         return s
 
     def forward(self, x: torch.Tensor, return_all_states: bool = False):
@@ -114,6 +212,14 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         Returns:
             Final state (batch, state_dim) or all states (batch, seq_len, state_dim)
         """
-        projected = self.input_proj(x)
-        dynamics = self._structured_dynamics()
-        return self._run_sequence(projected, dynamics, return_all_states)
+        # Graph replay is only valid when nothing can change between replays:
+        # eval mode (no dropout randomness, no spectral-norm power iteration),
+        # no autograd, and a CUDA input. Anything else runs eagerly.
+        if (
+            self._cuda_graph_enabled
+            and not self.training
+            and not torch.is_grad_enabled()
+            and x.is_cuda
+        ):
+            return self._graphed_forward(x, return_all_states)
+        return self._forward_eager(x, return_all_states)

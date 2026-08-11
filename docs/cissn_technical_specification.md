@@ -1320,7 +1320,7 @@ model:
 
 training:
   epochs: 100
-  batch_size: 32
+  batch_size: 128
   learning_rate: 0.001
   weight_decay: 0.0001
   lambda_disentangle: 0.1

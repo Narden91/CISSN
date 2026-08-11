@@ -59,7 +59,9 @@ class TestTrainingPipeline(unittest.TestCase):
             _, test_loader = get_data_loader(args, 'test')
             _, pred_loader = get_data_loader(args, 'pred')
 
-        self.assertTrue(train_loader.drop_last)
+        # Training keeps the final partial batch: the models use LayerNorm only,
+        # so a short batch is harmless, and dropping it would discard data.
+        self.assertFalse(train_loader.drop_last)
         self.assertIsInstance(train_loader.sampler, RandomSampler)
 
         self.assertFalse(val_loader.drop_last)
@@ -74,6 +76,34 @@ class TestTrainingPipeline(unittest.TestCase):
         self.assertFalse(pred_loader.drop_last)
         self.assertIsInstance(pred_loader.sampler, SequentialSampler)
         self.assertEqual(pred_loader.batch_size, 1)
+
+    @patch('cissn.data.dataset.pd.read_csv')
+    def test_training_epoch_sees_every_sample(self, mock_read_csv):
+        """No training sample may be silently dropped by batching.
+
+        drop_last=True discards len(split) % batch_size samples per epoch, which
+        grows with batch size (45% of exchange_rate at batch 2048). Results would
+        then not be comparable to baselines trained on the full split.
+        """
+        dates = pd.date_range(start='2020-01-01', periods=200, freq='h')
+        df = pd.DataFrame({'date': dates, 'OT': np.random.randn(200)})
+        mock_read_csv.return_value = df
+
+        borders = ([0, 120, 160], [120, 160, 200])
+        for batch_size in (7, 16, 32):
+            args = SimpleNamespace(
+                data='ETTh1', root_path='.', data_path='ignored.csv',
+                seq_len=4, label_len=2, pred_len=2, features='S', target='OT',
+                batch_size=batch_size, freq='h', num_workers=0,
+            )
+            with patch.object(Dataset_ETT_hour, '_get_borders', return_value=borders):
+                dataset, loader = get_data_loader(args, 'train')
+
+            seen = sum(batch[0].shape[0] for batch in loader)
+            self.assertEqual(
+                seen, len(dataset),
+                f"batch_size={batch_size} dropped {len(dataset) - seen} of {len(dataset)} samples",
+            )
 
     @patch('cissn.data.dataset.pd.read_csv')
     def test_dataset_raises_for_too_short_split(self, mock_read_csv):
@@ -111,6 +141,41 @@ class TestTrainingPipeline(unittest.TestCase):
         loss = Experiment.vali(experiment, loader, criterion)
 
         self.assertAlmostEqual(loss, 2.0 / 3.0, places=6)
+
+    def test_baseline_train_epoch_weights_partial_batches(self):
+        """Epoch training loss must be element-weighted, like validation.
+
+        Keeping the final partial batch (instead of dropping it) makes unequal
+        batch sizes routine, so an unweighted mean over per-batch means would
+        over-weight the samples in that short batch.
+        """
+        from cissn.baselines.training import train_baseline_epoch
+
+        class ZeroForecast(nn.Module):
+            """Always predicts zero, so the loss equals the squared target."""
+
+            def __init__(self):
+                super().__init__()
+                self.scale = nn.Parameter(torch.zeros(1))
+
+            def forward(self, x):
+                return x * self.scale
+
+        model = ZeroForecast()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.0)  # lr=0 keeps predictions at zero
+        # Batch A: 2 samples, squared error 1.0 each. Batch B: 1 sample, error 4.0.
+        loader = [
+            (torch.zeros(2, 1, 1), torch.ones(2, 1, 1), torch.zeros(2, 1, 1), torch.zeros(2, 1, 1)),
+            (torch.zeros(1, 1, 1), torch.full((1, 1, 1), 2.0), torch.zeros(1, 1, 1), torch.zeros(1, 1, 1)),
+        ]
+
+        loss = train_baseline_epoch(
+            model=model, loader=loader, optimizer=optimizer, criterion=nn.MSELoss(),
+            device=torch.device('cpu'), pred_len=1, features='S', grad_clip=0.0,
+        )
+
+        # Element-weighted: (1.0*2 + 4.0*1) / 3 = 2.0. Unweighted would give 2.5.
+        self.assertAlmostEqual(loss, 2.0, places=6)
 
     def test_concatenate_batches_handles_variable_batch_sizes(self):
         combined = Experiment._concatenate_batches(
