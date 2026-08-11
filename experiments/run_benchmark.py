@@ -19,7 +19,7 @@ from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets
-from cissn.utils import EarlyStopping
+from cissn.utils import EarlyStopping, select_device
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     mean_absolute_percentage_error,
@@ -166,7 +166,7 @@ def environment_snapshot(device: torch.device) -> dict:
 class Experiment:
     def __init__(self, args):
         self.args = args
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = select_device(require_gpu=getattr(args, 'require_gpu', False))
         self.model = self._build_model().to(self.device)
         self.head = self._build_head().to(self.device)
         print(f"Model and Head initialized on {self.device}")
@@ -651,6 +651,8 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--lambda_correction_scale', type=float, default=0.0, help='penalty weight keeping encoder correction scale near 0.01')
 
     parser.add_argument('--num_workers', type=int, default=0, help='dataloader workers')
+    parser.add_argument('--require_gpu', action='store_true',
+                        help='fail instead of falling back to CPU when no GPU is available')
     parser.add_argument('--train_epochs', type=int, default=10, help='training epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')

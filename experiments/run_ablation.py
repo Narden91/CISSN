@@ -25,6 +25,7 @@ from cissn.conformal import StateConditionalConformal
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets
+from cissn.utils import select_device
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     compute_picp, compute_mpiw, winkler_score, calibration_error,
@@ -93,7 +94,7 @@ def run_ablation(args, config_key, config):
     print(f"ABLATION: {config_key} — {config['description']}")
     print(f"{'='*70}")
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = select_device(require_gpu=getattr(args, 'require_gpu', False))
 
     # ── Build encoder with ablation flags ──────────────────────────────────
     input_dim = args.enc_in
@@ -361,6 +362,8 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_cov', type=float, default=1.0)
     parser.add_argument('--lambda_temp', type=float, default=0.5)
     parser.add_argument('--num_workers', type=int, default=0)
+    parser.add_argument('--require_gpu', action='store_true',
+                        help='fail instead of falling back to CPU when no GPU is available')
     parser.add_argument('--train_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--learning_rate', type=float, default=0.001)

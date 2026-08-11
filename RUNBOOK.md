@@ -33,6 +33,14 @@ uv venv
 uv pip install -e .
 ```
 
+### Verify GPU Execution
+Goal: Confirm experiments run on the GPU. The default PyPI `torch` wheel is CPU-only on Windows, so a working GPU can be silently ignored for an entire grid.
+```bash
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# Expect a '+cuXXX' build and True. A '+cpu' build means every run is on the CPU.
+```
+Add `--require_gpu` to any runner (or export `CISSN_REQUIRE_GPU=1` for a whole grid) to fail fast instead of falling back to the CPU.
+
 ### Download Benchmark Datasets
 Goal: Fetch raw benchmark CSVs (`ETTh1`, `ETTh2`, `ETTm1`, `ETTm2`, `Weather`, `Electricity`, `Traffic`, `ILI`, `Solar-Energy`) into `./data/`.
 ```bash

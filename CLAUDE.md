@@ -176,7 +176,8 @@ cissn/
 - **Horizon slicing**: `outputs[:, -pred_len:, f_dim:]` where `f_dim = -1` for MS, `0` otherwise
 - **Forward helper**: `Experiment._forward_and_slice(batch_x, batch_y, return_all_states=False)` — use `return_all_states=True` during training for the disentanglement loss
 - **Seed**: Set via `--seed` CLI arg (default 42); all torch/numpy/random/cudnn seeds
-- **Device**: `cuda` if available, else `cpu`; `non_blocking=True` for device transfers
+- **Device**: `select_device()` from `cissn.utils` — `cuda` if available, else warns loudly and falls back to `cpu`; `non_blocking=True` for device transfers. Pass `--require_gpu` (or set `CISSN_REQUIRE_GPU=1`) to make a missing GPU a hard error instead of a silent CPU run.
+- **CUDA wheels**: `pyproject.toml` pins the cu128 index for `torch`. The default PyPI wheel is CPU-only on Windows, which silently runs every experiment on the CPU; cu128 is also required for Blackwell/sm_120 (RTX 50-series).
 - **torch.compile**: Applied on non-Windows systems for the encoder's inner sequence loop
 - **Checkpoints**: `torch.load(..., weights_only=True)` — two files per run: `checkpoint.pth` (encoder) + `checkpoint_head.pth` (head)
 - **Results**: Saved to `./results/{setting}/` as `.npy` files

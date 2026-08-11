@@ -62,6 +62,7 @@ from cissn.evaluation.metrics import (
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
+from cissn.utils import select_device
 
 
 SUPPORTED_MODELS = (
@@ -294,7 +295,7 @@ def build_single_model(args) -> nn.Module:
 
 
 def run_point_baseline(args, setting: str):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_device(require_gpu=getattr(args, "require_gpu", False))
     model = build_single_model(args).to(device)
     train_data, train_loader = get_data_loader(args, "train")
     vali_data, vali_loader = get_data_loader(args, "val")
@@ -472,7 +473,7 @@ def evaluate_mc_dropout(encoder: nn.Module, head: nn.Module, loader, device: tor
 
 def train_backbone_member(args, setting: str, member_seed: int):
     set_random_seed(member_seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_device(require_gpu=getattr(args, "require_gpu", False))
     encoder, head = build_backbone(args)
     encoder = encoder.to(device)
     head = head.to(device)
@@ -658,6 +659,8 @@ def parse_args():
     parser.add_argument("--lambda_correction_scale", type=float, default=0.0, help="penalty weight keeping encoder correction scale near 0.01")
 
     parser.add_argument("--num_workers", type=int, default=0, help="dataloader workers")
+    parser.add_argument("--require_gpu", action="store_true",
+                        help="fail instead of falling back to CPU when no GPU is available")
     parser.add_argument("--train_epochs", type=int, default=10, help="training epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
     parser.add_argument("--patience", type=int, default=3, help="early stopping patience")
