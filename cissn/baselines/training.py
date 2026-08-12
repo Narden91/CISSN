@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -38,24 +37,24 @@ def train_baseline_epoch(
 ) -> float:
     """Train one epoch for baselines exposing `forward(x) -> forecast`."""
     model.train()
-    losses: list[float] = []
-    weights: list[int] = []
+    total_loss = torch.zeros((), device=device)
+    total_weight = 0
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         outputs, targets = slice_forecast(model(batch_x), batch_y, pred_len, features)
         loss = criterion(outputs, targets)
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-        losses.append(float(loss.item()))
-        # Element-weighted so a final partial batch does not skew the epoch mean.
-        weights.append(outputs.numel())
-    if not losses:
+        batch_weight = outputs.numel()
+        total_loss += loss.detach() * batch_weight
+        total_weight += batch_weight
+    if total_weight == 0:
         raise RuntimeError("Baseline training loader produced no batches.")
-    return float(np.average(losses, weights=weights))
+    return float((total_loss / total_weight).item())
 
 
 def evaluate_baseline(

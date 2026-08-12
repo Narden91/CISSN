@@ -62,6 +62,16 @@ class PatchTST(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
+        if input_dim <= 0 or seq_len <= 0 or pred_len <= 0:
+            raise ValueError("input_dim, seq_len, and pred_len must be positive.")
+        if patch_len <= 0 or stride <= 0 or patch_len > seq_len:
+            raise ValueError("patch_len and stride must be positive, with patch_len <= seq_len.")
+        if d_model <= 0 or nhead <= 0 or d_model % nhead:
+            raise ValueError("d_model must be positive and divisible by nhead.")
+        if num_layers <= 0 or dim_feedforward <= 0:
+            raise ValueError("num_layers and dim_feedforward must be positive.")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1).")
         self.input_dim = input_dim
         self.seq_len = seq_len
         self.pred_len = pred_len

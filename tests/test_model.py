@@ -45,5 +45,21 @@ class TestCISSNModel(unittest.TestCase):
         forecast = self.head(state)
         self.assertEqual(forecast.shape, (self.batch_size, self.horizon, 1))
 
+    def test_deepstate_vectorized_rollout_matches_stepwise_transition(self):
+        from cissn.baselines import DeepState
+
+        model = DeepState(input_dim=3, pred_len=6, output_dim=2, hidden_dim=8)
+        state = torch.randn(4, 2, model.STATE_DIM)
+        expected = []
+        with torch.no_grad():
+            current = state.clone()
+            for _ in range(model.pred_len):
+                current = model._transition_step(current)
+                expected.append(torch.einsum("ds,bds->bd", model.C, current))
+            expected = torch.stack(expected, dim=1)
+            actual = model._forecast_from_state(state)
+
+        self.assertTrue(torch.allclose(actual, expected, atol=1e-6, rtol=1e-6))
+
 if __name__ == '__main__':
     unittest.main()

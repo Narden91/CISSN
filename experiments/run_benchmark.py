@@ -315,14 +315,15 @@ class Experiment:
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
+        model_parameters = [*self.model.parameters(), *self.head.parameters()]
         criterion = self._select_criterion()
         disentangle_criterion = self._select_disentangle_criterion()
         history = []
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
-            train_loss = []
-            train_loss_weights = []
+            total_train_loss = torch.zeros((), device=self.device)
+            total_train_weight = 0
             epoch_states = []
             epoch_final_states = []
 
@@ -332,7 +333,7 @@ class Experiment:
 
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
-                model_optim.zero_grad()
+                model_optim.zero_grad(set_to_none=True)
 
                 states, final_state, outputs, batch_y = self._forward_and_slice(
                     batch_x, batch_y, return_all_states=True
@@ -342,20 +343,17 @@ class Experiment:
                 if disentangle_criterion is not None:
                     loss = loss + disentangle_criterion(states)
                 if self.args.lambda_correction_scale > 0 and hasattr(self.model, "_correction_scale"):
-                    target_scale = torch.tensor(0.01, device=self.device, dtype=outputs.dtype)
-                    loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - target_scale) ** 2
-                train_loss.append(loss.item())
-                # Weight by element count so the final partial batch does not
-                # dominate the epoch mean (it holds fewer samples but would
-                # otherwise count as one full batch), matching self.vali().
-                train_loss_weights.append(outputs.numel())
-                epoch_states.append(states.detach().cpu())
+                    loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - 0.01) ** 2
+                batch_weight = outputs.numel()
+                total_train_loss += loss.detach() * batch_weight
+                total_train_weight += batch_weight
+                epoch_states.append(states.detach())
                 epoch_final_states.append(final_state.detach())
 
                 loss.backward()
                 if self.args.grad_clip and self.args.grad_clip > 0:
                     torch.nn.utils.clip_grad_norm_(
-                        list(self.model.parameters()) + list(self.head.parameters()),
+                        model_parameters,
                         max_norm=self.args.grad_clip,
                     )
                 model_optim.step()
@@ -369,7 +367,9 @@ class Experiment:
                     time_now = time.time()
 
             print(f"Epoch: {epoch+1} cost time: {time.time()-epoch_time:.2f}")
-            train_loss = float(np.average(train_loss, weights=train_loss_weights))
+            if total_train_weight == 0:
+                raise RuntimeError("Training loader produced no prediction elements.")
+            train_loss = float((total_train_loss / total_train_weight).item())
             vali_loss = self.vali(vali_loader, criterion)
 
             disent_metrics, refinement_ratio = self._summarize_epoch_diagnostics(

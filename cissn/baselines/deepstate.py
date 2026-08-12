@@ -55,6 +55,14 @@ class DeepState(StructuredDecayMixin):
             alpha: Significance level for Gaussian prediction intervals.
         """
         super().__init__()
+        if input_dim <= 0 or pred_len <= 0 or output_dim <= 0:
+            raise ValueError("input_dim, pred_len, and output_dim must be positive.")
+        if hidden_dim <= 0 or num_layers <= 0:
+            raise ValueError("hidden_dim and num_layers must be positive.")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1).")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError("alpha must be in (0, 1).")
         self.pred_len = pred_len
         self.output_dim = output_dim
         self.alpha = alpha
@@ -105,6 +113,32 @@ class DeepState(StructuredDecayMixin):
         ], dim=-1)
         return new_s
 
+    def _forecast_from_state(self, state: torch.Tensor) -> torch.Tensor:
+        """Project all linear state transitions across the forecast horizon."""
+        steps = torch.arange(1, self.pred_len + 1, device=state.device, dtype=state.dtype).unsqueeze(1)
+        level = self._level_scale().pow(steps)
+        trend = self._trend_scale().pow(steps)
+        gamma = self._gamma().pow(steps)
+        angle = steps * self.omega
+        cosine, sine = torch.cos(angle), torch.sin(angle)
+
+        level_state = state[..., 0].unsqueeze(1) * level
+        trend_state = state[..., 1].unsqueeze(1) * trend
+        seasonal_cos = gamma * (state[..., 2].unsqueeze(1) * cosine + state[..., 3].unsqueeze(1) * sine)
+        seasonal_sin = gamma * (-state[..., 2].unsqueeze(1) * sine + state[..., 3].unsqueeze(1) * cosine)
+        return (
+            level_state * self.C[:, 0]
+            + trend_state * self.C[:, 1]
+            + seasonal_cos * self.C[:, 2]
+            + seasonal_sin * self.C[:, 3]
+        )
+
+    def _initial_state(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        _, hidden = self.encoder(x)
+        final_hidden = hidden[-1]
+        state = self.state_proj(final_hidden).view(x.size(0), self.output_dim, self.STATE_DIM)
+        return state, final_hidden
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -113,22 +147,8 @@ class DeepState(StructuredDecayMixin):
         Returns:
             forecast: (batch, pred_len, output_dim)
         """
-        B = x.size(0)
-        enc_out, _ = self.encoder(x)
-        final_h = enc_out[:, -1, :]
-
-        # Initialize structured state from encoder output
-        s = self.state_proj(final_h)                          # (B, output_dim * STATE_DIM)
-        s = s.view(B, self.output_dim, self.STATE_DIM)        # (B, D, 4)
-
-        preds = []
-        for _ in range(self.pred_len):
-            s = self._transition_step(s)
-            # Observation: y = C @ s  (batch-wise)
-            y = torch.einsum("ds,bds->bd", self.C, s)         # (B, output_dim)
-            preds.append(y)
-
-        return torch.stack(preds, dim=1)                      # (B, pred_len, output_dim)
+        state, _ = self._initial_state(x)
+        return self._forecast_from_state(state)
 
     def predict_interval(
         self, x: torch.Tensor
@@ -145,23 +165,12 @@ class DeepState(StructuredDecayMixin):
         from scipy.stats import norm
         z = torch.tensor(norm.ppf(1 - self.alpha / 2), dtype=x.dtype, device=x.device)
 
-        B = x.size(0)
-        enc_out, _ = self.encoder(x)
-        final_h = enc_out[:, -1, :]
-
-        s = self.state_proj(final_h).view(B, self.output_dim, self.STATE_DIM)
-        log_sigma = self.log_sigma_proj(final_h)              # (B, output_dim)
+        state, final_hidden = self._initial_state(x)
+        log_sigma = self.log_sigma_proj(final_hidden)         # (B, output_dim)
         sigma = torch.exp(log_sigma).clamp(min=1e-6)          # (B, output_dim)
 
-        preds, sigmas = [], []
-        for _ in range(self.pred_len):
-            s = self._transition_step(s)
-            y = torch.einsum("ds,bds->bd", self.C, s)
-            preds.append(y)
-            sigmas.append(sigma)
-
-        mean = torch.stack(preds, dim=1)                      # (B, pred_len, D)
-        sigma_out = torch.stack(sigmas, dim=1)                # (B, pred_len, D)
+        mean = self._forecast_from_state(state)
+        sigma_out = sigma.unsqueeze(1).expand(-1, self.pred_len, -1)
 
         return mean, mean - z * sigma_out, mean + z * sigma_out
 
