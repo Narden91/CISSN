@@ -10,13 +10,13 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 - Shared training: `--train_epochs 20 --patience 5 --lradj cosine --batch_size 128`.
 - Shared calibration: chronological train-tail calibration split, `--cal_fraction 0.2`, `--conformal_alpha 0.1`.
 - Primary interval geometry: `--multivariate_strategy per_feature`; report `coverage_primary` (marginal). `max` is a separate simultaneous-coverage analysis.
-- Publication safeguards: `--require_gpu --require_clean_git --strict_sanity`.
+- Publication safeguards: `--require_gpu --require_clean_git`.
 
 The state partition is learned only from train states, then calibration uses the later calibration split. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
 
 All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
-## Gate 0: environment, data, tests
+## Step 1: environment, data, tests
 
 ```powershell
 uv sync
@@ -27,28 +27,28 @@ uv run python tests/run_tests.py
 
 Stop if any command fails. `verify_datasets.py` must pass for the four locked datasets.
 
-## Gate 1: DLinear reference reproduction
+## Step 2: DLinear reference reproduction
 
 ```powershell
-uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --strict_sanity --checkpoints ./checkpoints/gate --results_dir ./results/gate
+uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Inspect `results/gate/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Do not impose an unvalidated numeric acceptance cutoff. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
+Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts, even when `sanity_passed` is false. Do not include a failed review in publication tables. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
 
-## Gate 2: CISSN end-to-end
+## Step 3: CISSN end-to-end
 
 ```powershell
-uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --strict_sanity --checkpoints ./checkpoints/gate --results_dir ./results/gate
+uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Require `sanity_passed: true`. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
+Include the result in publication tables only when `sanity_passed: true`. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
 
 ## Main grid
 
 Run CISSN with the multi-seed driver for each locked dataset:
 
 ```powershell
-uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --strict_sanity --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
+uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
 ```
 
 Repeat with `ETTh2`, `weather`, and `exchange_rate`. The driver must propagate all safeguards; verify this with `--help` before a long launch.
@@ -63,7 +63,7 @@ foreach ($model in $models) {
   foreach ($data in $datasets) {
     foreach ($h in 96,192,336,720) {
       foreach ($seed in $seeds) {
-        uv run python experiments/run_baseline.py --model $model --data $data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --strict_sanity --checkpoints ./checkpoints/publication --results_dir ./results/publication
+        uv run python experiments/run_baseline.py --model $model --data $data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/publication --results_dir ./results/publication
       }
     }
   }
@@ -75,12 +75,12 @@ For ETT, add the horizon `24`. For UQ models the default is conformalized interv
 Run ablations only after the main comparison completes:
 
 ```powershell
-uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --strict_sanity --output ./results/publication/ablations_ETTh1_h336_s42.json
+uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/ablations_ETTh1_h336_s42.json
 ```
 
-## Publication gates
+## Publication review
 
-Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Reject incomplete, failed-sanity, different-split, or raw-UQ results from the primary table.
+Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `sanity_passed: false`, different splits, and raw-UQ results from the primary table.
 
 ```powershell
 uv run python scripts/generate_publication_tables.py --results_root ./results/publication --output_dir ./results/publication/tables

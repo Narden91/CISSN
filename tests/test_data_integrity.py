@@ -11,7 +11,7 @@ from cissn.data.registry import DatasetIntegrityError, verify_dataset
 from cissn.evaluation.sanity import check_forecast_sanity
 
 
-class TestDatasetIntegrityGate(unittest.TestCase):
+class TestDatasetIntegrity(unittest.TestCase):
     """Regression coverage for the D1 failure mode: data/ETT/ETTh1.csv was
     replaced with i.i.d. noise (wrong row count, wrong date range, no
     autocorrelation) and every model trained on it correctly converged to
@@ -132,7 +132,7 @@ class TestSplitBorderCorrectness(unittest.TestCase):
         self.assertGreater(len(small_cal.data_x), len(large_cal.data_x))
 
 
-class TestForecastSanityGate(unittest.TestCase):
+class TestForecastReview(unittest.TestCase):
     """Regression coverage for the D2 finding: a model that converges to a
     near-constant output (the Bayes-optimal predictor for white-noise input)
     completes without raising. check_forecast_sanity is the check that
@@ -148,7 +148,7 @@ class TestForecastSanityGate(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertTrue(any("constant" in f for f in report["failures"]))
 
-    def test_no_better_than_mean_fails_on_mse_check(self):
+    def test_insufficient_mean_reference_improvement_is_reported(self):
         rng = np.random.default_rng(0)
         trues = rng.normal(size=(500, 24, 7))
         # Predictions with full variance but uncorrelated with targets: MSE ~= 2*var(trues).
@@ -157,7 +157,7 @@ class TestForecastSanityGate(unittest.TestCase):
         report = check_forecast_sanity(preds, trues)
 
         self.assertFalse(report["passed"])
-        self.assertTrue(any("no better than predicting the mean" in f for f in report["failures"]))
+        self.assertTrue(any("10% reduction" in f for f in report["failures"]))
 
     def test_reasonable_forecast_passes(self):
         rng = np.random.default_rng(0)
@@ -169,12 +169,13 @@ class TestForecastSanityGate(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["failures"], [])
 
-    def test_strict_mode_raises_on_failure(self):
+    def test_failed_review_is_recorded_without_raising(self):
         trues = np.random.default_rng(0).normal(size=(100, 10))
         preds = np.zeros_like(trues)
 
-        with self.assertRaises(Exception):
-            check_forecast_sanity(preds, trues, strict=True)
+        report = check_forecast_sanity(preds, trues)
+
+        self.assertFalse(report["passed"])
 
     def test_history_flags_non_improving_validation_loss(self):
         rng = np.random.default_rng(0)

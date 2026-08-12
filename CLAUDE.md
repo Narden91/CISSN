@@ -13,7 +13,8 @@ uv run python experiments/run_benchmark.py --help
 uv run python experiments/run_baseline.py --help
 ```
 
-Use `--require_gpu --require_clean_git --strict_sanity` for final publication runs.
+Use `--require_gpu --require_clean_git` for final publication runs. Review each
+saved `sanity.json` before including its result in publication tables.
 
 ## Core contracts
 
@@ -30,7 +31,7 @@ Use `--require_gpu --require_clean_git --strict_sanity` for final publication ru
 - `cissn/models/`: encoder and forecast head.
 - `cissn/conformal/`: state-conditional split conformal predictor.
 - `cissn/baselines/`: implemented comparators and Flat CP.
-- `cissn/data/`: canonical registry, integrity gate, datasets, loaders.
+- `cissn/data/`: canonical registry, integrity checks, datasets, loaders.
 - `experiments/`: benchmark, baseline, ablation, and multi-seed runners.
 - `scripts/`: verification and publication artifact generators.
 - `tests/`: unit and runner contracts.

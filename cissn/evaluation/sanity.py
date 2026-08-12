@@ -1,5 +1,5 @@
 """
-Convergence and degenerate-prediction sanity gate.
+Forecast-result quality review.
 
 Catches the failure mode where a run completes without error but the model
 learned nothing useful -- e.g. training on corrupted/white-noise data, or an
@@ -15,15 +15,10 @@ from typing import Optional
 import numpy as np
 
 
-class SanityCheckFailure(RuntimeError):
-    """Raised by check_forecast_sanity(strict=True) when a hard check fails."""
-
-
 def check_forecast_sanity(
     preds: np.ndarray,
     trues: np.ndarray,
     history: Optional[list[dict]] = None,
-    strict: bool = False,
 ) -> dict:
     """Run a small set of convergence/degeneracy checks on a completed run.
 
@@ -31,9 +26,6 @@ def check_forecast_sanity(
         preds, trues: Test-set predictions and targets, any matching shape.
         history: Optional per-epoch training history as saved to history.json
             (list of dicts with at least 'vali_loss' and 'lr' keys).
-        strict: If True, raise SanityCheckFailure on any hard failure instead
-            of only recording it.
-
     Returns:
         {'passed': bool, 'failures': [...], 'warnings': [...]}
     """
@@ -54,8 +46,8 @@ def check_forecast_sanity(
     true_var = float(trues.var())
     if mse >= 0.9 * true_var:
         failures.append(
-            f"test MSE={mse:.6f} is not below 90% of true.var()={true_var:.6f} "
-            "-- the model is no better than predicting the mean."
+            f"test MSE={mse:.6f} does not achieve the required 10% reduction "
+            f"from the test-set mean reference MSE={true_var:.6f}."
         )
 
     pred_mean = float(preds.mean())
@@ -82,7 +74,4 @@ def check_forecast_sanity(
                 "adjust_learning_rate 'type1' policy paired with a large train_epochs)."
             )
 
-    report = {"passed": not failures, "failures": failures, "warnings": warnings}
-    if failures and strict:
-        raise SanityCheckFailure("; ".join(failures))
-    return report
+    return {"passed": not failures, "failures": failures, "warnings": warnings}

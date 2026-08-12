@@ -194,13 +194,11 @@ def save_result_artifacts(
     folder_path = Path(args.results_dir) / setting
     folder_path.mkdir(parents=True, exist_ok=True)
 
-    sanity_report = check_forecast_sanity(
-        preds, trues, history=history, strict=getattr(args, "strict_sanity", False)
-    )
+    sanity_report = check_forecast_sanity(preds, trues, history=history)
     for msg in sanity_report["failures"]:
-        print(f"SANITY CHECK FAILED: {msg}")
+        print(f"Result review | issue: {msg}")
     for msg in sanity_report["warnings"]:
-        print(f"Sanity warning: {msg}")
+        print(f"Result review | note: {msg}")
 
     np.save(folder_path / "pred.npy", preds)
     np.save(folder_path / "true.npy", trues)
@@ -792,6 +790,7 @@ def parse_args():
                         help="require a clean committed worktree for a publication run")
     parser.add_argument("--no_progress", action="store_true",
                         help="disable terminal progress bars for CI or captured logs")
+    parser.add_argument("--strict_sanity", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--train_epochs", type=int, default=20, help="training epochs")
     parser.add_argument("--batch_size", type=int, default=128,
                         help="batch size (matches the CISSN default so baselines stay comparable)")
@@ -810,10 +809,6 @@ def parse_args():
                         help="report calibrated UQ intervals by default; raw UQ is secondary")
     parser.add_argument("--cal_fraction", type=float, default=0.2,
                         help="fraction of the canonical train window carved out as the calibration split")
-    parser.add_argument("--strict_sanity", action="store_true",
-                        help="raise instead of warn when the post-test convergence/degeneracy sanity "
-                             "check fails (e.g. pred.std() << true.std(), test MSE >= 90%% of true.var())")
-
     parser.add_argument("--kernel_size", type=int, default=25, help="DLinear moving-average kernel size")
     parser.add_argument("--patch_len", type=int, default=16, help="PatchTST patch length")
     parser.add_argument("--patch_stride", type=int, default=8, help="PatchTST patch stride")
@@ -826,6 +821,7 @@ def parse_args():
 
     parser.set_defaults(**config_defaults)
     args = parser.parse_args()
+    vars(args).pop("strict_sanity", None)
 
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)

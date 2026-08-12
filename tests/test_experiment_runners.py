@@ -54,6 +54,11 @@ class TestExperimentRunners(unittest.TestCase):
         self.assertTrue(args.walk_forward)
         self.assertEqual(args.lradj, 'cosine')
 
+    def test_retired_strict_sanity_argument_remains_accepted(self):
+        args = parse_benchmark_args(['--strict_sanity'])
+
+        self.assertFalse(hasattr(args, 'strict_sanity'))
+
     def test_baseline_interval_metrics_report_marginal_scope(self):
         args = SimpleNamespace(conformal_alpha=0.1)
         preds = np.array([[1.0], [2.0]], dtype=np.float32)

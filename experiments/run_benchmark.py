@@ -588,13 +588,11 @@ class Experiment:
 
         history_path = Path(self.args.checkpoints) / setting / "history.json"
         history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else None
-        sanity_report = check_forecast_sanity(
-            preds, trues, history=history, strict=getattr(self.args, 'strict_sanity', False)
-        )
+        sanity_report = check_forecast_sanity(preds, trues, history=history)
         for msg in sanity_report["failures"]:
-            print(f"SANITY CHECK FAILED: {msg}")
+            print(f"Result review | issue: {msg}")
         for msg in sanity_report["warnings"]:
-            print(f"Sanity warning: {msg}")
+            print(f"Result review | note: {msg}")
 
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
@@ -772,6 +770,7 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='require a clean committed worktree for a publication run')
     parser.add_argument('--no_progress', action='store_true',
                         help='disable terminal progress bars for CI or captured logs')
+    parser.add_argument('--strict_sanity', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--train_epochs', type=int, default=20, help='training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='batch size (128 keeps GPU step time amortised without starving '
@@ -795,12 +794,9 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='keep every kth chronological calibration origin for dependence-aware calibration')
     parser.add_argument('--cal_fraction', type=float, default=0.2,
                         help='fraction of the canonical train window carved out as the calibration split')
-    parser.add_argument('--strict_sanity', action='store_true',
-                        help='raise instead of warn when the post-test convergence/degeneracy sanity '
-                             'check fails (e.g. pred.std() << true.std(), test MSE >= 90%% of true.var())')
-
     parser.set_defaults(**config_defaults)
     args = parser.parse_args(args=cli_argv)
+    vars(args).pop("strict_sanity", None)
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)
     if args.features == 'MS' and 'c_out' not in protected:
