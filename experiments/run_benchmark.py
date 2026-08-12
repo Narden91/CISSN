@@ -20,7 +20,7 @@ from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
-from cissn.utils import EarlyStopping, select_device, track
+from cissn.utils import EarlyStopping, print_epoch_summary, print_run_header, select_device, track
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
@@ -191,7 +191,6 @@ class Experiment:
         self.device = select_device(require_gpu=getattr(args, 'require_gpu', False))
         self.model = self._build_model().to(self.device)
         self.head = self._build_head().to(self.device)
-        print(f"Model and Head initialized on {self.device}")
 
     def _build_model(self):
         return DisentangledStateEncoder(
@@ -309,7 +308,6 @@ class Experiment:
         save_json(Path(path) / "config.json", vars(self.args))
         save_json(Path(path) / "environment.json", environment_snapshot(self.device))
 
-        time_now = time.time()
         train_start = time.time()
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
@@ -321,7 +319,6 @@ class Experiment:
         history = []
 
         for epoch in range(self.args.train_epochs):
-            iter_count = 0
             total_train_loss = torch.zeros((), device=self.device)
             total_train_weight = 0
             epoch_states = []
@@ -335,10 +332,9 @@ class Experiment:
                 train_loader,
                 description=f"Epoch {epoch + 1}/{self.args.train_epochs}",
                 total=train_steps,
-                enabled=not self.args.no_progress,
+                enabled=not getattr(self.args, "no_progress", True),
             )
             for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(batches):
-                iter_count += 1
                 model_optim.zero_grad(set_to_none=True)
 
                 states, final_state, outputs, batch_y = self._forward_and_slice(
@@ -364,15 +360,6 @@ class Experiment:
                     )
                 model_optim.step()
 
-                if (i + 1) % 100 == 0:
-                    print(f"\titers: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
-                    speed = (time.time() - time_now) / iter_count
-                    left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
-                    print(f'\tspeed: {speed:.4f}s/iter; left time: {left_time:.4f}s')
-                    iter_count = 0
-                    time_now = time.time()
-
-            print(f"Epoch: {epoch+1} cost time: {time.time()-epoch_time:.2f}")
             if total_train_weight == 0:
                 raise RuntimeError("Training loader produced no prediction elements.")
             train_loss = float((total_train_loss / total_train_weight).item())
@@ -384,10 +371,6 @@ class Experiment:
                 epoch_states,
                 epoch_final_states,
             )
-
-            print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}")
-            print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")
-            print(f"  Refinement ratio: {refinement_ratio:.4f} ({'linear dominates' if refinement_ratio < 0.5 else 'refinement dominates'})")
 
             history.append({
                 "epoch": epoch + 1,
@@ -409,9 +392,18 @@ class Experiment:
                     "refinement_ratio": refinement_ratio,
                 })
 
-            early_stopping(vali_loss, self.model, self.head, path)
+            improved = early_stopping(vali_loss, self.model, self.head, path)
+            print_epoch_summary(
+                epoch=epoch + 1, total_epochs=self.args.train_epochs, train_loss=train_loss,
+                validation_loss=vali_loss, learning_rate=model_optim.param_groups[0]['lr'],
+                elapsed_seconds=time.time() - epoch_time, improved=improved,
+                patience_counter=early_stopping.counter, patience=early_stopping.patience,
+            )
+            print(
+                f"  state_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | "
+                f"refinement={refinement_ratio:.4f}"
+            )
             if early_stopping.early_stop:
-                print("Early stopping")
                 break
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
@@ -454,7 +446,12 @@ class Experiment:
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in vali_loader:
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+                vali_loader,
+                description="Validation",
+                total=len(vali_loader),
+                enabled=not getattr(self.args, "no_progress", True),
+            ):
                 _, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 batch_weight = outputs.numel()
                 total_loss += criterion(outputs, batch_y).item() * batch_weight
@@ -478,7 +475,12 @@ class Experiment:
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in train_loader:
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+                train_loader,
+                description="Partitioning",
+                total=len(train_loader),
+                enabled=not getattr(self.args, "no_progress", True),
+            ):
                 final_state, _outputs, _targets = self._forward_and_slice(batch_x, batch_y)
                 states.append(final_state.detach().cpu())
         training_states = torch.cat(states, dim=0)
@@ -496,7 +498,12 @@ class Experiment:
         self.model.eval()
         self.head.eval()
         with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in cal_loader:
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+                cal_loader,
+                description="Calibration",
+                total=len(cal_loader),
+                enabled=not getattr(self.args, "no_progress", True),
+            ):
                 final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 all_states.append(final_state.detach().cpu())
                 all_residuals.append((outputs - batch_y).abs().detach().cpu())
@@ -504,7 +511,7 @@ class Experiment:
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
         self.conformal.calibrate(all_states, all_residuals)
-        print("Conformal predictor calibrated on held-out calibration split.")
+        print("Calibration complete | state-conditional conformal intervals ready")
 
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "calibration_states.npy", all_states.numpy())
@@ -517,7 +524,7 @@ class Experiment:
             save_json(Path(artifact_dir) / "dependence_diagnostics.json", exchange_results)
         for k, value in exchange_results.items():
             if value.get("warning"):
-                print(f"  Cluster {k}: {value['warning']}")
+                print(f"  calibration warning | cluster {k}: {value['warning']}")
         self.model.train()
         self.head.train()
 
@@ -560,8 +567,13 @@ class Experiment:
                         UserWarning,
                         stacklevel=2,
                     )
-                print("Running walk-forward rolling window evaluation...")
-                for i in range(0, n_covered, self.args.pred_len):
+                print("Walk-forward evaluation")
+                for i in track(
+                    range(0, n_covered, self.args.pred_len),
+                    description="Testing",
+                    total=n_covered // self.args.pred_len,
+                    enabled=not getattr(self.args, "no_progress", True),
+                ):
                     bx, by, bxm, bym = test_data[i]
                     batch_x = torch.from_numpy(bx).unsqueeze(0)
                     batch_y = torch.from_numpy(by).unsqueeze(0)
@@ -570,7 +582,12 @@ class Experiment:
                     trues.append(batch_y.detach().cpu().numpy())
                     test_states.append(final_state.detach().cpu().numpy())
             else:
-                for batch_x, batch_y, _batch_x_mark, _batch_y_mark in test_loader:
+                for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+                    test_loader,
+                    description="Testing",
+                    total=len(test_loader),
+                    enabled=not getattr(self.args, "no_progress", True),
+                ):
                     final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                     preds.append(outputs.detach().cpu().numpy())
                     trues.append(batch_y.detach().cpu().numpy())
@@ -626,14 +643,14 @@ class Experiment:
                 lower_np, upper_np, trues, train_data.data_y, seasonal_period, alpha=self.args.conformal_alpha
             )
             print(
-                f'Coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%: {coverage:.4f} (joint: {coverage_joint:.4f}), '
-                f'MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}'
+                f"Intervals | coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%={coverage:.4f} | "
+                f"joint={coverage_joint:.4f} | width={mean_width:.4f} | winkler={winkler:.4f}"
             )
         else:
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
 
-        print(f'MSE:{mse:.6f} MAE:{mae:.6f} RMSE:{rmse:.6f}')
+        print(f"Point forecast | mse={mse:.6f} | mae={mae:.6f} | rmse={rmse:.6f}")
 
         if self.args.use_wandb:
             import wandb
@@ -711,7 +728,6 @@ def adjust_learning_rate(optimizer, epoch, args):
         lr = args.learning_rate * (0.5 ** ((epoch - 1) // 1))
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        print(f'Updating learning rate to {lr}')
     elif args.lradj == 'type2':
         lr_adjust = {
             2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6,
@@ -721,7 +737,6 @@ def adjust_learning_rate(optimizer, epoch, args):
             lr = lr_adjust[epoch]
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
-            print(f'Updating learning rate to {lr}')
     elif args.lradj == 'cosine':
         # Cosine annealing: smoothly decays to 0 over train_epochs.
         # eta_min is set to 1% of the initial LR.
@@ -731,9 +746,10 @@ def adjust_learning_rate(optimizer, epoch, args):
         lr = max(lr, args.learning_rate * 0.01)  # floor at 1% of initial
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        print(f'Updating learning rate to {lr:.2e} (cosine, epoch {epoch}/{args.train_epochs})')
     else:
         raise ValueError(f"Unknown lradj policy: {args.lradj!r}. Use 'type1', 'type2', or 'cosine'.")
+
+    return optimizer.param_groups[0]['lr']
 
 def parse_args(argv: Optional[list[str]] = None):
     cli_argv = argv if argv is not None else sys.argv[1:]
@@ -823,19 +839,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     args.protocol = build_protocol_manifest(args)
     set_random_seed(args.seed)
 
-    print('Args in experiment:')
-    print(args)
-
     setting = build_setting_name(args)
+    print_run_header("CISSN benchmark", args, setting)
     
     if args.use_wandb:
         import wandb
         wandb.init(project=args.project_name, config=args, name=setting)
 
     exp = Experiment(args)
-    print(f'Training: {setting}')
+    print("\n[1/2] Training and calibration")
     exp.train(setting)
-    print(f'Testing:  {setting}')
+    print("\n[2/2] Test evaluation")
     exp.test(setting)
     
     if args.use_wandb:

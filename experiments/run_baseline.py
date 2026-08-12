@@ -68,7 +68,7 @@ from cissn.evaluation.sanity import check_forecast_sanity
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
-from cissn.utils import EarlyStopping, select_device, track
+from cissn.utils import EarlyStopping, print_epoch_summary, print_run_header, select_device, track
 
 
 SUPPORTED_MODELS = (
@@ -242,7 +242,9 @@ def validate_single_model(model: nn.Module, loader, criterion: nn.Module, device
     total_loss = 0.0
     total_weight = 0
     with torch.no_grad():
-        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+            loader, description="Validation", total=len(loader), enabled=not getattr(args, "no_progress", True)
+        ):
             batch_x = batch_x.float().to(device, non_blocking=True)
             batch_y = batch_y.float().to(device, non_blocking=True)
             outputs, targets = slice_forecast(model(batch_x), batch_y, args.pred_len, args.features)
@@ -259,7 +261,9 @@ def evaluate_deepstate(model: DeepState, loader, device: torch.device, args):
     model.eval()
     preds, trues, lowers, uppers = [], [], [], []
     with torch.no_grad():
-        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+            loader, description="Testing", total=len(loader), enabled=not getattr(args, "no_progress", True)
+        ):
             batch_x = batch_x.float().to(device, non_blocking=True)
             batch_y = batch_y.float().to(device, non_blocking=True)
             mean, lower, upper = model.predict_interval(batch_x)
@@ -332,6 +336,7 @@ def run_point_baseline(args, setting: str):
     history = []
 
     for epoch in range(args.train_epochs):
+        epoch_start = time.time()
         train_loss = train_baseline_epoch(
             model=model,
             loader=train_loader,
@@ -345,17 +350,18 @@ def run_point_baseline(args, setting: str):
             progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
         )
         vali_loss = validate_single_model(model, vali_loader, criterion, device, args)
-        print(
-            f"Epoch: {epoch + 1}, Steps: {len(train_loader)} | "
-            f"Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}"
-        )
         history.append({
             "epoch": epoch + 1, "train_loss": train_loss, "vali_loss": vali_loss,
             "lr": optimizer.param_groups[0]["lr"],
         })
-        early_stopping(vali_loss, model, path=str(checkpoint_dir))
+        improved = early_stopping(vali_loss, model, path=str(checkpoint_dir))
+        print_epoch_summary(
+            epoch=epoch + 1, total_epochs=args.train_epochs, train_loss=train_loss,
+            validation_loss=vali_loss, learning_rate=optimizer.param_groups[0]["lr"],
+            elapsed_seconds=time.time() - epoch_start, improved=improved,
+            patience_counter=early_stopping.counter, patience=early_stopping.patience,
+        )
         if early_stopping.early_stop:
-            print("Early stopping")
             break
         adjust_learning_rate(optimizer, epoch + 1, args)
 
@@ -451,7 +457,7 @@ def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer,
     total_loss = torch.zeros((), device=device)
     total_weight = 0
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
-        loader, description=progress_description, total=len(loader), enabled=not args.no_progress
+        loader, description=progress_description, total=len(loader), enabled=not getattr(args, "no_progress", True)
     ):
         optimizer.zero_grad(set_to_none=True)
         states, _final_state, outputs, targets = forward_backbone(
@@ -481,7 +487,9 @@ def validate_backbone(encoder: nn.Module, head: nn.Module, loader, criterion: nn
     total_loss = 0.0
     total_weight = 0
     with torch.no_grad():
-        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+            loader, description="Validation", total=len(loader), enabled=not getattr(args, "no_progress", True)
+        ):
             _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args)
             batch_weight = outputs.numel()
             total_loss += criterion(outputs, targets).item() * batch_weight
@@ -498,7 +506,9 @@ def evaluate_backbone_point(encoder: nn.Module, head: nn.Module, loader, device:
     head.eval()
     preds, trues = [], []
     with torch.no_grad():
-        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+        for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+            loader, description="Testing", total=len(loader), enabled=not getattr(args, "no_progress", True)
+        ):
             _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args)
             preds.append(outputs.detach().cpu().numpy())
             trues.append(targets.detach().cpu().numpy())
@@ -508,7 +518,9 @@ def evaluate_backbone_point(encoder: nn.Module, head: nn.Module, loader, device:
 def evaluate_mc_dropout(encoder: nn.Module, head: nn.Module, loader, device: torch.device, args):
     wrapper = MCDropout(n_samples=args.mc_samples, alpha=args.conformal_alpha)
     preds, trues, lowers, uppers = [], [], [], []
-    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+        loader, description="Testing", total=len(loader), enabled=not getattr(args, "no_progress", True)
+    ):
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
         mean, lower, upper = wrapper.predict(encoder, head, batch_x)
@@ -570,6 +582,7 @@ def train_backbone_member(args, setting: str, member_seed: int):
     history = []
 
     for epoch in range(args.train_epochs):
+        epoch_start = time.time()
         train_loss = train_backbone_epoch(
             encoder=encoder,
             head=head,
@@ -582,17 +595,18 @@ def train_backbone_member(args, setting: str, member_seed: int):
             progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
         )
         vali_loss = validate_backbone(encoder, head, vali_loader, criterion, device, args)
-        print(
-            f"Epoch: {epoch + 1}, Steps: {len(train_loader)} | "
-            f"Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}"
-        )
         history.append({
             "epoch": epoch + 1, "train_loss": train_loss, "vali_loss": vali_loss,
             "lr": optimizer.param_groups[0]["lr"],
         })
-        early_stopping(vali_loss, encoder, head, path=str(checkpoint_dir))
+        improved = early_stopping(vali_loss, encoder, head, path=str(checkpoint_dir))
+        print_epoch_summary(
+            epoch=epoch + 1, total_epochs=args.train_epochs, train_loss=train_loss,
+            validation_loss=vali_loss, learning_rate=optimizer.param_groups[0]["lr"],
+            elapsed_seconds=time.time() - epoch_start, improved=improved,
+            patience_counter=early_stopping.counter, patience=early_stopping.patience,
+        )
         if early_stopping.early_stop:
-            print("Early stopping")
             break
         adjust_learning_rate(optimizer, epoch + 1, args)
 
@@ -676,7 +690,7 @@ def run_deep_ensemble(args, setting: str):
 
     for index, member_seed in enumerate(member_seeds, start=1):
         member_setting = build_member_setting(setting, member_seed, index)
-        print(f"Training ensemble member {index}/{len(member_seeds)} with seed={member_seed}")
+        print(f"\nMember {index}/{len(member_seeds)} | seed={member_seed}")
         encoder, head, device, runtime = train_backbone_member(args, member_setting, member_seed)
         preds, trues = evaluate_backbone_point(encoder, head, test_loader, device, args)
         cal_preds, cal_trues = evaluate_backbone_point(encoder, head, cal_loader, device, args)
@@ -861,9 +875,7 @@ def main() -> None:
 
         wandb.init(project=args.project_name, config=vars(args), name=setting)
 
-    print("Args in experiment:")
-    print(args)
-    print(f"Running baseline: {setting}")
+    print_run_header("CISSN baseline", args, setting)
 
     if args.model in POINT_MODELS:
         result_dir = run_point_baseline(args, setting)

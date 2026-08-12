@@ -20,7 +20,8 @@ class EarlyStopping:
         """
         Args:
             patience: Number of epochs to wait after the last improvement.
-            verbose: If True, print a message each time a checkpoint is saved.
+            verbose: Retained for backwards-compatible construction. Training
+                runners report checkpoint status in their epoch summary.
             delta: Minimum change in monitored value to qualify as an improvement.
         """
         self.patience = patience
@@ -37,20 +38,22 @@ class EarlyStopping:
         model: torch.nn.Module,
         head: Optional[torch.nn.Module] = None,
         path: str = "",
-    ) -> None:
+    ) -> bool:
         score = -val_loss
         if self.best_score is None:
             self.best_score = score
             self._save_checkpoint(val_loss, model, head, path)
+            return True
         elif score < self.best_score + self.delta:
             self.counter += 1
-            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
+            return False
         else:
             self.best_score = score
             self._save_checkpoint(val_loss, model, head, path)
             self.counter = 0
+            return True
 
     def _save_checkpoint(
         self,
@@ -59,8 +62,6 @@ class EarlyStopping:
         head: Optional[torch.nn.Module],
         path: str,
     ) -> None:
-        if self.verbose:
-            print(f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...")
         torch.save(model.state_dict(), os.path.join(path, "checkpoint.pth"))
         if head is not None:
             torch.save(head.state_dict(), os.path.join(path, "checkpoint_head.pth"))

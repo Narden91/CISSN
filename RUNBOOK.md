@@ -14,7 +14,7 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 
 The state partition is learned only from train states, then calibration uses the later calibration split. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
 
-All experiment runners show a live per-epoch batch progress bar by default. Use `--no_progress` only for CI or captured logs.
+All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
 ## Gate 0: environment, data, tests
 
