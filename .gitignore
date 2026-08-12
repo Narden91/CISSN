@@ -49,7 +49,6 @@ training_output/
 *.pth
 *.ckpt
 logs/
-wandb/
 runs/
 output/
 results/

@@ -27,7 +27,6 @@ Run `python experiments/run_benchmark.py --help` for all available parameters. C
 | `--learning_rate` | float | 0.001 | Learning rate |
 | `--patience` | int | 3 | Early stopping patience |
 | `--seed` | int | 42 | Random seed for reproducibility |
-| `--use_wandb` | flag | — | Enable Weights & Biases logging |
 
 ## Structuring Your Own Experiments
 

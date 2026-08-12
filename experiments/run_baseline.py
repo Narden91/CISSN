@@ -752,29 +752,6 @@ def run_deep_ensemble(args, setting: str):
     )
 
 
-def maybe_log_final_metrics(args, point_metrics: dict, interval_metrics: dict) -> None:
-    if not args.use_wandb:
-        return
-    import wandb
-
-    payload = {
-        "test_mse": point_metrics["mse"],
-        "test_mae": point_metrics["mae"],
-        "test_rmse": point_metrics["rmse"],
-    }
-    if interval_metrics["coverage"] is not None:
-        payload.update(
-            {
-                "test_coverage": interval_metrics["coverage"],
-                "test_mean_width": interval_metrics["mean_width"],
-                "test_winkler": interval_metrics["winkler"],
-                "test_calibration_error": interval_metrics["calibration_error"],
-                "test_msis": interval_metrics["msis"],
-            }
-        )
-    wandb.log(payload)
-
-
 def parse_args():
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--config", type=str, default=None, help="YAML/JSON config file")
@@ -825,8 +802,6 @@ def parse_args():
                              "default so CISSN and baselines train under the same protocol")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="max gradient norm; <=0 disables clipping")
 
-    parser.add_argument("--use_wandb", action="store_true", help="enable wandb logging")
-    parser.add_argument("--project_name", type=str, default="CISSN_Baselines", help="wandb project name")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--conformal_alpha", type=float, default=0.1, help="interval significance level")
     parser.add_argument("--multivariate_strategy", choices=("per_feature", "max"), default="per_feature",
@@ -870,11 +845,6 @@ def main() -> None:
     set_random_seed(args.seed)
     setting = build_setting_name(args)
 
-    if args.use_wandb:
-        import wandb
-
-        wandb.init(project=args.project_name, config=vars(args), name=setting)
-
     print_run_header("CISSN baseline", args, setting)
 
     if args.model in POINT_MODELS:
@@ -886,17 +856,7 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported model: {args.model}")
 
-    metrics_payload = result_dir / "metrics.json"
-    if metrics_payload.exists():
-        import json
-
-        payload = json.loads(metrics_payload.read_text(encoding="utf-8"))
-        maybe_log_final_metrics(args, payload["point"], payload["interval"])
-
     print(f"Saved artifacts to {result_dir}")
-
-    if args.use_wandb:
-        wandb.finish()
 
 
 if __name__ == "__main__":

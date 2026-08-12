@@ -166,7 +166,7 @@ def environment_snapshot(device: torch.device) -> dict:
 
 def build_protocol_manifest(args) -> dict:
     """Capture immutable launch inputs needed to compare and reproduce a run."""
-    excluded = {"checkpoints", "results_dir", "use_wandb", "project_name", "require_clean_git"}
+    excluded = {"checkpoints", "results_dir", "require_clean_git"}
     config = {key: value for key, value in vars(args).items() if key not in excluded and key != "protocol"}
     dataset = verify_dataset(args.data, data_root=args.root_path, strict=True)
     payload = {
@@ -380,17 +380,6 @@ class Experiment:
                 "off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
                 "refinement_ratio": refinement_ratio,
             })
-
-            if self.args.use_wandb:
-                import wandb
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "vali_loss": vali_loss,
-                    "lr": model_optim.param_groups[0]['lr'],
-                    "disent_off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
-                    "refinement_ratio": refinement_ratio,
-                })
 
             improved = early_stopping(vali_loss, self.model, self.head, path)
             print_epoch_summary(
@@ -652,15 +641,6 @@ class Experiment:
 
         print(f"Point forecast | mse={mse:.6f} | mae={mae:.6f} | rmse={rmse:.6f}")
 
-        if self.args.use_wandb:
-            import wandb
-            wandb.log({
-                "test_mse": mse,
-                "test_mae": mae,
-                "test_coverage": coverage if coverage is not None else 0.0,
-                "test_mean_width": mean_width if mean_width is not None else 0.0,
-            })
-
         folder_path = Path(self.args.results_dir) / setting
         folder_path.mkdir(parents=True, exist_ok=True)
 
@@ -804,8 +784,6 @@ def parse_args(argv: Optional[list[str]] = None):
                              "'type1' halves every epoch and collapses training if train_epochs > ~6.")
     parser.add_argument('--grad_clip', type=float, default=1.0, help='max gradient norm; <=0 disables clipping')
 
-    parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
-    parser.add_argument('--project_name', type=str, default='CISSN_Benchmark', help='wandb project name')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     
     # New arguments for improvements
@@ -842,19 +820,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     setting = build_setting_name(args)
     print_run_header("CISSN benchmark", args, setting)
     
-    if args.use_wandb:
-        import wandb
-        wandb.init(project=args.project_name, config=args, name=setting)
-
     exp = Experiment(args)
     print("\n[1/2] Training and calibration")
     exp.train(setting)
     print("\n[2/2] Test evaluation")
     exp.test(setting)
     
-    if args.use_wandb:
-        wandb.finish()
-
-
 if __name__ == '__main__':
     main()
