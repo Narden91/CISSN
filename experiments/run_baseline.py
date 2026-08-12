@@ -68,7 +68,7 @@ from cissn.evaluation.sanity import check_forecast_sanity
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
-from cissn.utils import EarlyStopping, select_device
+from cissn.utils import EarlyStopping, select_device, track
 
 
 SUPPORTED_MODELS = (
@@ -341,6 +341,8 @@ def run_point_baseline(args, setting: str):
             pred_len=args.pred_len,
             features=args.features,
             grad_clip=args.grad_clip,
+            show_progress=not args.no_progress,
+            progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
         )
         vali_loss = validate_single_model(model, vali_loader, criterion, device, args)
         print(
@@ -442,13 +444,15 @@ def forward_backbone(encoder: nn.Module, head: nn.Module, batch_x, batch_y, devi
     return final_state, outputs, targets
 
 
-def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer, criterion: nn.Module, disentangle_criterion: DisentanglementLoss, device: torch.device, args) -> float:
+def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer, criterion: nn.Module, disentangle_criterion: DisentanglementLoss, device: torch.device, args, progress_description: str) -> float:
     encoder.train()
     head.train()
     parameters = [*encoder.parameters(), *head.parameters()]
     total_loss = torch.zeros((), device=device)
     total_weight = 0
-    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+        loader, description=progress_description, total=len(loader), enabled=not args.no_progress
+    ):
         optimizer.zero_grad(set_to_none=True)
         states, _final_state, outputs, targets = forward_backbone(
             encoder, head, batch_x, batch_y, device, args, return_all_states=True
@@ -575,6 +579,7 @@ def train_backbone_member(args, setting: str, member_seed: int):
             disentangle_criterion=disentangle_criterion,
             device=device,
             args=args,
+            progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
         )
         vali_loss = validate_backbone(encoder, head, vali_loader, criterion, device, args)
         print(
@@ -794,6 +799,8 @@ def parse_args():
                         help="fail instead of falling back to CPU when no GPU is available")
     parser.add_argument("--require_clean_git", action="store_true",
                         help="require a clean committed worktree for a publication run")
+    parser.add_argument("--no_progress", action="store_true",
+                        help="disable terminal progress bars for CI or captured logs")
     parser.add_argument("--train_epochs", type=int, default=20, help="training epochs")
     parser.add_argument("--batch_size", type=int, default=128,
                         help="batch size (matches the CISSN default so baselines stay comparable)")

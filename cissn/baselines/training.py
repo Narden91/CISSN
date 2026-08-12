@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
 import torch
 import torch.nn as nn
 
 from cissn.evaluation.metrics import mean_absolute_error, mean_squared_error
+from cissn.utils.progress import track
 
 
 @dataclass
@@ -34,12 +36,16 @@ def train_baseline_epoch(
     pred_len: int,
     features: str,
     grad_clip: float = 1.0,
+    show_progress: bool = False,
+    progress_description: str = "Training",
 ) -> float:
     """Train one epoch for baselines exposing `forward(x) -> forecast`."""
     model.train()
     total_loss = torch.zeros((), device=device)
     total_weight = 0
-    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in loader:
+    for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
+        loader, description=progress_description, total=len(loader), enabled=show_progress
+    ):
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)

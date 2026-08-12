@@ -20,7 +20,7 @@ from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
-from cissn.utils import EarlyStopping, select_device
+from cissn.utils import EarlyStopping, select_device, track
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
@@ -331,7 +331,13 @@ class Experiment:
             self.head.train()
             epoch_time = time.time()
 
-            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(train_loader):
+            batches = track(
+                train_loader,
+                description=f"Epoch {epoch + 1}/{self.args.train_epochs}",
+                total=train_steps,
+                enabled=not self.args.no_progress,
+            )
+            for i, (batch_x, batch_y, _batch_x_mark, _batch_y_mark) in enumerate(batches):
                 iter_count += 1
                 model_optim.zero_grad(set_to_none=True)
 
@@ -768,6 +774,8 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='fail instead of falling back to CPU when no GPU is available')
     parser.add_argument('--require_clean_git', action='store_true',
                         help='require a clean committed worktree for a publication run')
+    parser.add_argument('--no_progress', action='store_true',
+                        help='disable terminal progress bars for CI or captured logs')
     parser.add_argument('--train_epochs', type=int, default=20, help='training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='batch size (128 keeps GPU step time amortised without starving '
