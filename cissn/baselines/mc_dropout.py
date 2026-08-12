@@ -29,7 +29,8 @@ class MCDropout:
         # z-score for Gaussian interval at coverage 1-alpha
         from scipy.stats import norm
         self.z_score = norm.ppf(1 - alpha / 2)
-        # MC Dropout does not require a held-out calibration set.
+        # This class emits raw Gaussian-scale intervals. The experiment runner
+        # calibrates them on the chronological calibration split by default.
         self.requires_calibration = False
 
     @staticmethod

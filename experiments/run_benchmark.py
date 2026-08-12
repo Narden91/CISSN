@@ -11,6 +11,7 @@ import torch.optim as optim
 import numpy as np
 import argparse
 import time
+import hashlib
 from pathlib import Path
 from typing import Optional
 from cissn.models.encoder import DisentangledStateEncoder
@@ -18,14 +19,14 @@ from cissn.models.forecast_head import ForecastHead
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
-from cissn.data.registry import get_dataset_spec, supported_datasets
+from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
 from cissn.utils import EarlyStopping, select_device
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
-    mean_absolute_percentage_error,
     compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
-    calibration_error,
+    mean_scaled_interval_score, seasonal_period_for_freq,
 )
+from cissn.evaluation.sanity import check_forecast_sanity
 
 
 def _format_float_token(value: float) -> str:
@@ -163,6 +164,27 @@ def environment_snapshot(device: torch.device) -> dict:
     }
 
 
+def build_protocol_manifest(args) -> dict:
+    """Capture immutable launch inputs needed to compare and reproduce a run."""
+    excluded = {"checkpoints", "results_dir", "use_wandb", "project_name", "require_clean_git"}
+    config = {key: value for key, value in vars(args).items() if key not in excluded and key != "protocol"}
+    dataset = verify_dataset(args.data, data_root=args.root_path, strict=True)
+    payload = {
+        "protocol": "cissn-publication-2026",
+        "config": config,
+        "dataset": dataset,
+        "source": environment_snapshot(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=_json_default).encode("utf-8")
+    payload["protocol_hash"] = hashlib.sha256(encoded).hexdigest()
+    return payload
+
+
+def require_clean_source(args) -> None:
+    if getattr(args, "require_clean_git", False) and environment_snapshot(torch.device("cpu"))["git_dirty"]:
+        raise RuntimeError("Publication runs require a clean committed Git worktree.")
+
+
 class Experiment:
     def __init__(self, args):
         self.args = args
@@ -231,6 +253,15 @@ class Experiment:
     def _select_criterion(self):
         return nn.MSELoss()
 
+    def _select_disentangle_criterion(self):
+        # DisentanglementLoss hard-requires state_dim==5 (it targets the five
+        # named physical components); overridden to return None for ablation
+        # arms with a different state_dim.
+        return DisentanglementLoss(
+            lambda_cov=self.args.lambda_cov,
+            lambda_temporal=self.args.lambda_temp,
+        ).to(self.device)
+
     @staticmethod
     def _concatenate_batches(batches, name):
         if not batches:
@@ -238,14 +269,18 @@ class Experiment:
         return np.concatenate(batches, axis=0)
 
     @staticmethod
-    def _summarize_epoch_diagnostics(disentangle_criterion, head, state_batches, final_state_batches):
+    def _summarize_epoch_diagnostics(disentangle_metrics_source, head, state_batches, final_state_batches):
+        """disentangle_metrics_source only needs a get_metrics(states) staticmethod
+        (DisentanglementLoss.get_metrics has no state_dim==5 requirement, unlike
+        .forward's loss term, so it stays valid for ablation arms with a
+        different state_dim -- pass the class itself, an instance, or a test double)."""
         if not state_batches or not final_state_batches:
             raise RuntimeError("Epoch diagnostics require at least one training batch.")
 
         epoch_states = torch.cat(state_batches, dim=0)
         epoch_final_states = torch.cat(final_state_batches, dim=0)
         with torch.no_grad():
-            disent_metrics = disentangle_criterion.get_metrics(epoch_states)
+            disent_metrics = disentangle_metrics_source.get_metrics(epoch_states)
             refinement_ratio = head.get_refinement_ratio(epoch_final_states)
         return disent_metrics, refinement_ratio
 
@@ -281,10 +316,8 @@ class Experiment:
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
-        disentangle_criterion = DisentanglementLoss(
-            lambda_cov=self.args.lambda_cov,
-            lambda_temporal=self.args.lambda_temp
-        ).to(self.device)
+        disentangle_criterion = self._select_disentangle_criterion()
+        history = []
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
@@ -305,7 +338,9 @@ class Experiment:
                     batch_x, batch_y, return_all_states=True
                 )
 
-                loss = criterion(outputs, batch_y) + disentangle_criterion(states)
+                loss = criterion(outputs, batch_y)
+                if disentangle_criterion is not None:
+                    loss = loss + disentangle_criterion(states)
                 if self.args.lambda_correction_scale > 0 and hasattr(self.model, "_correction_scale"):
                     target_scale = torch.tensor(0.01, device=self.device, dtype=outputs.dtype)
                     loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - target_scale) ** 2
@@ -338,7 +373,7 @@ class Experiment:
             vali_loss = self.vali(vali_loader, criterion)
 
             disent_metrics, refinement_ratio = self._summarize_epoch_diagnostics(
-                disentangle_criterion,
+                DisentanglementLoss,
                 self.head,
                 epoch_states,
                 epoch_final_states,
@@ -347,6 +382,15 @@ class Experiment:
             print(f"Epoch: {epoch+1}, Steps: {train_steps} | Train Loss: {train_loss:.7f} Vali Loss: {vali_loss:.7f}")
             print(f"  Disentanglement: off_diag_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | per_dim_var={[f'{v:.4f}' for v in disent_metrics['per_dim_variance']]}")
             print(f"  Refinement ratio: {refinement_ratio:.4f} ({'linear dominates' if refinement_ratio < 0.5 else 'refinement dominates'})")
+
+            history.append({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "vali_loss": vali_loss,
+                "lr": model_optim.param_groups[0]['lr'],
+                "off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
+                "refinement_ratio": refinement_ratio,
+            })
 
             if self.args.use_wandb:
                 import wandb
@@ -366,8 +410,12 @@ class Experiment:
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
+        save_json(Path(path) / "history.json", history)
+
         self._load_checkpoint(path)
         calibration_start = time.time()
+        if self._uses_state_partition():
+            self._fit_state_partition(train_loader, path)
         self._calibrate_conformal(cal_loader, path)
         self.train_runtime_ = {
             "train_seconds": time.time() - train_start,
@@ -375,9 +423,16 @@ class Experiment:
             "train_samples": len(train_data),
             "validation_samples": len(vali_data),
             "calibration_samples": len(cal_data),
+            "epochs_requested": self.args.train_epochs,
+            "epochs_run": len(history),
+            "early_stopped": early_stopping.early_stop,
+            "best_val_loss": early_stopping.val_loss_min,
         }
         save_json(Path(path) / "runtime.json", self.train_runtime_)
         return self.model
+
+    def _uses_state_partition(self):
+        return True
 
     def _load_checkpoint(self, path):
         self.model.load_state_dict(
@@ -404,14 +459,31 @@ class Experiment:
         self.head.train()
         return total_loss / total_weight
 
-    def _calibrate_conformal(self, cal_loader, artifact_dir=None):
-        """Calibrate the StateConditionalConformal predictor on the held-out calibration split."""
+    def _fit_state_partition(self, train_loader, artifact_dir=None):
+        """Freeze a state partition from training data before calibration."""
         self.conformal = StateConditionalConformal(
             alpha=self.args.conformal_alpha,
             n_clusters=self.args.n_clusters,
             multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
+            calibration_stride=self.args.calibration_stride,
         )
+        states = []
+        self.model.eval()
+        self.head.eval()
+        with torch.no_grad():
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in train_loader:
+                final_state, _outputs, _targets = self._forward_and_slice(batch_x, batch_y)
+                states.append(final_state.detach().cpu())
+        training_states = torch.cat(states, dim=0)
+        self.conformal.fit_partition(training_states)
+        if artifact_dir is not None:
+            np.save(Path(artifact_dir) / "partition_states.npy", training_states.numpy())
+        self.model.train()
+        self.head.train()
+
+    def _calibrate_conformal(self, cal_loader, artifact_dir=None):
+        """Calibrate the StateConditionalConformal predictor on the held-out calibration split."""
         all_states = []
         all_residuals = []
 
@@ -425,7 +497,7 @@ class Experiment:
 
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
-        self.conformal.fit(all_states, all_residuals)
+        self.conformal.calibrate(all_states, all_residuals)
         print("Conformal predictor calibrated on held-out calibration split.")
 
         if artifact_dir is not None:
@@ -433,19 +505,28 @@ class Experiment:
             np.save(Path(artifact_dir) / "calibration_residuals.npy", all_residuals.numpy())
             save_json(Path(artifact_dir) / "cluster_stats.json", self.conformal.get_cluster_stats())
 
-        # Check exchangeability assumption
-        exchange_results = self.conformal.check_exchangeability(all_states, all_residuals)
+        # Record serial dependence; diagnostics never alter interval widths.
+        exchange_results = self.conformal.diagnose_dependence(all_states, all_residuals)
         if artifact_dir is not None:
-            save_json(Path(artifact_dir) / "exchangeability.json", exchange_results)
-        for k, v in exchange_results.items():
-            acf1 = v.get("acf_lag1")
-            if acf1 is not None and abs(acf1) > 0.3:
-                if v.get("corrected"):
-                    print(f"  Cluster {k} ACF(1)={acf1:.3f} — corrected (inflation ×{v['correction_factor']:.3f})")
-                else:
-                    print(f"  Cluster {k} ACF(1)={acf1:.3f} — consider re-running with correct_acf=True")
+            save_json(Path(artifact_dir) / "dependence_diagnostics.json", exchange_results)
+        for k, value in exchange_results.items():
+            if value.get("warning"):
+                print(f"  Cluster {k}: {value['warning']}")
         self.model.train()
         self.head.train()
+
+    def _predict_intervals(self, test_states: np.ndarray, preds: np.ndarray):
+        """Dispatch to the calibrated conformal predictor's interval call.
+
+        Isolated so subclasses (e.g. the flat_cp ablation arm, whose
+        FlatConformal.predict() takes only point forecasts, no states) can
+        override just this one call without touching the rest of test().
+        """
+        lower, upper = self.conformal.predict(
+            torch.from_numpy(test_states).float(),
+            torch.from_numpy(preds).float(),
+        )
+        return lower.numpy(), upper.numpy(), getattr(self.conformal, "last_predicted_clusters_", None)
 
     def test(self, setting):
         test_data, test_loader = self._get_data(flag='test')
@@ -493,41 +574,60 @@ class Experiment:
             trues = self._concatenate_batches(trues, 'target')
             test_states = self._concatenate_batches(test_states, 'state')
 
+        history_path = Path(self.args.checkpoints) / setting / "history.json"
+        history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else None
+        sanity_report = check_forecast_sanity(
+            preds, trues, history=history, strict=getattr(self.args, 'strict_sanity', False)
+        )
+        for msg in sanity_report["failures"]:
+            print(f"SANITY CHECK FAILED: {msg}")
+        for msg in sanity_report["warnings"]:
+            print(f"Sanity warning: {msg}")
+
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
         rmse = np.sqrt(mse)
-        mape = mean_absolute_percentage_error(trues.flatten(), preds.flatten())
 
         coverage = None
+        coverage_joint = None
+        coverage_primary = None
         mean_width = None
         winkler = None
         calib_err = None
+        msis = None
         cluster_labels = None
         coverage_by_cluster = {}
         if hasattr(self, 'conformal') and self.conformal.calibrated:
-            lower, upper = self.conformal.predict(
-                torch.from_numpy(test_states).float(),
-                torch.from_numpy(preds).float(),
-            )
-            lower_np = lower.numpy()
-            upper_np = upper.numpy()
-            cluster_labels = self.conformal.last_predicted_clusters_
+            lower_np, upper_np, cluster_labels = self._predict_intervals(test_states, preds)
             coverage = compute_picp(lower_np, upper_np, trues)
             coverage_joint = compute_joint_picp(lower_np, upper_np, trues)
             mean_width = compute_mpiw(lower_np, upper_np)
             winkler = winkler_score(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
-            calib_err = calibration_error(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)
-            coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
+            # A simultaneous-coverage strategy (e.g. multivariate_strategy='max')
+            # collapses all H*C residuals to one scalar before taking the
+            # quantile, so marginal PICP saturates near 1.0 by construction --
+            # that is not a miscalibration, it's the wrong metric for what the
+            # method guarantees. Score against whichever coverage the fitted
+            # strategy actually promises (coverage_joint for simultaneous
+            # scopes, marginal coverage otherwise).
+            coverage_primary = coverage_joint if self.conformal.coverage_scope == "simultaneous" else coverage
+            calib_err = abs(coverage_primary - (1.0 - self.args.conformal_alpha))
+            if cluster_labels is not None:
+                coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
+            train_data, _ = self._get_data(flag='train')
+            seasonal_period = seasonal_period_for_freq(self.args.freq)
+            msis = mean_scaled_interval_score(
+                lower_np, upper_np, trues, train_data.data_y, seasonal_period, alpha=self.args.conformal_alpha
+            )
             print(
                 f'Coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%: {coverage:.4f} (joint: {coverage_joint:.4f}), '
                 f'MPIW: {mean_width:.4f}, Winkler: {winkler:.4f}'
             )
         else:
-            coverage_joint = None
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
 
-        print(f'MSE:{mse:.6f} MAE:{mae:.6f} RMSE:{rmse:.6f} MAPE:{mape:.2f}%')
+        print(f'MSE:{mse:.6f} MAE:{mae:.6f} RMSE:{rmse:.6f}')
 
         if self.args.use_wandb:
             import wandb
@@ -541,24 +641,28 @@ class Experiment:
         folder_path = Path(self.args.results_dir) / setting
         folder_path.mkdir(parents=True, exist_ok=True)
 
-        point_metrics = {"mae": mae, "mse": mse, "rmse": rmse, "mape": mape}
+        point_metrics = {"mae": mae, "mse": mse, "rmse": rmse}
         interval_metrics = {
             "coverage": coverage if coverage is not None else None,
             "coverage_joint": coverage_joint if coverage_joint is not None else None,
+            "coverage_primary": coverage_primary if coverage_primary is not None else None,
             "mean_width": mean_width if mean_width is not None else None,
             "winkler": winkler if winkler is not None else None,
             "calibration_error": calib_err if calib_err is not None else None,
-            "crps": None,
+            "msis": msis if msis is not None else None,
             "alpha": self.args.conformal_alpha,
             "coverage_scope": getattr(self.conformal, "coverage_scope", "marginal") if hasattr(self, "conformal") else None,
+            "interval_origin": "conformalized",
+            "units": "z-scored (per-feature train-split standardization)",
         }
         metrics_payload = {
             "setting": setting,
             "point": point_metrics,
             "interval": interval_metrics,
+            "sanity_passed": sanity_report["passed"],
         }
 
-        np.save(folder_path / 'metrics.npy', np.array([mae, mse, rmse, mape]))
+        np.save(folder_path / 'metrics.npy', np.array([mae, mse, rmse]))
         np.save(folder_path / 'conformal.npy', np.array([coverage if coverage is not None else -1,
                                                           mean_width if mean_width is not None else -1,
                                                           winkler if winkler is not None else -1]))
@@ -572,14 +676,18 @@ class Experiment:
             np.save(folder_path / 'cluster_labels.npy', cluster_labels)
 
         save_json(folder_path / "metrics.json", metrics_payload)
+        save_json(folder_path / "sanity.json", sanity_report)
         save_json(folder_path / "coverage_by_cluster.json", coverage_by_cluster)
         save_json(folder_path / "config.json", vars(self.args))
         save_json(folder_path / "environment.json", environment_snapshot(self.device))
+        if history is not None:
+            save_json(folder_path / "history.json", history)
         runtime = dict(getattr(self, "train_runtime_", {}))
         runtime["test_seconds"] = time.time() - test_start
         runtime["test_samples"] = len(test_data)
         save_json(folder_path / "runtime.json", runtime)
-        if hasattr(self, "conformal") and self.conformal.calibrated:
+        save_json(folder_path / "protocol.json", self.args.protocol)
+        if hasattr(self, "conformal") and self.conformal.calibrated and hasattr(self.conformal, "get_cluster_stats"):
             save_json(folder_path / "cluster_stats.json", self.conformal.get_cluster_stats())
 
         return
@@ -658,13 +766,18 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--num_workers', type=int, default=0, help='dataloader workers')
     parser.add_argument('--require_gpu', action='store_true',
                         help='fail instead of falling back to CPU when no GPU is available')
-    parser.add_argument('--train_epochs', type=int, default=10, help='training epochs')
+    parser.add_argument('--require_clean_git', action='store_true',
+                        help='require a clean committed worktree for a publication run')
+    parser.add_argument('--train_epochs', type=int, default=20, help='training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='batch size (128 keeps GPU step time amortised without starving '
                              'the optimiser of updates; see CLAUDE.md)')
-    parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
+    parser.add_argument('--patience', type=int, default=5, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
-    parser.add_argument('--lradj', type=str, default='type1', help='lr schedule [type1, type2, cosine]')
+    parser.add_argument('--lradj', type=str, default='cosine',
+                        help="lr schedule [type1, type2, cosine]. Default 'cosine' anneals over the "
+                             "full --train_epochs budget so early stopping (not LR decay) ends training; "
+                             "'type1' halves every epoch and collapses training if train_epochs > ~6.")
     parser.add_argument('--grad_clip', type=float, default=1.0, help='max gradient norm; <=0 disables clipping')
 
     parser.add_argument('--use_wandb', action='store_true', help='enable wandb logging')
@@ -675,7 +788,14 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--walk_forward', action='store_true', help='Enable walk-forward rolling window evaluation')
     parser.add_argument('--conformal_alpha', type=float, default=0.1, help='conformal significance level')
     parser.add_argument('--n_clusters', type=int, default=5, help='requested SCCP clusters')
-    parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max, mean, mahalanobis]')
+    parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max]')
+    parser.add_argument('--calibration_stride', type=int, default=1,
+                        help='keep every kth chronological calibration origin for dependence-aware calibration')
+    parser.add_argument('--cal_fraction', type=float, default=0.2,
+                        help='fraction of the canonical train window carved out as the calibration split')
+    parser.add_argument('--strict_sanity', action='store_true',
+                        help='raise instead of warn when the post-test convergence/degeneracy sanity '
+                             'check fails (e.g. pred.std() << true.std(), test MSE >= 90%% of true.var())')
 
     parser.set_defaults(**config_defaults)
     args = parser.parse_args(args=cli_argv)
@@ -683,12 +803,16 @@ def parse_args(argv: Optional[list[str]] = None):
     apply_dataset_defaults(args, protected)
     if args.features == 'MS' and 'c_out' not in protected:
         args.c_out = 1
+    if args.calibration_stride <= 0:
+        raise ValueError('--calibration_stride must be positive.')
 
     return args
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
+    require_clean_source(args)
+    args.protocol = build_protocol_manifest(args)
     set_random_seed(args.seed)
 
     print('Args in experiment:')

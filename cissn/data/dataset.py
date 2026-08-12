@@ -24,6 +24,7 @@ class BaseETTDataset(Dataset):
         data_path: str = "",
         target: str = "OT",
         scale: bool = True,
+        cal_fraction: float = 0.2,
         **kwargs,
     ):
         if size is None:
@@ -43,6 +44,8 @@ class BaseETTDataset(Dataset):
             raise ValueError(
                 f"label_len must be <= seq_len for overlapping decoder context; got label_len={self.label_len}, seq_len={self.seq_len}."
             )
+        if not (0.0 < cal_fraction < 1.0):
+            raise ValueError(f"cal_fraction must be in (0, 1); got {cal_fraction}.")
 
         if flag not in {"train", "val", "cal", "test", "pred"}:
             raise ValueError(f"flag must be one of ['cal', 'pred', 'test', 'train', 'val']; got {flag!r}.")
@@ -52,6 +55,7 @@ class BaseETTDataset(Dataset):
         self.features = features
         self.target = target
         self.scale = scale
+        self.cal_fraction = cal_fraction
         self.root_path = root_path
         self.data_path = data_path or self._DEFAULT_DATA_PATH
         self.kwargs = kwargs
@@ -158,23 +162,32 @@ class BaseETTDataset(Dataset):
             data[:, col] = values / period - 0.5
         return data
 
+    # Hourly cadence by default (Dataset_ETT_hour); Dataset_ETT_minute overrides
+    # to 4 (15-minute steps), matching the canonical LTSF 12/4/4-month protocol.
+    _SPLIT_UNIT: int = 1
+
     def _get_borders(self, df_raw: pd.DataFrame):
         """
-        Define train/val/test split borders using a 12/4/4-month convention.
-        Used by ETT hourly and minute subclasses. Override for custom splits.
+        Canonical LTSF (Informer/Autoformer/DLinear) ETT boundaries: 12/4/4
+        months for train/val/test, so val and test are byte-identical to the
+        published benchmark. The calibration split CISSN needs (and standard
+        baselines don't) is carved out of the *tail of train*, not from val or
+        test, so those two remain literature-comparable:
+
+            train : [0,                 train_end)
+            cal   : [train_end,         n_train)      <- cal_fraction of n_train
+            val   : [n_train,           n_train+n_val)
+            test  : [n_train+n_val,     n_train+n_val+n_test)
         """
-        dates = pd.to_datetime(df_raw["date"])
-        start_date = dates.iloc[0]
-        train_end = start_date + pd.DateOffset(months=12)
-        val_end = train_end + pd.DateOffset(months=2)
-        cal_end = val_end + pd.DateOffset(months=2)
-        test_end = cal_end + pd.DateOffset(months=4)
-        train_n = int((dates < train_end).sum())
-        val_n = int((dates < val_end).sum())
-        cal_n = int((dates < cal_end).sum())
-        test_n = int((dates < test_end).sum())
-        border1s = [0, train_n - self.seq_len, val_n - self.seq_len, cal_n - self.seq_len]
-        border2s = [train_n, val_n, cal_n, test_n]
+        unit = self._SPLIT_UNIT
+        n_train = 12 * 30 * 24 * unit
+        n_val = 4 * 30 * 24 * unit
+        n_test = 4 * 30 * 24 * unit
+        n_cal = int(round(self.cal_fraction * n_train))
+        train_end = n_train - n_cal
+
+        border1s = [0, n_train - self.seq_len, train_end - self.seq_len, (n_train + n_val) - self.seq_len]
+        border2s = [train_end, n_train + n_val, n_train, n_train + n_val + n_test]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
@@ -230,6 +243,7 @@ class Dataset_ETT_hour(BaseETTDataset):
 
 class Dataset_ETT_minute(BaseETTDataset):
     _DEFAULT_DATA_PATH = "ETTm1.csv"
+    _SPLIT_UNIT = 4  # 15-minute cadence: 4 samples/hour vs. the hourly datasets' 1.
 
     def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:
         return self._build_time_features(df_stamp, _MINUTE_FIELDS)
@@ -244,7 +258,9 @@ class Dataset_Custom(BaseETTDataset):
     Generic dataset class for non-ETT benchmark datasets (Weather, Exchange-Rate,
     Electricity/ECL, Traffic, ILI, Solar-Energy, etc.).
 
-    Split policy: 60% train / 10% validation / 10% calibration / 20% test.
+    Split policy: canonical LTSF 70% train / 10% validation / 20% test, with
+    the calibration split carved out of the tail of the 70% train window
+    (cal_fraction of it) so val and test stay literature-comparable.
 
     Args:
         freq: Sampling frequency string used to select time features.
@@ -268,16 +284,18 @@ class Dataset_Custom(BaseETTDataset):
         super().__init__(root_path, flag, size, features, data_path, target, scale, **kwargs)
 
     def _get_borders(self, df_raw: pd.DataFrame):
+        """Canonical LTSF 70/10/20 split; cal is carved from the tail of the
+        70% train window so val/test stay literature-comparable (see the
+        BaseETTDataset docstring for the same policy applied to ETT)."""
         n = len(df_raw)
-        num_train = int(n * 0.6)
-        num_vali = int(n * 0.1)
-        num_cal = int(n * 0.1)
-        num_test = int(n * 0.2)
-        test_start = n - num_test
-        cal_start = test_start - num_cal
-        val_start = cal_start - num_vali
-        border1s = [0, val_start - self.seq_len, cal_start - self.seq_len, test_start - self.seq_len]
-        border2s = [val_start, cal_start, test_start, n]
+        n_train = int(n * 0.7)
+        n_val = int(n * 0.1)
+        n_test = n - n_train - n_val
+        n_cal = int(round(self.cal_fraction * n_train))
+        train_end = n_train - n_cal
+
+        border1s = [0, n_train - self.seq_len, train_end - self.seq_len, (n_train + n_val) - self.seq_len]
+        border2s = [train_end, n_train + n_val, n_train, n]
         return border1s, border2s
 
     def _extract_time_features(self, df_stamp: pd.DataFrame) -> np.ndarray:

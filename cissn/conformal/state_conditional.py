@@ -1,5 +1,4 @@
 import logging
-import warnings
 
 import torch
 import numpy as np
@@ -26,7 +25,7 @@ class StateConditionalConformal:
     Uses latent states to cluster time steps and compute adaptive prediction intervals.
     """
 
-    VALID_MULTIVARIATE_STRATEGIES = {"per_feature", "max", "mean", "mahalanobis"}
+    VALID_MULTIVARIATE_STRATEGIES = {"per_feature", "max"}
 
     def __init__(
         self,
@@ -34,22 +33,19 @@ class StateConditionalConformal:
         n_clusters: int = 5,
         multivariate_strategy: str = "per_feature",
         random_state: int = 42,
-        correct_acf: bool = True,
+        calibration_stride: int = 1,
     ):
         """
         Args:
             alpha: Significance level (coverage = 1 - alpha)
             n_clusters: Number of state clusters
-            multivariate_strategy: How to reduce multivariate residuals to a scalar
-                (or vector) quantile before interval construction. Options:
-                - 'per_feature': compute independent quantiles per output feature
-                - 'max': take the element-wise maximum residual across features
-                - 'mean': take the element-wise mean residual across features
-                - 'mahalanobis': fit a per-cluster covariance; use Mahalanobis
-                  distance as the scalar score, then back-project to per-feature widths
+            multivariate_strategy: 'per_feature' calibrates a separate score for
+                every horizon-feature cell; 'max' calibrates one score for a
+                simultaneous horizon-feature block.
             random_state: Seed for KMeans reproducibility.
-            correct_acf: If True, inflate cluster quantiles when within-cluster
-                ACF(1) exceeds 0.3 to compensate for reduced effective sample size (Theorem 1b).
+            calibration_stride: Keep every kth chronological calibration origin.
+                This does not create an unconditional guarantee; it is recorded
+                for dependence-aware analysis under the study assumptions.
         """
         if not 0 < alpha < 1:
             raise ValueError(f"alpha must lie strictly between 0 and 1; got {alpha}.")
@@ -58,12 +54,8 @@ class StateConditionalConformal:
         if multivariate_strategy not in self.VALID_MULTIVARIATE_STRATEGIES:
             supported = ", ".join(sorted(self.VALID_MULTIVARIATE_STRATEGIES))
             raise ValueError(f"Unknown multivariate strategy {multivariate_strategy!r}. Supported values: {supported}.")
-        if multivariate_strategy == "mahalanobis":
-            warnings.warn(
-                "multivariate_strategy='mahalanobis' is experimental: intervals are covariance-scaled "
-                "axis-aligned bands, not a formally proven simultaneous conformal set.",
-                UserWarning,
-            )
+        if calibration_stride <= 0:
+            raise ValueError(f"calibration_stride must be positive; got {calibration_stride}.")
 
         self.alpha = alpha
         self.n_clusters = n_clusters
@@ -73,9 +65,9 @@ class StateConditionalConformal:
         elif multivariate_strategy == "per_feature":
             self.coverage_scope = "marginal"
         else:
-            self.coverage_scope = "heuristic"
+            self.coverage_scope = "marginal"
         self.random_state = random_state
-        self.correct_acf = correct_acf
+        self.calibration_stride = calibration_stride
         self._reset_fit_state()
 
     def _reset_fit_state(self) -> None:
@@ -83,10 +75,10 @@ class StateConditionalConformal:
         self.scaler: Optional[StandardScaler] = None
         self.quantiles: dict = {}
         self.quantile_shape: tuple = ()
-        self.acf_corrections_: dict = {}
-        self.cov_matrices_: dict = {}
-        self.inv_cov_matrices_: dict = {}
         self.cluster_sizes_: dict = {}
+        self.cluster_fallbacks_: dict = {}
+        self.calibration_samples_ = 0
+        self.partition_fitted = False
         self.last_predicted_clusters_: Optional[np.ndarray] = None
         self.calibrated = False
 
@@ -119,21 +111,7 @@ class StateConditionalConformal:
         flattened = residuals.reshape(n_samples, -1)
         if self.multivariate_strategy == "max":
             return flattened.max(axis=1), ()
-        if self.multivariate_strategy == "mean":
-            return flattened.mean(axis=1), ()
-        if self.multivariate_strategy == "mahalanobis":
-            return flattened, tuple(residuals.shape[1:])
         return residuals, tuple(residuals.shape[1:])
-
-    @staticmethod
-    def _compute_acf_correction(rho: float, n_k: int) -> float:
-        """Compute ACF(1)-based quantile inflation factor (Theorem 1b).
-
-        Returns a multiplicative correction > 1 when |rho| > 0.3, accounting
-        for the reduced effective sample size under AR(1) dependence.
-        """
-        se_inflation = max(0.0, float(np.sqrt((1.0 + abs(rho)) / (1.0 - abs(rho)))) - 1.0)
-        return 1.0 + se_inflation / np.sqrt(n_k)
 
     @staticmethod
     def _compute_quantile(residuals: np.ndarray, q_level: float):
@@ -176,142 +154,78 @@ class StateConditionalConformal:
             f"for per-feature output calibration, got {forecast_shape}."
         )
 
-    def fit(self, states: Union[torch.Tensor, np.ndarray], residuals: Union[torch.Tensor, np.ndarray]):
-        """
-        Calibrate the conformal predictor.
-
-        Args:
-            states: (n_samples, state_dim) - Latent states from calibration set
-            residuals: Absolute residuals with leading sample axis. Supported shapes:
-                - (n_samples,) for scalar calibration
-                - (n_samples, output_dim) for per-output calibration
-                - (n_samples, horizon, output_dim) for per-horizon, per-output calibration
-        """
-        states = self._validate_states(self._to_numpy(states, "states"))
-        residuals = self._to_numpy(residuals, "residuals")
+    def fit_partition(self, reference_states: Union[torch.Tensor, np.ndarray]) -> None:
+        """Learn a state partition from training data before calibration."""
+        states = self._validate_states(self._to_numpy(reference_states, "reference_states"))
         self._reset_fit_state()
-
-        n_samples = states.shape[0]
-        residuals, self.quantile_shape = self._prepare_residuals(residuals, n_samples)
-        min_samples_per_cluster = max(5, int(np.ceil(1.0 / max(self.alpha, 0.01))))
-        n_clusters = min(self.n_clusters, n_samples)
-        if self.n_clusters > 1:
-            max_clusters_by_samples = max(1, n_samples // min_samples_per_cluster)
-            n_clusters = min(n_clusters, max_clusters_by_samples)
+        minimum = max(5, int(np.ceil(1.0 / self.alpha)))
+        n_clusters = min(self.n_clusters, max(1, states.shape[0] // minimum))
         self.scaler = StandardScaler()
         scaled_states = self.scaler.fit_transform(states)
 
-        # n_samples // min_samples_per_cluster only bounds the *average* cluster
-        # size; K-Means on real states is routinely imbalanced, so a run that
-        # satisfies the budget can still yield an under-populated cluster whose
-        # quantile has no finite-sample guarantee. Retry with progressively
-        # fewer clusters until every cluster clears the threshold, so coverage
-        # stays valid instead of merely warning about the violation.
         while True:
             kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_state, n_init=10)
-            kmeans.fit(scaled_states)
-            cluster_labels = kmeans.labels_
-            counts = np.bincount(cluster_labels, minlength=n_clusters)
-            if n_clusters == 1 or counts.min() >= min_samples_per_cluster:
+            labels = kmeans.fit_predict(scaled_states)
+            if n_clusters == 1 or np.bincount(labels, minlength=n_clusters).min() >= minimum:
                 break
             n_clusters -= 1
-            logger.info(
-                "Reducing n_clusters to %d: a cluster held %d < %d calibration samples.",
-                n_clusters, counts.min(), min_samples_per_cluster,
-            )
-
-        if n_clusters < self.n_clusters:
-            warnings.warn(
-                f"Requested n_clusters={self.n_clusters} but only {n_samples} calibration "
-                f"samples are available; using n_clusters={n_clusters} so every cluster keeps "
-                f"at least {min_samples_per_cluster} samples for a valid {1 - self.alpha:.0%} "
-                "interval. State-conditional adaptivity is correspondingly reduced."
-            )
 
         self.kmeans = kmeans
+        self.partition_fitted = True
 
-        empty_clusters = []
-        for k in range(self.kmeans.n_clusters):
-            mask = cluster_labels == k
-            cluster_residuals = residuals[mask]
-            n_k = cluster_residuals.shape[0]
-            self.cluster_sizes_[k] = n_k
+    def calibrate(
+        self,
+        states: Union[torch.Tensor, np.ndarray],
+        residuals: Union[torch.Tensor, np.ndarray],
+    ) -> None:
+        """Calibrate a frozen state partition on chronological residuals."""
+        if not self.partition_fitted:
+            raise RuntimeError("Call fit_partition() before calibrate().")
 
-            if n_k == 0:
-                empty_clusters.append(k)
-                warnings.warn(
-                    f"Cluster {k} is empty after K-Means. Will fall back to max quantile of non-empty clusters. "
-                    "Consider reducing n_clusters."
-                )
-                continue
-
-            if n_k < 1.0 / self.alpha:
-                warnings.warn(
-                    f"Cluster {k} has only {n_k} samples, below 1/alpha={1.0/self.alpha:.0f}. "
-                    "Conformal coverage guarantee may be unreliable for this cluster."
-                )
-
-            if self.multivariate_strategy == "mahalanobis":
-                flattened = cluster_residuals.reshape(n_k, -1)
-                cov = np.cov(flattened, rowvar=False)
-                if cov.ndim == 0:
-                    cov = np.array([[cov]])
-                cov += np.eye(cov.shape[0]) * 1e-6
-                inv_cov = np.linalg.inv(cov)
-                self.cov_matrices_[k] = cov
-                self.inv_cov_matrices_[k] = inv_cov
-                
-                distances = np.sqrt(np.einsum('ij,jk,ik->i', flattened, inv_cov, flattened))
-                q_level = split_conformal_q_level(n_k, self.alpha)
-                q_k = self._compute_quantile(distances, q_level)
-                
-                bounds = q_k * np.sqrt(np.diag(cov))
-                bounds = bounds.reshape(self.quantile_shape)
-                
-                if self.correct_acf:
-                    rho = self._compute_acf1(distances)
-                    if rho is not None and abs(rho) > 0.3:
-                        f_correction = self._compute_acf_correction(rho, n_k)
-                        bounds = bounds * f_correction
-                        self.acf_corrections_[k] = f_correction
-                
-                self.quantiles[k] = bounds
-            else:
-                q_level = split_conformal_q_level(n_k, self.alpha)
-                q_k = self._compute_quantile(cluster_residuals, q_level)
-
-                if self.correct_acf:
-                    rho = self._compute_acf1(cluster_residuals)
-                    if rho is not None and abs(rho) > 0.3:
-                        f_correction = self._compute_acf_correction(rho, n_k)
-                        q_k = q_k * f_correction
-                        self.acf_corrections_[k] = f_correction
-
-                self.quantiles[k] = q_k
-
-        if empty_clusters:
-            if self.quantiles:
-                fallback_quantile = np.stack(list(self.quantiles.values()), axis=0).max(axis=0)
-            else:
-                n_all = residuals.shape[0]
-                q_level = split_conformal_q_level(n_all, self.alpha)
-                fallback_quantile = self._compute_quantile(residuals, q_level)
-            for k in empty_clusters:
-                self.quantiles[k] = fallback_quantile
-
-        logger.info(
-            "SCCP calibration: %d clusters, sizes=%s, alpha=%s%s",
-            n_clusters,
-            dict(self.cluster_sizes_),
-            self.alpha,
-            f", acf_corrections={dict(self.acf_corrections_)}" if self.acf_corrections_ else "",
+        states_np = self._validate_states(self._to_numpy(states, "states"))
+        residuals_np = self._to_numpy(residuals, "residuals")
+        indices = np.arange(0, states_np.shape[0], self.calibration_stride)
+        states_np = states_np[indices]
+        residuals_np = residuals_np[indices]
+        residuals_np, self.quantile_shape = self._prepare_residuals(residuals_np, states_np.shape[0])
+        labels = self.assign_clusters(states_np)
+        minimum = max(5, int(np.ceil(1.0 / self.alpha)))
+        global_quantile = self._compute_quantile(
+            residuals_np, split_conformal_q_level(residuals_np.shape[0], self.alpha)
         )
+
+        self.quantiles = {}
+        self.cluster_sizes_ = {}
+        self.cluster_fallbacks_ = {}
+        self.calibration_samples_ = int(states_np.shape[0])
+        for cluster in range(self.kmeans.n_clusters):
+            cluster_residuals = residuals_np[labels == cluster]
+            count = cluster_residuals.shape[0]
+            self.cluster_sizes_[cluster] = int(count)
+            if count < minimum:
+                self.quantiles[cluster] = global_quantile
+                self.cluster_fallbacks_[cluster] = "global_quantile"
+                continue
+            self.quantiles[cluster] = self._compute_quantile(
+                cluster_residuals, split_conformal_q_level(count, self.alpha)
+            )
+            self.cluster_fallbacks_[cluster] = None
+
         self.calibrated = True
+        logger.info(
+            "SCCP calibrated: clusters=%d, stride=%d, samples=%d",
+            self.kmeans.n_clusters, self.calibration_stride, self.calibration_samples_,
+        )
+
+    def fit(self, states: Union[torch.Tensor, np.ndarray], residuals: Union[torch.Tensor, np.ndarray]) -> None:
+        """Convenience API for IID tests; experiments use separate partition and calibration data."""
+        self.fit_partition(states)
+        self.calibrate(states, residuals)
 
     def assign_clusters(self, states: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
         """Assign states to fitted conformal clusters."""
-        if not self.calibrated or self.kmeans is None or self.scaler is None:
-            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        if not self.partition_fitted or self.kmeans is None or self.scaler is None:
+            raise RuntimeError("State partition is not fitted. Call fit_partition() first.")
         states_np = self._validate_states(self._to_numpy(states, "states"))
         # sklearn requires the predict dtype to match the fitted centroids, so a
         # caller passing float32 states to a float64-fitted KMeans (or vice
@@ -332,7 +246,7 @@ class StateConditionalConformal:
                 "n_samples": int(n_k),
                 "quantile_shape": list(np.asarray(q).shape),
                 "quantile_mean": float(np.asarray(q).mean()) if q is not None else None,
-                "acf_correction": float(self.acf_corrections_[k]) if k in self.acf_corrections_ else None,
+                "fallback": self.cluster_fallbacks_.get(k),
             }
         return {
             "alpha": float(self.alpha),
@@ -340,6 +254,8 @@ class StateConditionalConformal:
             "fitted_n_clusters": int(self.kmeans.n_clusters),
             "multivariate_strategy": self.multivariate_strategy,
             "coverage_scope": self.coverage_scope,
+            "calibration_stride": int(self.calibration_stride),
+            "calibration_samples": int(self.calibration_samples_),
             "clusters": stats,
         }
 
@@ -378,16 +294,16 @@ class StateConditionalConformal:
         q_tensor = self._build_quantile_tensor(q_values, point_forecasts)
         return point_forecasts - q_tensor, point_forecasts + q_tensor
 
-    def check_exchangeability(
+    def diagnose_dependence(
         self,
         states: Union[torch.Tensor, np.ndarray],
         residuals: Union[torch.Tensor, np.ndarray],
     ) -> dict:
         """
-        Validate the within-cluster exchangeability assumption via lag-1 autocorrelation.
+        Report within-cluster lag-1 autocorrelation without modifying intervals.
 
         Returns a dict mapping cluster_id -> dict with keys:
-            acf_lag1, n_samples, corrected (bool), correction_factor (if corrected).
+            acf_lag1, n_samples, and a warning when serial dependence is high.
         """
         states = self._validate_states(self._to_numpy(states, "states"))
         residuals = self._to_numpy(residuals, "residuals")
@@ -402,7 +318,7 @@ class StateConditionalConformal:
         for k in range(self.kmeans.n_clusters):
             mask = cluster_labels == k
             n_k = mask.sum()
-            entry = {"n_samples": int(n_k), "corrected": False, "correction_factor": None}
+            entry = {"n_samples": int(n_k)}
 
             if n_k < 5:
                 entry["acf_lag1"] = None
@@ -413,14 +329,8 @@ class StateConditionalConformal:
             rho = self._compute_acf1(residuals[mask])
             entry["acf_lag1"] = rho
 
-            if k in self.acf_corrections_:
-                entry["corrected"] = True
-                entry["correction_factor"] = self.acf_corrections_[k]
-            elif rho is not None and abs(rho) > 0.3:
-                warnings.warn(
-                    f"Cluster {k} shows substantial autocorrelation (ACF(1)={rho:.3f}). "
-                    "Re-run fit() with correct_acf=True to apply automatic quantile inflation."
-                )
+            if rho is not None and abs(rho) > 0.3:
+                entry["warning"] = "substantial serial dependence"
 
             results[k] = entry
         return results

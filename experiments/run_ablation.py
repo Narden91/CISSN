@@ -2,35 +2,39 @@
 """
 Ablation study runner for CISSN Paper 1.
 
-Runs each ablation configuration on ETTh1 and collects metrics.
+Runs each ablation configuration on ETTh1 (or another dataset) and collects
+metrics. Reuses experiments/run_benchmark.py's Experiment class (early
+stopping, LR schedule, gradient clipping, best-checkpoint restore, and
+sanity/history artifacts) via a thin subclass, so an ablation arm is trained
+under exactly the same protocol as the full CISSN model -- only the model
+architecture and conformal strategy vary per config.
+
 Usage:
-    python experiments/run_ablation.py --data ETTh1 --pred_len 96 --train_epochs 10 --seed 42
+    python experiments/run_ablation.py --data ETTh1 --pred_len 96 --train_epochs 20 --seed 42
     python experiments/run_ablation.py --data ETTh1 --all_horizons --seeds 42,123,456
 """
-import os
-import sys
-import argparse
 import json
+import os
 import time
-import random
+from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import numpy as np
 
+from cissn.baselines import FlatConformal
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
-from cissn.conformal import StateConditionalConformal
-from cissn.losses.disentangle_loss import DisentanglementLoss
-from cissn.data.data_loader import get_data_loader
-from cissn.data.registry import get_dataset_spec, supported_datasets
-from cissn.utils import select_device
-from cissn.evaluation.metrics import (
-    mean_squared_error, mean_absolute_error,
-    compute_picp, compute_mpiw, winkler_score, calibration_error,
-)
-from sklearn.metrics import mean_squared_error as sk_mse, mean_absolute_error as sk_mae
+
+try:
+    from .run_benchmark import (
+        Experiment, build_protocol_manifest, build_setting_name, require_clean_source,
+        set_random_seed, parse_args as parse_benchmark_args,
+    )
+except ImportError:
+    from run_benchmark import (
+        Experiment, build_protocol_manifest, build_setting_name, require_clean_source,
+        set_random_seed, parse_args as parse_benchmark_args,
+    )
 
 # ── Ablation configurations ────────────────────────────────────────────────
 
@@ -86,175 +90,7 @@ ABLATION_CONFIGS = {
 }
 
 
-# ── Main ablation runner ───────────────────────────────────────────────────
-
-def run_ablation(args, config_key, config):
-    """Train and evaluate a single ablation configuration."""
-    print(f"\n{'='*70}")
-    print(f"ABLATION: {config_key} — {config['description']}")
-    print(f"{'='*70}")
-
-    device = select_device(require_gpu=getattr(args, 'require_gpu', False))
-
-    # ── Build encoder with ablation flags ──────────────────────────────────
-    input_dim = args.enc_in
-    state_dim = config["state_dim"]
-    hidden_dim = args.d_model
-
-    if state_dim == 5 and config["structured_A"] and config["correction_mlp"]:
-        encoder = DisentangledStateEncoder(
-            input_dim=input_dim, state_dim=5, hidden_dim=hidden_dim, dropout=args.dropout,
-        ).to(device)
-    else:
-        encoder = DisentangledStateEncoderCustom(
-            input_dim=input_dim, state_dim=state_dim, hidden_dim=hidden_dim,
-            structured_A=config["structured_A"],
-            correction_mlp=config["correction_mlp"],
-        ).to(device)
-
-    head = ForecastHead(
-        state_dim=state_dim, output_dim=args.c_out, horizon=args.pred_len,
-        hidden_dim=args.d_model // 2,
-    ).to(device)
-
-    # ── Data ────────────────────────────────────────────────────────────────
-    _, train_loader = get_data_loader(args, 'train')
-    _, vali_loader = get_data_loader(args, 'val')
-    _, cal_loader = get_data_loader(args, 'cal')
-    _, test_loader = get_data_loader(args, 'test')
-
-    criterion = nn.MSELoss()
-    params = list(encoder.parameters()) + list(head.parameters())
-    optimizer = optim.Adam(params, lr=args.learning_rate)
-
-    if config["disentanglement_loss"] and state_dim == 5:
-        disentangle_criterion = DisentanglementLoss(
-            lambda_cov=args.lambda_cov, lambda_temporal=args.lambda_temp,
-        ).to(device)
-    else:
-        disentangle_criterion = None
-
-    # ── Training ───────────────────────────────────────────────────────────
-    for epoch in range(args.train_epochs):
-        encoder.train()
-        head.train()
-        for batch_x, batch_y, _, _ in train_loader:
-            batch_x = batch_x.float().to(device, non_blocking=True)
-            batch_y = batch_y.float().to(device, non_blocking=True)
-
-            optimizer.zero_grad()
-            states = encoder(batch_x, return_all_states=True)
-            final_state = states[:, -1, :]
-            outputs = head(final_state)
-
-            f_dim = -1 if args.features == 'MS' else 0
-            outputs = outputs[:, -args.pred_len:, f_dim:]
-            batch_y = batch_y[:, -args.pred_len:, f_dim:].to(device)
-
-            pred_loss = criterion(outputs, batch_y)
-            if disentangle_criterion is not None:
-                dis_loss = disentangle_criterion(states)
-                loss = pred_loss + dis_loss
-            else:
-                loss = pred_loss
-
-            loss.backward()
-            optimizer.step()
-
-        if (epoch + 1) % 5 == 0:
-            print(f"  Epoch {epoch+1}/{args.train_epochs} — loss: {loss.item():.6f}")
-
-    # ── Calibrate conformal ────────────────────────────────────────────────
-    all_states = []
-    all_residuals = []
-    encoder.eval()
-    head.eval()
-    with torch.no_grad():
-        for batch_x, batch_y, _, _ in cal_loader:
-            batch_x = batch_x.float().to(device, non_blocking=True)
-            batch_y = batch_y.float().to(device, non_blocking=True)
-            final_state = encoder(batch_x)
-            outputs = head(final_state)
-            f_dim = -1 if args.features == 'MS' else 0
-            outputs = outputs[:, -args.pred_len:, f_dim:]
-            batch_y = batch_y[:, -args.pred_len:, f_dim:].to(device)
-            all_states.append(final_state.detach().cpu())
-            all_residuals.append((outputs - batch_y).abs().detach().cpu())
-
-    all_states = torch.cat(all_states, dim=0)
-    all_residuals = torch.cat(all_residuals, dim=0)
-
-    if config["sccp"]:
-        conformal = StateConditionalConformal(
-            alpha=args.conformal_alpha,
-            n_clusters=args.n_clusters,
-            multivariate_strategy=args.multivariate_strategy,
-            random_state=args.seed,
-        )
-        conformal.fit(all_states, all_residuals)
-    else:
-        from cissn.baselines import FlatConformal
-        conformal = FlatConformal(alpha=args.conformal_alpha)
-        conformal.fit(all_residuals)
-
-    # ── Test evaluation ────────────────────────────────────────────────────
-    preds = []
-    trues = []
-    test_states_list = []
-
-    encoder.eval()
-    head.eval()
-    with torch.no_grad():
-        for batch_x, batch_y, _, _ in test_loader:
-            batch_x = batch_x.float().to(device, non_blocking=True)
-            batch_y = batch_y.float().to(device, non_blocking=True)
-            final_state = encoder(batch_x)
-            outputs = head(final_state)
-            f_dim = -1 if args.features == 'MS' else 0
-            outputs = outputs[:, -args.pred_len:, f_dim:]
-            batch_y = batch_y[:, -args.pred_len:, f_dim:].to(device)
-            preds.append(outputs.detach().cpu().numpy())
-            trues.append(batch_y.detach().cpu().numpy())
-            test_states_list.append(final_state.detach().cpu().numpy())
-
-    preds = np.concatenate(preds, axis=0)
-    trues = np.concatenate(trues, axis=0)
-    test_states = np.concatenate(test_states_list, axis=0)
-
-    mse = sk_mse(trues.flatten(), preds.flatten())
-    mae = sk_mae(trues.flatten(), preds.flatten())
-
-    # Conformal intervals
-    if isinstance(conformal, StateConditionalConformal):
-        lower, upper = conformal.predict(
-            torch.from_numpy(test_states).float(),
-            torch.from_numpy(preds).float(),
-        )
-        lower, upper = lower.numpy(), upper.numpy()
-    else:
-        lower, upper = conformal.predict(torch.from_numpy(preds).float())
-        lower, upper = lower.numpy(), upper.numpy()
-
-    coverage = compute_picp(lower, upper, trues)
-    width = compute_mpiw(lower, upper)
-    winkler = winkler_score(lower, upper, trues, alpha=args.conformal_alpha)
-    calib_err = calibration_error(lower, upper, trues, alpha=args.conformal_alpha)
-
-    result = {
-        "config": config_key,
-        "description": config["description"],
-        "mse": float(mse),
-        "mae": float(mae),
-        "coverage": float(coverage),
-        "mpiw": float(width),
-        "winkler": float(winkler),
-        "calibration_error": float(calib_err),
-    }
-    print(f"  Result: MSE={mse:.4f}, MAE={mae:.4f}, Coverage={coverage:.4f}, MPIW={width:.4f}")
-    return result
-
-
-# ── Custom encoder for ablation (state_dim != 5) ──────────────────────────
+# ── Custom encoder for ablation (state_dim != 5, or structured_A/correction_mlp disabled) ──
 
 
 class DisentangledStateEncoderCustom(nn.Module):
@@ -342,56 +178,149 @@ class DisentangledStateEncoderCustom(nn.Module):
         return s
 
 
+# ── Ablation experiment: reuses Experiment's train/test protocol ──────────
+
+
+class AblationExperiment(Experiment):
+    """Experiment subclass that swaps model architecture and conformal
+    strategy per ablation config, while inheriting the full training loop
+    (early stopping, LR schedule, grad clipping, checkpoint restore, history
+    and sanity artifacts) unchanged from Experiment."""
+
+    def __init__(self, args, config: dict):
+        self.config = config  # must be set before super().__init__ calls _build_model/_build_head
+        super().__init__(args)
+
+    def _build_model(self):
+        c = self.config
+        if c["state_dim"] == 5 and c["structured_A"] and c["correction_mlp"]:
+            return DisentangledStateEncoder(
+                input_dim=self.args.enc_in, state_dim=5,
+                hidden_dim=self.args.d_model, dropout=self.args.dropout,
+            )
+        return DisentangledStateEncoderCustom(
+            input_dim=self.args.enc_in, state_dim=c["state_dim"],
+            hidden_dim=self.args.d_model, dropout=self.args.dropout,
+            structured_A=c["structured_A"], correction_mlp=c["correction_mlp"],
+        )
+
+    def _build_head(self):
+        return ForecastHead(
+            state_dim=self.config["state_dim"], output_dim=self.args.c_out,
+            horizon=self.args.pred_len, hidden_dim=self.args.d_model // 2,
+            dropout=self.args.dropout,
+        )
+
+    def _select_disentangle_criterion(self):
+        # DisentanglementLoss.forward hard-requires state_dim==5 (it targets
+        # the five named physical components), so the state_dim_4 ablation
+        # arm must train without this loss term entirely, not just with
+        # lambda_cov/lambda_temp zeroed.
+        if self.config["state_dim"] != 5 or not self.config["disentanglement_loss"]:
+            return None
+        return super()._select_disentangle_criterion()
+
+    def _uses_state_partition(self):
+        return self.config["sccp"]
+
+    def _calibrate_conformal(self, cal_loader, artifact_dir=None):
+        if self.config["sccp"]:
+            return super()._calibrate_conformal(cal_loader, artifact_dir)
+
+        # flat_cp arm: same residual collection as the base class, but a
+        # single global quantile (FlatConformal) instead of state clustering.
+        self.conformal = FlatConformal(
+            alpha=self.args.conformal_alpha,
+            multivariate_strategy=self.args.multivariate_strategy,
+        )
+        all_residuals = []
+        self.model.eval()
+        self.head.eval()
+        with torch.no_grad():
+            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in cal_loader:
+                _, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
+                all_residuals.append((outputs - batch_y).abs().detach().cpu())
+        all_residuals = torch.cat(all_residuals, dim=0)
+        self.conformal.fit(all_residuals)
+        print("Flat conformal predictor calibrated on held-out calibration split.")
+        if artifact_dir is not None:
+            Path(artifact_dir).mkdir(parents=True, exist_ok=True)
+            (Path(artifact_dir) / "cluster_stats.json").write_text(
+                json.dumps({"multivariate_strategy": "flat_cp", "coverage_scope": self.conformal.coverage_scope}),
+                encoding="utf-8",
+            )
+        self.model.train()
+        self.head.train()
+
+    def _predict_intervals(self, test_states, preds):
+        if self.config["sccp"]:
+            return super()._predict_intervals(test_states, preds)
+        lower, upper = self.conformal.predict(torch.from_numpy(preds).float())
+        return lower.numpy(), upper.numpy(), None
+
+
+def run_ablation(args, config_key: str, config: dict) -> dict:
+    """Train and evaluate a single ablation configuration; return its metrics.json payload."""
+    print(f"\n{'='*70}")
+    print(f"ABLATION: {config_key} — {config['description']}")
+    print(f"{'='*70}")
+
+    ablation_args = argparse_namespace_with_overrides(args, config)
+    ablation_args.protocol = build_protocol_manifest(ablation_args)
+    set_random_seed(ablation_args.seed)
+    exp = AblationExperiment(ablation_args, config)
+    setting = f"ABLATION_{config_key}_{build_setting_name(ablation_args)}"
+    exp.train(setting)
+    exp.test(setting)
+
+    metrics_path = Path(ablation_args.results_dir) / setting / "metrics.json"
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    payload["config"] = config_key
+    payload["description"] = config["description"]
+    return payload
+
+
+def argparse_namespace_with_overrides(args, config: dict):
+    """Copy args with the ablation's state_dim and (if disabled) zeroed
+    disentanglement-loss weights, so build_setting_name and _build_model see
+    values consistent with this arm."""
+    import copy
+    overridden = copy.deepcopy(args)
+    overridden.state_dim = config["state_dim"]
+    if not config["disentanglement_loss"]:
+        overridden.lambda_cov = 0.0
+        overridden.lambda_temp = 0.0
+    return overridden
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='CISSN Ablation Study Runner')
-    parser.add_argument('--data', type=str, default='ETTh1', choices=supported_datasets())
-    parser.add_argument('--root_path', type=str, default=None)
-    parser.add_argument('--data_path', type=str, default=None)
-    parser.add_argument('--features', type=str, default='M')
-    parser.add_argument('--target', type=str, default=None)
-    parser.add_argument('--freq', type=str, default=None)
-    parser.add_argument('--seq_len', type=int, default=96)
-    parser.add_argument('--label_len', type=int, default=48)
-    parser.add_argument('--pred_len', type=int, default=96)
-    parser.add_argument('--enc_in', type=int, default=None)
-    parser.add_argument('--c_out', type=int, default=None)
-    parser.add_argument('--d_model', type=int, default=64)
-    parser.add_argument('--dropout', type=float, default=0.05)
-    parser.add_argument('--lambda_cov', type=float, default=1.0)
-    parser.add_argument('--lambda_temp', type=float, default=0.5)
-    parser.add_argument('--num_workers', type=int, default=0)
-    parser.add_argument('--require_gpu', action='store_true',
-                        help='fail instead of falling back to CPU when no GPU is available')
-    parser.add_argument('--train_epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=128,
-                        help='batch size (matches the CISSN default so ablations stay comparable)')
-    parser.add_argument('--learning_rate', type=float, default=0.001)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--conformal_alpha', type=float, default=0.1)
-    parser.add_argument('--n_clusters', type=int, default=5)
-    parser.add_argument('--multivariate_strategy', type=str, default='per_feature')
-    parser.add_argument('--output', type=str, default='./results/ablations.json')
-    parser.add_argument('--ablations', type=str, default='all',
-                        help='Comma-separated ablation keys, or "all" for all six')
+def parse_ablation_args(argv=None):
+    """Reuses run_benchmark's full argparse surface (so ablations always accept
+    the same --train_epochs/--patience/--lradj/--grad_clip/etc as the main
+    runner and cannot silently drift onto a different protocol), plus two
+    ablation-only options.
+    """
+    import argparse
+    pre_parser = argparse.ArgumentParser(
+        description="CISSN ablation runner. Remaining options are forwarded to run_benchmark.py.",
+    )
+    pre_parser.add_argument('--output', type=str, default='./results/ablations.json')
+    pre_parser.add_argument('--ablations', type=str, default='all',
+                             help='Comma-separated ablation keys, or "all" for all six')
+    pre_args, remaining = pre_parser.parse_known_args(args=argv)
+    benchmark_args = parse_benchmark_args(remaining)
+    return pre_args, benchmark_args
 
-    args = parser.parse_args()
-    spec = get_dataset_spec(args.data)
-    for key in ("root_path", "data_path", "freq", "target", "enc_in", "c_out"):
-        if getattr(args, key) is None:
-            setattr(args, key, spec[key])
-    if args.features == "MS" and args.c_out == spec["c_out"]:
-        args.c_out = 1
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
+def main(argv=None) -> None:
+    wrapper_args, args = parse_ablation_args(argv)
+    require_clean_source(args)
 
-    if args.ablations == 'all':
+    if wrapper_args.ablations == 'all':
         configs = list(ABLATION_CONFIGS.keys())
     else:
-        configs = [k.strip() for k in args.ablations.split(',')]
+        configs = [k.strip() for k in wrapper_args.ablations.split(',')]
         for k in configs:
             if k not in ABLATION_CONFIGS:
                 raise ValueError(f"Unknown ablation '{k}'. Available: {list(ABLATION_CONFIGS)}")
@@ -400,15 +329,18 @@ if __name__ == '__main__':
     t0 = time.time()
     for key in configs:
         cfg = ABLATION_CONFIGS[key]
-        result = run_ablation(args, key, cfg)
-        results[key] = result
+        results[key] = run_ablation(args, key, cfg)
 
     elapsed = time.time() - t0
     print(f"\n{'='*70}")
     print(f"Ablation study complete in {elapsed:.1f}s")
-    print(f"Results saved to {args.output}")
+    print(f"Results saved to {wrapper_args.output}")
     print(f"{'='*70}")
 
-    os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else '.', exist_ok=True)
-    with open(args.output, 'w') as f:
+    os.makedirs(os.path.dirname(wrapper_args.output) or '.', exist_ok=True)
+    with open(wrapper_args.output, 'w', encoding="utf-8") as f:
         json.dump(results, f, indent=2)
+
+
+if __name__ == '__main__':
+    main()

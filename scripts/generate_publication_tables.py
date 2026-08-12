@@ -56,6 +56,8 @@ def _parse_setting(setting: str) -> dict[str, Any]:
             }
         )
         return base
+    if setting.startswith("BASELINE_"):
+        base["family"] = "baseline"
     m = SETTING_CISSN_RE.match(setting)
     if m:
         base.update(
@@ -94,13 +96,17 @@ def collect_run_metrics(results_root: Path) -> pd.DataFrame:
                 "mse": point.get("mse"),
                 "mae": point.get("mae"),
                 "rmse": point.get("rmse"),
-                "mape": point.get("mape"),
                 "coverage": interval.get("coverage"),
+                "coverage_primary": interval.get("coverage_primary"),
                 "mpiw": interval.get("mean_width"),
                 "winkler": interval.get("winkler"),
+                "msis": interval.get("msis"),
                 "calibration_error": interval.get("calibration_error"),
                 "alpha": interval.get("alpha"),
                 "coverage_scope": interval.get("coverage_scope"),
+                "interval_origin": interval.get("interval_origin"),
+                "sanity_passed": metrics.get("sanity_passed"),
+                "protocol_present": (metrics_path.parent / "protocol.json").exists(),
             }
         )
     return pd.DataFrame(rows)
@@ -115,18 +121,20 @@ def collect_ablation_outputs(results_root: Path) -> pd.DataFrame:
         # run_ablation outputs a dict keyed by ablation name
         if not payload:
             continue
-        if all(isinstance(v, dict) and "mse" in v for v in payload.values()):
+        if all(isinstance(v, dict) and "point" in v for v in payload.values()):
             for ablation, res in payload.items():
+                point = res.get("point", {})
+                interval = res.get("interval", {})
                 rows.append(
                     {
                         "artifact": str(path),
                         "ablation": ablation,
-                        "mse": res.get("mse"),
-                        "mae": res.get("mae"),
-                        "coverage": res.get("coverage"),
-                        "mpiw": res.get("mpiw"),
-                        "winkler": res.get("winkler"),
-                        "calibration_error": res.get("calibration_error"),
+                        "mse": point.get("mse"),
+                        "mae": point.get("mae"),
+                        "coverage_primary": interval.get("coverage_primary"),
+                        "mpiw": interval.get("mean_width"),
+                        "winkler": interval.get("winkler"),
+                        "calibration_error": interval.get("calibration_error"),
                     }
                 )
     return pd.DataFrame(rows)
@@ -159,15 +167,23 @@ def main() -> None:
     run_df.to_csv(args.output_dir / "all_runs_flat.csv", index=False)
     ablation_df.to_csv(args.output_dir / "ablations_flat.csv", index=False)
 
-    point_tbl = summarize(run_df, ["mse", "mae", "rmse", "mape"])
-    interval_tbl = summarize(run_df.dropna(subset=["coverage"]), ["coverage", "mpiw", "winkler", "calibration_error"])
+    eligible = run_df[
+        (run_df["sanity_passed"] == True)
+        & (run_df["protocol_present"] == True)
+    ] if not run_df.empty else run_df
+    point_tbl = summarize(eligible, ["mse", "mae", "rmse"])
+    interval_eligible = eligible[
+        eligible["coverage_primary"].notna()
+        & ~eligible["interval_origin"].isin(["raw_uq"])
+    ] if not eligible.empty else eligible
+    interval_tbl = summarize(interval_eligible, ["coverage_primary", "mpiw", "winkler", "msis", "calibration_error"])
 
     point_tbl.to_csv(args.output_dir / "table_point_metrics.csv", index=False)
     interval_tbl.to_csv(args.output_dir / "table_interval_metrics.csv", index=False)
 
     if not ablation_df.empty:
         ablation_summary = (
-            ablation_df.groupby("ablation", dropna=False)[["mse", "mae", "coverage", "mpiw", "calibration_error"]]
+            ablation_df.groupby("ablation", dropna=False)[["mse", "mae", "coverage_primary", "mpiw", "calibration_error"]]
             .agg(["mean", "std"])
             .reset_index()
         )
@@ -179,6 +195,7 @@ def main() -> None:
 
     summary = {
         "runs_detected": int(len(run_df)),
+        "primary_eligible_runs": int(len(eligible)),
         "ablation_files_detected": int(len(ablation_df["artifact"].unique())) if not ablation_df.empty else 0,
         "output_dir": str(args.output_dir),
     }

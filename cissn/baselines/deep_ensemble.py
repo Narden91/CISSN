@@ -24,7 +24,8 @@ class DeepEnsemble:
         """
         self.alpha = alpha
         self.z_score = norm.ppf(1 - alpha / 2)
-        # Deep Ensemble does not require a held-out calibration set.
+        # This class emits raw Gaussian-scale intervals. The experiment runner
+        # calibrates them on the chronological calibration split by default.
         self.requires_calibration = False
 
     def predict(

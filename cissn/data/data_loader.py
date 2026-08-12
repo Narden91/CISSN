@@ -1,12 +1,15 @@
 import logging
+import os
 import torch
 from torch.utils.data import DataLoader
 from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Solar
-from cissn.data.registry import supported_datasets
+from cissn.data.registry import supported_datasets, verify_dataset
 from typing import Tuple, Union, Any, Dict
 from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
+
+_verified_datasets: set[str] = set()
 
 _DATA_REGISTRY: dict = {
     'ETTh1':         (Dataset_ETT_hour,   'h'),
@@ -48,6 +51,10 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
     if flag not in {'train', 'val', 'cal', 'test', 'pred'}:
         raise ValueError(f"flag must be one of 'train', 'val', 'cal', 'test', 'pred'; got {flag!r}.")
 
+    if args.data not in _verified_datasets and not os.environ.get('CISSN_SKIP_DATA_VERIFY'):
+        verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
+        _verified_datasets.add(args.data)
+
     Data, default_freq = _DATA_REGISTRY[args.data]
     freq = getattr(args, 'freq', default_freq) or default_freq
 
@@ -79,6 +86,7 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         size=[args.seq_len, args.label_len, args.pred_len],
         features=args.features,
         target=args.target,
+        cal_fraction=getattr(args, 'cal_fraction', 0.2),
     )
     if issubclass(Data, Dataset_Custom):
         dataset_kwargs['freq'] = freq

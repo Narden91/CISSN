@@ -42,7 +42,7 @@ def _make_calibration_plots(run_dirs: list[Path], out_dir: Path) -> bool:
         if not payload:
             continue
         interval = payload.get("interval", {})
-        cov = interval.get("coverage")
+        cov = interval.get("coverage_primary")
         alpha = interval.get("alpha")
         if cov is None or alpha is None:
             continue

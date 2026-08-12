@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from experiments.run_benchmark import parse_args as parse_benchmark_args
-from experiments.run_baseline import compute_metrics
+from experiments.run_baseline import compute_metrics, parse_ensemble_seeds
 from experiments.run_multiseed import build_benchmark_run_argv, parse_multiseed_args
 
 
@@ -75,6 +75,13 @@ class TestExperimentRunners(unittest.TestCase):
 
         self.assertIsNone(interval_metrics['coverage_scope'])
         self.assertIsNone(interval_metrics['coverage'])
+
+    def test_default_ensemble_members_change_with_outer_seed(self):
+        first = parse_ensemble_seeds(SimpleNamespace(ensemble_seeds='', ensemble_size=3, seed=42))
+        second = parse_ensemble_seeds(SimpleNamespace(ensemble_seeds='', ensemble_size=3, seed=123))
+
+        self.assertEqual(len(first), len(set(first)))
+        self.assertNotEqual(first, second)
 
 
 if __name__ == '__main__':

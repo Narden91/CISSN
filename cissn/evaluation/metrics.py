@@ -118,3 +118,52 @@ def calibration_error(
     empirical_coverage = compute_picp(lower, upper, y_true)
     nominal_coverage = 1.0 - alpha
     return float(abs(empirical_coverage - nominal_coverage))
+
+
+_SEASONAL_PERIOD_BY_FREQ = {
+    "h": 24,     # hourly data -> daily seasonality
+    "t": 96,     # 15-minute data -> daily seasonality (4 * 24)
+    "d": 7,      # daily data -> weekly seasonality
+    "w": 52,     # weekly data -> yearly seasonality
+}
+
+
+def seasonal_period_for_freq(freq: str) -> int:
+    """Map a dataset's sampling frequency to its naive-seasonal lag for MSIS scaling."""
+    key = freq.lower()
+    if key not in _SEASONAL_PERIOD_BY_FREQ:
+        raise ValueError(f"No seasonal period configured for freq={freq!r}. Known: {sorted(_SEASONAL_PERIOD_BY_FREQ)}.")
+    return _SEASONAL_PERIOD_BY_FREQ[key]
+
+
+def mean_scaled_interval_score(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    y_true: np.ndarray,
+    y_train: np.ndarray,
+    seasonal_period: int,
+    alpha: float = 0.1,
+) -> float:
+    """
+    Mean Scaled Interval Score (MSIS): the Winkler interval score scaled by the
+    in-sample seasonal-naive MAE, making it comparable across series of
+    different scale (Gneiting & Raftery 2007; M4 competition convention).
+
+    MSIS = winkler_score(lower, upper, y_true, alpha) / seasonal_naive_mae(y_train)
+
+    Args:
+        y_train: In-sample (training-split) target values used to compute the
+            scaling denominator; must be 1-D or flattened before scaling.
+        seasonal_period: Naive-forecast lag (e.g. 24 for hourly data with daily
+            seasonality). Must be < len(y_train).
+    """
+    y_train = np.asarray(y_train).reshape(-1)
+    if seasonal_period <= 0 or seasonal_period >= y_train.shape[0]:
+        raise ValueError(
+            f"seasonal_period must satisfy 0 < seasonal_period < len(y_train); "
+            f"got seasonal_period={seasonal_period}, len(y_train)={y_train.shape[0]}."
+        )
+    denom = float(np.mean(np.abs(y_train[seasonal_period:] - y_train[:-seasonal_period])))
+    if denom <= 1e-8:
+        raise ValueError("Seasonal-naive scaling denominator is ~0; MSIS is undefined for a constant series.")
+    return winkler_score(lower, upper, y_true, alpha=alpha) / denom

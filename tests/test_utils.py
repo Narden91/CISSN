@@ -112,7 +112,7 @@ class TestConformalContracts(unittest.TestCase):
 
         self.assertLessEqual(conformal.kmeans.n_clusters, first_clusters)
         self.assertEqual(set(conformal.cluster_sizes_), set(range(conformal.kmeans.n_clusters)))
-        self.assertEqual(conformal.acf_corrections_, {})
+        self.assertEqual(conformal.cluster_fallbacks_, {0: "global_quantile"})
 
     def test_quantile_level_matches_textbook_and_empirical_coverage_holds(self):
         """q_level must equal ceil((n+1)(1-a))/(n+1); empirical coverage on i.i.d. draw >= 1-alpha."""
@@ -181,6 +181,52 @@ class TestConformalContracts(unittest.TestCase):
         self.assertEqual(compute_picp(lower, upper, y_true), 15.0 / 16.0)
         # Joint sample coverage: 3 out of 4 samples fully covered = 0.75
         self.assertEqual(compute_joint_picp(lower, upper, y_true), 0.75)
+
+    def test_partition_is_frozen_before_calibration_and_stride_is_recorded(self):
+        rng = np.random.default_rng(9)
+        reference_states = rng.normal(size=(40, 2))
+        calibration_states = rng.normal(size=(20, 2))
+        residuals = np.abs(rng.normal(size=(20, 3, 2)))
+        conformal = StateConditionalConformal(
+            alpha=0.1, n_clusters=2, multivariate_strategy="per_feature", calibration_stride=2
+        )
+
+        conformal.fit_partition(reference_states)
+        centers_before = conformal.kmeans.cluster_centers_.copy()
+        conformal.calibrate(calibration_states, residuals)
+
+        self.assertTrue(np.array_equal(centers_before, conformal.kmeans.cluster_centers_))
+        stats = conformal.get_cluster_stats()
+        self.assertEqual(stats["calibration_stride"], 2)
+        self.assertEqual(stats["calibration_samples"], 10)
+
+    def test_flat_conformal_uses_horizon_feature_quantiles(self):
+        from cissn.baselines.flat_conformal import FlatConformal
+
+        residuals = np.stack([
+            np.ones((2, 2)),
+            np.full((2, 2), 2.0),
+            np.full((2, 2), 3.0),
+            np.full((2, 2), 4.0),
+        ])
+        flat = FlatConformal(alpha=0.2, multivariate_strategy="per_feature")
+        flat.fit(residuals)
+        lower, upper = flat.predict(torch.zeros(3, 2, 2))
+
+        self.assertEqual(tuple(flat.quantile_.shape), (2, 2))
+        self.assertEqual(tuple(lower.shape), (3, 2, 2))
+        self.assertTrue(torch.allclose((upper - lower) / 2, torch.full((3, 2, 2), 4.0)))
+
+    def test_dlinear_matches_replicate_endpoint_moving_average(self):
+        from cissn.baselines import DLinear
+
+        model = DLinear(input_dim=1, seq_len=5, pred_len=2, kernel_size=3)
+        x = torch.tensor([[[1.0], [2.0], [3.0], [4.0], [5.0]]])
+        with torch.no_grad():
+            padded = torch.tensor([[[1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.0]]])
+            expected = torch.nn.functional.avg_pool1d(padded, kernel_size=3, stride=1)
+            actual = model.decompose(torch.cat([x.permute(0, 2, 1)[:, :, :1], x.permute(0, 2, 1), x.permute(0, 2, 1)[:, :, -1:]], dim=2))
+        self.assertTrue(torch.allclose(actual, expected))
 
 
 if __name__ == '__main__':

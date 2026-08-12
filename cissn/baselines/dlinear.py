@@ -24,12 +24,15 @@ class DLinear(nn.Module):
         kernel_size: int = 25,
     ):
         super().__init__()
+        if seq_len <= 0 or pred_len <= 0:
+            raise ValueError("seq_len and pred_len must be positive.")
+        if kernel_size <= 0 or kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be a positive odd integer.")
         self.seq_len = seq_len
         self.pred_len = pred_len
         self.kernel_size = kernel_size
 
-        self.decompose = nn.AvgPool1d(kernel_size=kernel_size, stride=1,
-                                       padding=kernel_size // 2)
+        self.decompose = nn.AvgPool1d(kernel_size=kernel_size, stride=1)
         self.linear_trend = nn.Linear(seq_len, pred_len)
         self.linear_residual = nn.Linear(seq_len, pred_len)
 
@@ -43,9 +46,13 @@ class DLinear(nn.Module):
         """
         # Channel-independent: process every variate with the same linear layers.
         # x: (B, L, D) → permute → (B, D, L) for AvgPool1d, then back.
-        x = x.permute(0, 2, 1)                         # (B, D, L)
-
-        trend = self.decompose(x)                       # (B, D, L)  (padding keeps length)
+        x = x.permute(0, 2, 1)
+        padding = (self.kernel_size - 1) // 2
+        padded = torch.cat(
+            [x[:, :, :1].expand(-1, -1, padding), x, x[:, :, -1:].expand(-1, -1, padding)],
+            dim=2,
+        )
+        trend = self.decompose(padded)
         residual = x - trend
 
         trend_out = self.linear_trend(trend)            # (B, D, pred_len)
