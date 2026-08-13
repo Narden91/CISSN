@@ -24,6 +24,7 @@ class ForecastHead(nn.Module):
         horizon: int = 1,
         hidden_dim: Optional[int] = None,
         dropout: float = 0.0,
+        use_refinement: bool = True,
     ):
         super().__init__()
         if hidden_dim is None:
@@ -32,16 +33,25 @@ class ForecastHead(nn.Module):
         self.output_dim = output_dim
         self.horizon = horizon
         self.dropout = dropout
+        self.use_refinement = use_refinement
 
-        self.lin_weight = nn.Parameter(torch.randn(state_dim, horizon, output_dim) * 0.02)
-        self.lin_bias = nn.Parameter(torch.zeros(horizon, output_dim))
-        self.refine = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, horizon * output_dim),
+        # The linear path is the interpretable one, so it must be able to carry
+        # the forecast on its own. A 0.02-scale init leaves it near zero while
+        # the refinement MLP starts at scale 0.1, so gradient descent fits the
+        # MLP first and the linear path never catches up. Scale the init by
+        # 1/sqrt(state_dim) instead, which is the usual fan-in convention.
+        self.lin_weight = nn.Parameter(
+            torch.randn(state_dim, horizon, output_dim) / (state_dim ** 0.5)
         )
-        self.refinement_scale = nn.Parameter(torch.tensor(0.1))
+        self.lin_bias = nn.Parameter(torch.zeros(horizon, output_dim))
+        if use_refinement:
+            self.refine = nn.Sequential(
+                nn.Linear(state_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, horizon * output_dim),
+            )
+            self.refinement_scale = nn.Parameter(torch.tensor(0.1))
 
     def _validate_state(self, state: torch.Tensor, caller: str) -> None:
         if state.ndim != 2:
@@ -54,6 +64,8 @@ class ForecastHead(nn.Module):
     def _compute_lin_ref(self, state: torch.Tensor):
         """Shared computation of linear and refinement terms."""
         lin = torch.einsum("bs,sho->bho", state, self.lin_weight) + self.lin_bias
+        if not self.use_refinement:
+            return lin, torch.zeros_like(lin)
         ref = self.refinement_scale * self.refine(state).view(-1, self.horizon, self.output_dim)
         return lin, ref
 

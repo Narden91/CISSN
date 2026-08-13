@@ -230,6 +230,7 @@ class Experiment:
             horizon=self.args.pred_len,
             hidden_dim=self.args.d_model // 2,
             dropout=self.args.dropout,
+            use_refinement=not getattr(self.args, 'no_refinement', False),
         )
 
     def _get_data(self, flag):
@@ -1241,6 +1242,9 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--lambda_cov', type=float, default=1.0, help='covariance loss weight')
     parser.add_argument('--lambda_temp', type=float, default=0.5, help='temporal consistency loss weight')
     parser.add_argument('--lambda_correction_scale', type=float, default=0.0, help='penalty weight keeping encoder correction scale near 0.01')
+    parser.add_argument('--no_refinement', action='store_true',
+                        help='drop the forecast-head refinement MLP, leaving only the interpretable '
+                             'linear state->forecast map (removes ~77%% of model parameters)')
     parser.add_argument('--lambda_refinement', type=float, default=0.0,
                         help='penalty on the forecast head refinement scale; keeps the interpretable '
                              'linear path dominant over the non-attributable MLP path')

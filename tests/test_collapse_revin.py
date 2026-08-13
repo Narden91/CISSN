@@ -268,3 +268,47 @@ class TestPairedFlatComparison(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestForecastHeadCapacity(unittest.TestCase):
+    """The refinement MLP is ~77% of head parameters and is not attributable to
+    state coordinates, so it must be removable for interpretability analyses."""
+
+    def test_refinement_can_be_disabled(self):
+        from cissn.models.forecast_head import ForecastHead
+
+        full = ForecastHead(state_dim=5, output_dim=7, horizon=336, hidden_dim=32)
+        linear_only = ForecastHead(
+            state_dim=5, output_dim=7, horizon=336, hidden_dim=32, use_refinement=False
+        )
+
+        def count(module):
+            return sum(p.numel() for p in module.parameters())
+
+        self.assertLess(count(linear_only), 0.25 * count(full))
+        self.assertFalse(hasattr(linear_only, "refine"))
+
+    def test_disabled_refinement_contributes_nothing(self):
+        from cissn.models.forecast_head import ForecastHead
+
+        head = ForecastHead(
+            state_dim=5, output_dim=3, horizon=24, hidden_dim=16, use_refinement=False
+        )
+        state = torch.randn(8, 5)
+
+        parts = head.get_contributions(state, horizon_idx=0, output_idx=0)
+
+        torch.testing.assert_close(
+            parts["refinement_contribution"], torch.zeros(8)
+        )
+        torch.testing.assert_close(parts["total_prediction"], parts["linear_prediction"])
+        self.assertEqual(head.get_refinement_ratio(state), 0.0)
+
+    def test_linear_path_is_initialised_at_usable_scale(self):
+        """A near-zero linear init lets the MLP win the fit before the linear
+        path can contribute, which is what drove refinement_ratio above 0.5."""
+        from cissn.models.forecast_head import ForecastHead
+
+        head = ForecastHead(state_dim=5, output_dim=7, horizon=336, hidden_dim=32)
+
+        self.assertGreater(head.lin_weight.std().item(), 0.2)

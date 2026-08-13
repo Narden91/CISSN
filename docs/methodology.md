@@ -47,3 +47,46 @@ ETTh1, horizon 336, `--revin`, seeds `42,123,456`:
 Mean delta `-0.156 ± 0.053`, a `4.1%` relative improvement, negative on 3/3 seeds, achieved with narrower intervals at comparable coverage. The direction also holds without RevIN (delta `-0.147` at seed 42), so the advantage is not an artefact of the collapse fix.
 
 With `n = 3` this is descriptive evidence of a consistent sign, not a confirmatory test; the predeclared multi-seed, multi-dataset analysis remains the basis for any published claim.
+
+## Why CISSN trails DLinear on point accuracy
+
+The gap is a rank constraint, not a tuning failure, and it is intrinsic to the architecture.
+
+On ETTh1-h336 the target block spans `336 x 7 = 2352` cells. Measured on the test split, DLinear's own forecasts need **rank 96** to reach 99% of their energy and already hold 86.8% by rank 5. CISSN maps every window through a five-dimensional state, so its forecast can never exceed **rank 5** regardless of head capacity.
+
+Three interventions were tested and none closed the gap, which is what a hard rank constraint predicts:
+
+| variant | test MSE |
+| --- | --- |
+| CISSN + RevIN | 0.723 |
+| \+ `--lambda_refinement 0.1` | 0.759 |
+| \+ `--dropout 0.3` | 0.730 |
+| \+ `--no_refinement` (linear head only) | 0.818 |
+| DLinear reference | 0.619 |
+
+Removing the refinement MLP makes accuracy *worse*, so the MLP is compensating for the bottleneck rather than merely memorising. Note that an oracle rank-5 linear projection of the target reaches MSE `0.422`; CISSN does not approach that because it must *learn* its basis through a recurrent encoder rather than being handed the optimal one.
+
+The consequence for reporting: CISSN's five-state constraint should be presented as an interpretability/calibration design choice with a measured accuracy cost, not as a competitive point forecaster. The hybrid architecture exists precisely to keep full-rank accuracy in the base while the state supplies a structured correction.
+
+## Validation-to-test transfer on ETTh1
+
+Checkpoint selection on validation does not reliably transfer to test on this dataset. Standardised by train statistics, split means are `train 0.000`, `val -0.108`, `test -0.049`, with test standard deviation `1.123` against train `1.000`: validation and test differ from train *and from each other*.
+
+Observed directly in the hybrid run at horizon 336: correction-stage validation loss improved from `1.160` to `1.112` (-4.1%) and the epoch-0 fallback correctly did not trigger, yet test MSE was `0.799` against the frozen DLinear base's `0.619`. The fallback machinery behaved exactly as specified; the validation signal itself was misleading.
+
+Treat single-seed, single-horizon validation improvements on ETTh1 as weak evidence, and require the multi-seed multi-dataset protocol before promoting any architecture on validation deltas alone.
+
+## Simultaneous coverage
+
+`per_feature` geometry reports `coverage_joint = 0.0000` at horizon 336: it calibrates each of the 2352 horizon-feature cells to its own marginal quantile, so simultaneous coverage of every cell is not what the method targets and near-zero is the expected reading, not a defect.
+
+`--multivariate_strategy max` is the geometry that targets simultaneous coverage. Measured on ETTh1-h336 with `--revin`, seed 42:
+
+| geometry | marginal | joint | mean width | Winkler |
+| --- | --- | --- | --- | --- |
+| `per_feature` | 0.9071 | 0.0000 | 2.56 | 3.57 |
+| `max` | 0.9953 | 0.4923 | 8.10 | 8.16 |
+
+`max` produces genuine simultaneous coverage but reaches only `0.49` against a nominal `0.90`, at roughly `3.2x` the interval width. The shortfall is not a finite-sample artefact — the calibration split holds 1393 origins and the exact-rank index `k = 1255` is attainable. It reflects test-time dependence across cells: under independence, per-cell coverage of `0.9953` would give a joint rate near `1.5e-05`, so the observed `0.49` indicates strong positive dependence, and residual distribution shift between calibration and test then costs the remainder.
+
+Do not report `max` as a validated simultaneous-coverage guarantee. Either report it as an honest negative result with the numbers above, or restrict simultaneous claims to a smaller, prespecified cell block where the target is attainable.
