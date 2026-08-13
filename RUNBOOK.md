@@ -66,14 +66,24 @@ seed 42 the ordering is cluster `3.5962` < per-cell `3.6916` < flat `3.7869` ~ s
 
 ### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU)
 
+The diagnostic needs a run directory containing `states.npy`, `residuals.npy`,
+`pred.npy`, and `true.npy` — any completed `run_benchmark.py` CISSN run writes all four
+(baseline runs do not, since they have no latent state). Point it at a `--revin` run for
+the dataset under test:
+
 ```powershell
-uv run python scripts/diagnose_conditioning_headroom.py --run_dir <a RevIN CISSN run dir> --output ./results/validation/conditioning_headroom_revin.json
+uv run python scripts/diagnose_conditioning_headroom.py --run_dir ./results/validation/CISSN_<dataset>_..._fullrevin_..._seed42 --output ./results/validation/conditioning_headroom_revin.json
 ```
 
 Read `variance_decomposition.per_sample_fraction` (expect ~1%: that bounds the *scalar*
 geometry, not conditioning as such) and the `summary_vs_flat` win counts. Run this on
 each dataset before spending seeds on it — the conditioning result is regime-dependent
 and there is no reason to assume ETTh1's carries over.
+
+ETTh1-h336 is already done and recorded in `docs/methodology.md`; its development
+artifacts are under `results/headroom/` and `results/percell/`. Those are development
+runs, not `--require_clean_git` publication evidence — reuse them for diagnostics, never
+pool them into publication tables.
 
 ### Step 3b.1: protocol confirmation runs
 
