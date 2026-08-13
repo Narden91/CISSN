@@ -170,39 +170,34 @@ class HybridCISSN(nn.Module):
             self.base.eval()
         return self
 
-    def _state_from_history(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode history to a final structured state, optionally instance-normed.
+    def _encode(self, x: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Encode history to a final state and the scale its correction needs.
 
         With ``state_revin`` the state branch sees a per-instance, per-feature
         standardised window and the resulting correction is rescaled back by the
         window scale. Zero-init exactness is unaffected (zero times any scale is
         still zero), but the gradient scale at epoch 0 differs from the
         non-RevIN variants, so the two are not comparable at equal learning rate.
+
+        State and scale are produced together because both derive from the same
+        per-window standard deviation; computing them separately would run the
+        reduction twice per forward pass.
         """
         if not self.state_revin:
-            return self.encoder(x)
+            return self.encoder(x), None
 
         mean = x.mean(dim=1, keepdim=True)
         std = x.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-5)
-        return self.encoder((x - mean) / std)
-
-    def _correction_scale(self, x: torch.Tensor) -> Optional[torch.Tensor]:
-        """Per-instance feature scale used to rescale the RevIN correction."""
-        if not self.state_revin:
-            return None
-        std = x.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-5)
-        if std.shape[-1] != self.output_dim:
-            std = std[..., : self.output_dim]
-        return std
+        state = self.encoder((x - mean) / std)
+        return state, std[..., : self.output_dim]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (batch, seq_len, input_dim) -> (batch, pred_len, output_dim)"""
-        base = self.base(x)
-        correction = self.correction(self._state_from_history(x))
-        scale = self._correction_scale(x)
+        state, scale = self._encode(x)
+        correction = self.correction(state)
         if scale is not None:
             correction = correction * scale
-        return base + correction
+        return self.base(x) + correction
 
     def forward_components(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Full additive decomposition of the forecast.
@@ -212,9 +207,8 @@ class HybridCISSN(nn.Module):
         applied under ``state_revin``, which is applied uniformly to each term).
         """
         base = self.base(x)
-        state = self._state_from_history(x)
+        state, scale = self._encode(x)
         terms = self.correction.contributions(state)
-        scale = self._correction_scale(x)
         if scale is not None:
             terms = {name: term * scale for name, term in terms.items()}
 

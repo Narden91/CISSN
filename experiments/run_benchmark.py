@@ -17,8 +17,10 @@ from typing import Optional
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
 from cissn.models.hybrid import HybridCISSN
+from cissn.models.revin import RevIN
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
+from cissn.baselines import FlatConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
 from cissn.utils import EarlyStopping, print_epoch_summary, print_run_header, select_device, track
@@ -28,6 +30,7 @@ from cissn.evaluation.metrics import (
     mean_scaled_interval_score, seasonal_period_for_freq,
 )
 from cissn.evaluation.sanity import check_forecast_sanity
+from cissn.evaluation.collapse import DispersionAccumulator, dispersion_summary
 
 
 def _format_float_token(value: float) -> str:
@@ -44,6 +47,8 @@ def build_setting_name(args) -> str:
         variant = f"_{architecture}_{getattr(args, 'state_dynamics', 'legacy')}"
         if getattr(args, "state_revin", False):
             variant += "_revin"
+    if getattr(args, "revin", False):
+        variant += "_fullrevin"
     return (
         f"CISSN_{args.data}_{args.features}"
         f"_sl{args.seq_len}_pl{args.pred_len}_sd{args.state_dim}_dm{args.d_model}"
@@ -202,6 +207,13 @@ class Experiment:
         self.device = select_device(require_gpu=getattr(args, 'require_gpu', False))
         self.model = self._build_model().to(self.device)
         self.head = self._build_head().to(self.device)
+        # RevIN owns learnable affine parameters, so it must be built before the
+        # optimizer collects parameters and moved to the device with the model.
+        self.revin = (
+            RevIN(num_features=self.args.enc_in).to(self.device)
+            if getattr(self.args, 'revin', False)
+            else None
+        )
 
     def _build_model(self):
         return DisentangledStateEncoder(
@@ -240,24 +252,48 @@ class Experiment:
         batch_x = batch_x.float().to(self.device, non_blocking=True)
         batch_y = batch_y.float().to(self.device, non_blocking=True)
 
+        # With RevIN the model sees a per-window standardised input and predicts
+        # shape only; the window's own level and scale are restored afterwards.
+        revin = getattr(self, "revin", None)
+        model_input = revin(batch_x, "norm") if revin is not None else batch_x
+
         if return_all_states:
-            all_states = self.model(batch_x, return_all_states=True)
+            all_states = self.model(model_input, return_all_states=True)
             final_state = all_states[:, -1, :]
         else:
-            final_state = self.model(batch_x)
+            final_state = self.model(model_input)
             all_states = None
 
         outputs = self.head(final_state)
         f_dim = -1 if self.args.features == 'MS' else 0
         outputs = outputs[:, -self.args.pred_len:, f_dim:]
         batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+        if revin is not None:
+            # Slice first, then denormalise with statistics for exactly those
+            # channels. Under MS the forecast is one column, so it must be
+            # rescaled with the target's own statistics, not feature 0's.
+            scaler = revin.select_channels(-1) if f_dim == -1 else revin
+            outputs = scaler(outputs, "denorm")
 
         if return_all_states:
             return all_states, final_state, outputs, batch_y
         return final_state, outputs, batch_y
 
+    def _trainable_modules(self):
+        """Every module holding parameters that training updates."""
+        modules = [self.model, self.head]
+        if getattr(self, "revin", None) is not None:
+            modules.append(self.revin)
+        return modules
+
+    def _set_train_mode(self, training: bool) -> None:
+        """Toggle train/eval on every parameterised module together."""
+        for module in self._trainable_modules():
+            if module is not None:
+                module.train(training)
+
     def _select_optimizer(self):
-        params = list(self.model.parameters()) + list(self.head.parameters())
+        params = [p for m in self._trainable_modules() for p in m.parameters()]
         return optim.Adam(params, lr=self.args.learning_rate)
 
     def _select_criterion(self):
@@ -324,7 +360,7 @@ class Experiment:
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
-        model_parameters = [*self.model.parameters(), *self.head.parameters()]
+        model_parameters = [p for m in self._trainable_modules() for p in m.parameters()]
         criterion = self._select_criterion()
         disentangle_criterion = self._select_disentangle_criterion()
         history = []
@@ -355,6 +391,12 @@ class Experiment:
                 loss = criterion(outputs, batch_y)
                 if disentangle_criterion is not None:
                     loss = loss + disentangle_criterion(states)
+                if self.args.lambda_refinement > 0:
+                    # The refinement MLP is not attributable to state coordinates,
+                    # so an unpenalised head drifts toward it and the structured
+                    # decomposition stops explaining the forecast. Penalising its
+                    # scale keeps the interpretable linear path dominant.
+                    loss = loss + self.args.lambda_refinement * self.head.refinement_scale.abs()
                 if self.args.lambda_correction_scale > 0 and hasattr(self.model, "_correction_scale"):
                     loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - 0.01) ** 2
                 batch_weight = outputs.numel()
@@ -383,6 +425,7 @@ class Experiment:
                 epoch_final_states,
             )
 
+            dispersion = getattr(self, "last_vali_dispersion_", {}) or {}
             history.append({
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
@@ -390,18 +433,24 @@ class Experiment:
                 "lr": model_optim.param_groups[0]['lr'],
                 "off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
                 "refinement_ratio": refinement_ratio,
+                "vali_variance_ratio": dispersion.get("variance_ratio"),
+                "vali_corr": dispersion.get("corr"),
             })
 
             improved = early_stopping(vali_loss, self.model, self.head, path)
+            if improved:
+                self._save_revin(path)
             print_epoch_summary(
                 epoch=epoch + 1, total_epochs=self.args.train_epochs, train_loss=train_loss,
                 validation_loss=vali_loss, learning_rate=model_optim.param_groups[0]['lr'],
                 elapsed_seconds=time.time() - epoch_time, improved=improved,
                 patience_counter=early_stopping.counter, patience=early_stopping.patience,
             )
+            variance_ratio = dispersion.get("variance_ratio")
+            collapse_note = "" if variance_ratio is None else f" | var_ratio={variance_ratio:.4f}"
             print(
                 f"  state_corr={disent_metrics['mean_abs_off_diag_corr']:.4f} | "
-                f"refinement={refinement_ratio:.4f}"
+                f"refinement={refinement_ratio:.4f}{collapse_note}"
             )
             if early_stopping.early_stop:
                 break
@@ -432,6 +481,19 @@ class Experiment:
     def _uses_state_partition(self):
         return True
 
+    def _revin_checkpoint_path(self, path) -> Path:
+        return Path(path) / "checkpoint_revin.pth"
+
+    def _save_revin(self, path) -> None:
+        """Persist RevIN's affine parameters alongside the model checkpoint.
+
+        EarlyStopping only knows about the model and head, so without this the
+        learned affine scale/shift would be silently lost when the best
+        checkpoint is restored.
+        """
+        if getattr(self, "revin", None) is not None:
+            torch.save(self.revin.state_dict(), self._revin_checkpoint_path(path))
+
     def _load_checkpoint(self, path):
         self.model.load_state_dict(
             torch.load(os.path.join(path, 'checkpoint.pth'), map_location=self.device, weights_only=True)
@@ -439,12 +501,19 @@ class Experiment:
         self.head.load_state_dict(
             torch.load(os.path.join(path, 'checkpoint_head.pth'), map_location=self.device, weights_only=True)
         )
+        revin_path = self._revin_checkpoint_path(path)
+        if getattr(self, "revin", None) is not None and revin_path.exists():
+            self.revin.load_state_dict(
+                torch.load(revin_path, map_location=self.device, weights_only=True)
+            )
 
     def vali(self, vali_loader, criterion):
         total_loss = 0.0
         total_weight = 0
-        self.model.eval()
-        self.head.eval()
+        # Records var(pred)/var(true) on the validation split so a forecast that
+        # buys MSE by shrinking toward the mean is visible in history.json.
+        dispersion = DispersionAccumulator()
+        self._set_train_mode(False)
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
                 vali_loader,
@@ -456,10 +525,11 @@ class Experiment:
                 batch_weight = outputs.numel()
                 total_loss += criterion(outputs, batch_y).item() * batch_weight
                 total_weight += batch_weight
+                dispersion.update(outputs, batch_y)
             if total_weight == 0:
                 raise RuntimeError("Validation loader produced no prediction elements.")
-        self.model.train()
-        self.head.train()
+        self.last_vali_dispersion_ = dispersion.summary()
+        self._set_train_mode(True)
         return total_loss / total_weight
 
     def _fit_state_partition(self, train_loader, artifact_dir=None):
@@ -472,8 +542,7 @@ class Experiment:
             calibration_stride=self.args.calibration_stride,
         )
         states = []
-        self.model.eval()
-        self.head.eval()
+        self._set_train_mode(False)
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
                 train_loader,
@@ -487,16 +556,14 @@ class Experiment:
         self.conformal.fit_partition(training_states)
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "partition_states.npy", training_states.numpy())
-        self.model.train()
-        self.head.train()
+        self._set_train_mode(True)
 
     def _calibrate_conformal(self, cal_loader, artifact_dir=None):
         """Calibrate the StateConditionalConformal predictor on the held-out calibration split."""
         all_states = []
         all_residuals = []
 
-        self.model.eval()
-        self.head.eval()
+        self._set_train_mode(False)
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
                 cal_loader,
@@ -511,7 +578,16 @@ class Experiment:
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
         self.conformal.calibrate(all_states, all_residuals)
-        print("Calibration complete | state-conditional conformal intervals ready")
+        # Flat CP is calibrated on the SAME residuals from the SAME model, so the
+        # SCCP-vs-flat comparison isolates state conditioning. Running flat CP as
+        # a separate training run instead would confound it with training
+        # variance, and state conditioning is the contribution under test.
+        self.flat_conformal = FlatConformal(
+            alpha=self.args.conformal_alpha,
+            multivariate_strategy=self.args.multivariate_strategy,
+        )
+        self.flat_conformal.fit(all_residuals)
+        print("Calibration complete | state-conditional and flat conformal intervals ready")
 
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "calibration_states.npy", all_states.numpy())
@@ -525,8 +601,7 @@ class Experiment:
         for k, value in exchange_results.items():
             if value.get("warning"):
                 print(f"  calibration warning | cluster {k}: {value['warning']}")
-        self.model.train()
-        self.head.train()
+        self._set_train_mode(True)
 
     def _predict_intervals(self, test_states: np.ndarray, preds: np.ndarray):
         """Dispatch to the calibrated conformal predictor's interval call.
@@ -541,6 +616,33 @@ class Experiment:
         )
         return lower.numpy(), upper.numpy(), getattr(self.conformal, "last_predicted_clusters_", None)
 
+    def _compare_against_flat_conformal(self, preds, trues) -> dict:
+        """Score flat CP on the same forecasts, isolating the value of state conditioning.
+
+        SCCP only earns its extra machinery if conditioning on the latent state
+        beats a single global quantile. Both calibrators are fitted on identical
+        calibration residuals from the same model, so this comparison is paired:
+        the only difference is the partition.
+        """
+        flat = getattr(self, "flat_conformal", None)
+        if flat is None or not flat.calibrated:
+            return {}
+
+        lower, upper = flat.predict(torch.from_numpy(preds).float())
+        lower_np, upper_np = lower.numpy(), upper.numpy()
+        coverage = compute_picp(lower_np, upper_np, trues)
+        coverage_joint = compute_joint_picp(lower_np, upper_np, trues)
+        primary = coverage_joint if flat.coverage_scope == "simultaneous" else coverage
+        return {
+            "coverage": float(coverage),
+            "coverage_joint": float(coverage_joint),
+            "coverage_primary": float(primary),
+            "mean_width": float(compute_mpiw(lower_np, upper_np)),
+            "winkler": float(winkler_score(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)),
+            "calibration_error": float(abs(primary - (1.0 - self.args.conformal_alpha))),
+            "coverage_scope": flat.coverage_scope,
+        }
+
     def test(self, setting):
         test_data, test_loader = self._get_data(flag='test')
 
@@ -552,8 +654,7 @@ class Experiment:
         trues = []
         test_states = []
 
-        self.model.eval()
-        self.head.eval()
+        self._set_train_mode(False)
 
         with torch.no_grad():
             if getattr(self.args, 'walk_forward', False):
@@ -613,6 +714,7 @@ class Experiment:
         msis = None
         cluster_labels = None
         coverage_by_cluster = {}
+        flat_comparison = {}
         if hasattr(self, 'conformal') and self.conformal.calibrated:
             lower_np, upper_np, cluster_labels = self._predict_intervals(test_states, preds)
             coverage = compute_picp(lower_np, upper_np, trues)
@@ -630,6 +732,7 @@ class Experiment:
             calib_err = abs(coverage_primary - (1.0 - self.args.conformal_alpha))
             if cluster_labels is not None:
                 coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
+            flat_comparison = self._compare_against_flat_conformal(preds, trues)
             train_data, _ = self._get_data(flag='train')
             seasonal_period = seasonal_period_for_freq(self.args.freq)
             msis = mean_scaled_interval_score(
@@ -639,11 +742,25 @@ class Experiment:
                 f"Intervals | coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%={coverage:.4f} | "
                 f"joint={coverage_joint:.4f} | width={mean_width:.4f} | winkler={winkler:.4f}"
             )
+            if flat_comparison:
+                delta = winkler - flat_comparison["winkler"]
+                verdict = "SCCP better" if delta < 0 else "flat CP better or equal"
+                print(
+                    f"  flat CP  | coverage={flat_comparison['coverage']:.4f} | "
+                    f"width={flat_comparison['mean_width']:.4f} | "
+                    f"winkler={flat_comparison['winkler']:.4f}"
+                )
+                print(f"  state conditioning | winkler delta={delta:+.4f} -> {verdict}")
         else:
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
 
-        print(f"Point forecast | mse={mse:.6f} | mae={mae:.6f} | rmse={rmse:.6f}")
+        test_dispersion = dispersion_summary(preds, trues)
+        variance_ratio = test_dispersion["variance_ratio"]
+        dispersion_note = "" if variance_ratio is None else (
+            f" | var_ratio={variance_ratio:.4f} | corr={test_dispersion['corr']:.4f}"
+        )
+        print(f"Point forecast | mse={mse:.6f} | mae={mae:.6f} | rmse={rmse:.6f}{dispersion_note}")
 
         # Structural validity is checked against the interval bounds too, so it
         # runs after they exist. Quality references come from the training split
@@ -667,7 +784,7 @@ class Experiment:
         folder_path = Path(self.args.results_dir) / setting
         folder_path.mkdir(parents=True, exist_ok=True)
 
-        point_metrics = {"mae": mae, "mse": mse, "rmse": rmse}
+        point_metrics = {"mae": mae, "mse": mse, "rmse": rmse, **test_dispersion}
         interval_metrics = {
             "coverage": coverage if coverage is not None else None,
             "coverage_joint": coverage_joint if coverage_joint is not None else None,
@@ -685,6 +802,9 @@ class Experiment:
             "setting": setting,
             "point": point_metrics,
             "interval": interval_metrics,
+            # Paired flat-CP baseline on identical forecasts and calibration
+            # residuals: the evidence for or against state conditioning.
+            "interval_flat_cp": flat_comparison,
             "sanity_passed": sanity_report["passed"],
             "structural_passed": sanity_report["structural_passed"],
             "quality_flags": sanity_report["warnings"],
@@ -746,6 +866,9 @@ class HybridExperiment(Experiment):
         # Bind to the inherited names so base-class machinery is reused as-is.
         self.model = self.hybrid.encoder
         self.head = self.hybrid.correction
+        # The hybrid handles instance normalisation internally via --state_revin;
+        # full-model RevIN is a legacy-architecture option only.
+        self.revin = None
 
     def _build_hybrid(self) -> HybridCISSN:
         return HybridCISSN(
@@ -765,14 +888,20 @@ class HybridExperiment(Experiment):
         batch_x = batch_x.float().to(self.device, non_blocking=True)
         batch_y = batch_y.float().to(self.device, non_blocking=True)
 
-        if return_all_states:
-            all_states = self.hybrid.encoder(batch_x, return_all_states=True)
-            final_state = all_states[:, -1, :]
-        else:
-            all_states = None
-            final_state = self.hybrid._state_from_history(batch_x)
+        # forward_components() already returns the state it used, so the forecast
+        # and the state come from a single encoder pass rather than two.
+        parts = self.hybrid.forward_components(batch_x)
+        final_state = parts["state"]
+        outputs = parts["total"]
 
-        outputs = self.hybrid(batch_x)
+        # The per-timestep state sequence is only needed for the disentanglement
+        # penalty, and only the encoder can produce it.
+        all_states = (
+            self.hybrid.encoder(batch_x, return_all_states=True)
+            if return_all_states
+            else None
+        )
+
         f_dim = -1 if self.args.features == 'MS' else 0
         outputs = outputs[:, -self.args.pred_len:, f_dim:]
         batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
@@ -1102,12 +1231,19 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='state transition parameterisation for the hybrid correction branch')
     parser.add_argument('--state_revin', action='store_true',
                         help='apply reversible instance norm to the state branch only (hybrid)')
+    parser.add_argument('--revin', action='store_true',
+                        help='apply reversible instance norm to the whole model: the network sees a '
+                             'per-window standardised input and predicts shape only, removing the '
+                             'level-tracking burden that drives mean-shrinkage under MSE')
     parser.add_argument('--d_model', type=int, default=64, help='model hidden dimension')
     parser.add_argument('--state_dim', type=int, default=5, help='latent state dimension')
     parser.add_argument('--dropout', type=float, default=0.05, help='dropout rate')
     parser.add_argument('--lambda_cov', type=float, default=1.0, help='covariance loss weight')
     parser.add_argument('--lambda_temp', type=float, default=0.5, help='temporal consistency loss weight')
     parser.add_argument('--lambda_correction_scale', type=float, default=0.0, help='penalty weight keeping encoder correction scale near 0.01')
+    parser.add_argument('--lambda_refinement', type=float, default=0.0,
+                        help='penalty on the forecast head refinement scale; keeps the interpretable '
+                             'linear path dominant over the non-attributable MLP path')
 
     parser.add_argument('--num_workers', type=int, default=0, help='dataloader workers')
     parser.add_argument('--require_gpu', action='store_true',

@@ -43,7 +43,17 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42
 
 Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
 
-## Step 4: hybrid variant selection (validation only)
+## Step 4: instance normalisation
+
+Legacy CISSN collapses toward the training mean on ETTh1-h336: the forecast keeps only ~7% of the target's variance, which lowers MSE without tracking the signal. `--revin` removes the level-tracking burden that causes this. Measured over seeds `42,123,456` (see `docs/methodology.md`), test MSE falls `1.280 → 0.771` and coverage moves `0.788 → 0.908` with narrower intervals, with no change to the latent state dimension.
+
+```powershell
+uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+```
+
+Check `vali_variance_ratio` in `history.json`. A ratio that falls while validation loss improves is amplitude collapse, not a hard dataset, and must be reported as such rather than attributed to the state bottleneck.
+
+## Step 5: hybrid variant selection (validation only)
 
 The legacy architecture routes the whole forecast through the 5-d state, so its
 forecast map has rank <= 5 and most of the raw history is unrecoverable. The

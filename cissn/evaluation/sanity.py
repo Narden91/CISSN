@@ -168,6 +168,15 @@ def check_forecast_quality(
             f"pred.std()={pred_std:.6f} is below 10% of true.std()={true_std:.6f} "
             "-- predictions look like a near-constant output, not a fitted forecaster."
         )
+    elif true_std > 0 and (pred_std / true_std) ** 2 < 0.5:
+        # Partial shrinkage: still clearly varying, but under-dispersed relative
+        # to the target. Reported separately from the near-constant case because
+        # it is the signature of MSE trading amplitude for loss.
+        flags.append(
+            f"forecast variance ratio {(pred_std / true_std) ** 2:.4f} is below 0.5 "
+            "-- the forecast is under-dispersed relative to the target, which is the "
+            "signature of mean-shrinkage under MSE rather than a hard dataset."
+        )
 
     references = _reference_mses(trues, y_train, seasonal_period, horizon=horizon)
     if references:
