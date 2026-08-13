@@ -1,3 +1,4 @@
+import json
 import unittest
 import warnings
 
@@ -329,6 +330,185 @@ class TestStateScaledConformal(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             conformal.fit_scale(states, residuals)
+
+
+class TestStateScaledPerCellGeometry(unittest.TestCase):
+    """scale_geometry='per_cell' fits one sigma per horizon-feature cell, so
+    the state can reshape the quantile surface rather than only rescale its
+    level -- the geometry where the conditioning signal was measured to be."""
+
+    def test_sigma_carries_residual_trailing_shape(self):
+        rng = np.random.default_rng(20)
+        states = rng.standard_normal((80, 4))
+        residuals = np.abs(rng.standard_normal((80, 6, 3)))
+
+        scaled = StateScaledConformal(alpha=0.1, scale_geometry='per_cell')
+        scaled.fit_scale(states[:40], residuals[:40])
+
+        self.assertEqual(scaled.sigma_shape_, (6, 3))
+        self.assertEqual(tuple(scaled.sigma(states[40:]).shape), (40, 6, 3))
+        # difficulty_score() must stay 1-D for conditional-coverage binning.
+        self.assertEqual(tuple(scaled.difficulty_score(states[40:]).shape), (40,))
+
+    def test_scalar_geometry_remains_the_default(self):
+        rng = np.random.default_rng(21)
+        states = rng.standard_normal((60, 4))
+        residuals = np.abs(rng.standard_normal((60, 5, 2)))
+
+        scaled = StateScaledConformal(alpha=0.1)
+        scaled.fit_scale(states, residuals)
+
+        self.assertEqual(scaled.scale_geometry, 'scalar')
+        self.assertEqual(scaled.sigma_shape_, ())
+        self.assertEqual(tuple(scaled.sigma(states).shape), (60,))
+
+    def test_max_strategy_forces_scalar_geometry(self):
+        """'max' reduces residuals to one scalar per sample before scaling, so
+        a per-cell scale has nothing to attach to."""
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy='max', scale_geometry='per_cell')
+        self.assertEqual(scaled.scale_geometry, 'scalar')
+
+    def test_per_cell_recovers_cell_specific_scale(self):
+        """When residual scale depends on the state differently per cell, the
+        per-cell geometry must track it and the scalar geometry must not."""
+        rng = np.random.default_rng(22)
+        n = 600
+        states = rng.standard_normal((n, 3))
+        # Cell (0,0) grows with state[:,0]; cell (1,0) shrinks with it. A
+        # scalar sigma averages these to ~no signal; per-cell sees both.
+        scale = np.stack([np.exp(0.6 * states[:, 0]), np.exp(-0.6 * states[:, 0])], axis=1)
+        residuals = np.abs(rng.standard_normal((n, 2)) * scale)
+
+        n_fit = n // 2
+        scaled = StateScaledConformal(alpha=0.1, scale_geometry='per_cell')
+        scaled.fit_scale(states[:n_fit], residuals[:n_fit])
+        scaled.calibrate(states[n_fit:], residuals[n_fit:])
+
+        high = np.tile(np.array([2.0, 0.0, 0.0]), (10, 1))
+        sigma_high = scaled.sigma(high)
+        self.assertGreater(
+            float(sigma_high[:, 0].mean()), float(sigma_high[:, 1].mean()),
+            "per-cell sigma did not separate cells with opposite state dependence",
+        )
+
+    def test_per_cell_predict_preserves_forecast_shape(self):
+        rng = np.random.default_rng(23)
+        states = rng.standard_normal((80, 3))
+        residuals = np.abs(rng.standard_normal((80, 4, 2)))
+
+        scaled = StateScaledConformal(alpha=0.1, scale_geometry='per_cell')
+        scaled.fit_scale(states[:40], residuals[:40])
+        scaled.calibrate(states[40:], residuals[40:])
+
+        lower, upper = scaled.predict(states[40:50], torch.zeros(10, 4, 2))
+        self.assertEqual(tuple(lower.shape), (10, 4, 2))
+        self.assertTrue(bool((upper >= lower).all()))
+
+    def test_per_cell_scale_stats_are_json_serializable(self):
+        rng = np.random.default_rng(24)
+        states = rng.standard_normal((80, 3))
+        residuals = np.abs(rng.standard_normal((80, 4, 2)))
+
+        scaled = StateScaledConformal(alpha=0.1, scale_geometry='per_cell')
+        scaled.fit_scale(states[:40], residuals[:40])
+        scaled.calibrate(states[40:], residuals[40:])
+
+        stats = scaled.get_scale_stats()
+        json.dumps(stats)  # must not raise
+        self.assertEqual(stats["scale_geometry"], "per_cell")
+        self.assertEqual(stats["sigma_shape"], [4, 2])
+        # H*C coefficients are summarised, not dumped verbatim.
+        self.assertEqual(len(stats["beta_mean_per_state_dim"]), 3)
+
+    def test_rejects_unknown_scale_geometry(self):
+        with self.assertRaises(ValueError):
+            StateScaledConformal(alpha=0.1, scale_geometry='per_horizon')
+
+
+class TestConditioningComparisonFairness(unittest.TestCase):
+    """A conditioning mechanism may only be compared against a comparator
+    calibrated on the SAME calibration window.
+
+    A prior development diagnostic scored state-scaled CP after fitting sigma(s)
+    on the first half of a window and calibrating on the second, but scored flat
+    CP on the whole window -- giving flat CP twice the calibration data and the
+    conditioned method an apparent advantage. These tests lock the invariant
+    that a fair comparison shares the calibration split, and that a scalar
+    per-sample sigma cannot exploit variation that lives on the per-cell axis.
+    """
+
+    def _winkler(self, lower, upper, y_true, alpha=0.1):
+        from cissn.evaluation.metrics import winkler_score
+        return winkler_score(lower, upper, y_true, alpha=alpha)
+
+    def test_state_scaled_matches_flat_when_calibrated_on_same_window(self):
+        """With an uninformative state, sharing the calibration window makes
+        state-scaled CP and flat CP agree. Any large gap under this setup
+        indicates the two were calibrated on different data, not that
+        conditioning helped."""
+        from cissn.baselines.flat_conformal import FlatConformal
+
+        rng = np.random.default_rng(11)
+        n_fit, n_cal, n_test = 200, 200, 100
+        states = rng.standard_normal((n_fit + n_cal + n_test, 4))
+        residuals = np.abs(rng.standard_normal((n_fit + n_cal + n_test, 3, 2))) + 1.0
+
+        cal_slice = slice(n_fit, n_fit + n_cal)
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy='per_feature')
+        scaled.fit_scale(states[:n_fit], residuals[:n_fit])
+        scaled.calibrate(states[cal_slice], residuals[cal_slice])
+
+        flat = FlatConformal(alpha=0.1, multivariate_strategy='per_feature')
+        flat.fit(residuals[cal_slice])
+
+        test_states = states[n_fit + n_cal:]
+        forecasts = torch.zeros(n_test, 3, 2)
+        y_true = np.zeros((n_test, 3, 2))
+
+        lower, upper = scaled.predict(test_states, forecasts)
+        flat_lower, flat_upper = flat.predict(forecasts)
+
+        scaled_winkler = self._winkler(lower.numpy(), upper.numpy(), y_true)
+        flat_winkler = self._winkler(flat_lower.numpy(), flat_upper.numpy(), y_true)
+        self.assertAlmostEqual(scaled_winkler, flat_winkler, delta=0.15 * flat_winkler)
+
+    def test_per_sample_sigma_cannot_exploit_per_cell_variation(self):
+        """sigma(s) is one scalar per window. When residual scale varies only
+        across horizon-feature cells and not across samples, the scalar has
+        nothing to condition on and must not beat flat CP -- `per_feature`
+        cell-wise quantiles already handle that axis."""
+        from cissn.baselines.flat_conformal import FlatConformal
+
+        rng = np.random.default_rng(12)
+        n_fit, n_cal, n_test = 300, 300, 200
+        n = n_fit + n_cal + n_test
+        states = rng.standard_normal((n, 4))
+        # Scale depends on the cell only, identically for every sample.
+        cell_scale = np.array([[0.5, 3.0], [1.0, 2.0], [1.5, 1.0]])
+        residuals = np.abs(rng.standard_normal((n, 3, 2))) * cell_scale
+
+        cal_slice = slice(n_fit, n_fit + n_cal)
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy='per_feature')
+        scaled.fit_scale(states[:n_fit], residuals[:n_fit])
+        scaled.calibrate(states[cal_slice], residuals[cal_slice])
+
+        flat = FlatConformal(alpha=0.1, multivariate_strategy='per_feature')
+        flat.fit(residuals[cal_slice])
+
+        test_states = states[n_fit + n_cal:]
+        forecasts = torch.zeros(n_test, 3, 2)
+        y_true = residuals[n_fit + n_cal:] * rng.choice([-1.0, 1.0], size=(n_test, 3, 2))
+
+        lower, upper = scaled.predict(test_states, forecasts)
+        flat_lower, flat_upper = flat.predict(forecasts)
+
+        scaled_winkler = self._winkler(lower.numpy(), upper.numpy(), y_true)
+        flat_winkler = self._winkler(flat_lower.numpy(), flat_upper.numpy(), y_true)
+        self.assertGreater(
+            scaled_winkler, 0.95 * flat_winkler,
+            "state-scaled CP appeared to beat flat CP on purely per-cell variation, "
+            "which a per-sample scalar sigma cannot explain",
+        )
 
 
 class TestConditionalCoverageMetric(unittest.TestCase):

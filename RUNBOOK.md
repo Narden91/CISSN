@@ -47,28 +47,50 @@ Include the result unless `structural_passed` is false. Quality flags in `sanity
 
 `--conformal_conditioning cluster` (K-Means partition, the historical mechanism) is the
 default. `--conformal_conditioning scale` (continuous `sigma(state)`, normalized
-conformal score) is the paper's primary contribution as of this protocol revision, but
-every run already calibrates and reports both plus flat CP regardless of the flag, so
-this step only decides which one drives the headline `interval` block and which becomes
-the CLI default.
+conformal score) is an alternative. Every run already calibrates and reports both plus
+flat CP regardless of the flag, so this step only decides which one drives the headline
+`interval` block and which becomes the CLI default.
 
-Development-time diagnostic evidence (not run under this protocol; see
-`docs/methodology.md`) found K-Means cluster membership explains a small fraction of the
-state's relationship to residual scale relative to the continuous state (R^2 ~0.17 vs
-~0.73), and that the continuous predictor beat flat CP more consistently across
-chronological cuts than the cluster predictor did. Confirm this holds under the real
-protocol before promoting it:
+**The original evidence for promoting `scale` was withdrawn and then partly replaced.**
+The first diagnostic calibrated flat CP on a window twice the size of state-scaled CP's,
+so it was not paired. The corrected diagnostic established two things
+(`docs/methodology.md`): a **scalar** sigma has essentially no headroom (a scalar oracle
+using test labels gains under 1%), and the conditioning signal is a state x cell
+interaction that only a **per-cell** sigma or the cluster predictor can express.
+
+Development measurements on ETTh1-h336, three RevIN seeds x four cuts, all methods
+sharing the calibration window — mean Winkler delta vs flat CP: cluster `-0.124` (12/12),
+scalar sigma `+0.011` (5/12), per-cell sigma `-0.237` (12/12). Under the real protocol on
+seed 42 the ordering is cluster `3.5962` < per-cell `3.6916` < flat `3.7869` ~ scalar
+`3.7877`.
+
+### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU)
 
 ```powershell
-uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --revin --conformal_conditioning scale --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+uv run python scripts/diagnose_conditioning_headroom.py --run_dir <a RevIN CISSN run dir> --output ./results/validation/conditioning_headroom_revin.json
+```
+
+Read `variance_decomposition.per_sample_fraction` (expect ~1%: that bounds the *scalar*
+geometry, not conditioning as such) and the `summary_vs_flat` win counts. Run this on
+each dataset before spending seeds on it — the conditioning result is regime-dependent
+and there is no reason to assume ETTh1's carries over.
+
+### Step 3b.1: protocol confirmation runs
+
+Run both geometries so the comparison stays paired within one model:
+
+```powershell
+uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --revin --conformal_conditioning scale --scale_geometry per_cell --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
 Repeat for seeds `123,456`. **Decision point**: promote `scale` to the default
-conditioning mode only if `interval_state_scaled` beats `interval_flat_cp` on Winkler
-score on at least 2 of 3 seeds. If it does not, keep `cluster` as the default, report the
-comparison as a negative result for the continuous mechanism, and do not retune against
-test data. Either outcome, record it here with the observed per-seed deltas before
-proceeding to Step 4.
+conditioning mode only if `interval_state_scaled` beats **both** `interval_flat_cp` and
+`interval_cluster_cp` on Winkler on at least 2 of 3 seeds. On the ETTh1 evidence above it
+clears the first bar and not the second, so the expected outcome is that `cluster`
+remains the default and per-cell state-scaled CP is reported as a mechanism that improves
+on flat CP without overtaking the discrete partition. Do not retune against test data.
+
+Record the observed per-seed deltas here either way before proceeding to Step 4.
 
 ## Step 4: instance normalisation
 
@@ -167,6 +189,13 @@ Run ablations only after the main comparison completes:
 ```powershell
 uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/ablations_ETTh1_h336_s42.json
 ```
+
+Every `run_benchmark.py` run already reports flat CP, cluster SCCP, and the *selected*
+scale geometry paired on the same forecasts, so the main grid covers most conditioning
+comparisons without a dedicated ablation arm. Two cells are **not** reachable from it,
+and need an added arm if the ablation table requires them: both scale geometries within a
+single run (a run fixes one `--scale_geometry`), and any conditioning mode crossed with
+an architecture ablation such as `no_structured_A` or `state_dim_4`.
 
 ## Publication review
 

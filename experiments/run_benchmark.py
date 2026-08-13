@@ -549,6 +549,7 @@ class Experiment:
             return StateScaledConformal(
                 alpha=self.args.conformal_alpha,
                 multivariate_strategy=self.args.multivariate_strategy,
+                scale_geometry=getattr(self.args, "scale_geometry", "scalar"),
             )
         return StateConditionalConformal(
             alpha=self.args.conformal_alpha,
@@ -577,6 +578,7 @@ class Experiment:
         return StateScaledConformal(
             alpha=self.args.conformal_alpha,
             multivariate_strategy=self.args.multivariate_strategy,
+            scale_geometry=getattr(self.args, "scale_geometry", "scalar"),
         )
 
     def _save_conditioning_stats(self, folder_path: Path) -> None:
@@ -633,7 +635,7 @@ class Experiment:
             (p for p in (self.conformal, self.secondary_conformal) if isinstance(p, StateScaledConformal)), None
         )
         if scale_predictor is not None:
-            train_scores = scale_predictor._sigma(training_states.numpy())
+            train_scores = scale_predictor.difficulty_score(training_states)
             self._coverage_bin_edges = fit_coverage_bin_edges(train_scores, n_bins=5)
         else:
             self._coverage_bin_edges = None
@@ -713,7 +715,7 @@ class Experiment:
         )
         if scale_predictor is None:
             return None
-        return scale_predictor._sigma(test_states)
+        return scale_predictor.difficulty_score(test_states)
 
     def _score_interval_comparator(self, lower_np, upper_np, trues, coverage_scope, test_states=None) -> dict:
         """Shared scoring for any calibrated comparator's already-built bounds."""
@@ -1449,6 +1451,13 @@ def parse_args(argv: Optional[list[str]] = None):
                              "(StateScaledConformal). Every run calibrates and reports both, paired against the "
                              "same forecasts; this flag only selects which one drives the primary 'interval' "
                              "block and coverage_by_cluster.json.")
+    parser.add_argument('--scale_geometry', type=str, default='scalar', choices=['scalar', 'per_cell'],
+                        help="shape of the state-scaled predictor's sigma(state): 'scalar' fits one scale per "
+                             "sample (default, original behaviour); 'per_cell' fits one scale per horizon-feature "
+                             "cell, letting the state reshape the quantile surface instead of only rescaling its "
+                             "level. Development measurements on ETTh1-h336 RevIN runs favour 'per_cell' "
+                             "(-0.237 Winkler vs flat CP, 12/12 seed-cut wins, against +0.011 for 'scalar'); "
+                             "see docs/methodology.md. Ignored under --multivariate_strategy max.")
     parser.add_argument('--calibration_stride', type=int, default=1,
                         help='keep every kth chronological calibration origin for dependence-aware calibration')
     parser.add_argument('--cal_fraction', type=float, default=0.2,
