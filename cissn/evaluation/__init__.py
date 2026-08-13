@@ -11,6 +11,8 @@ from .metrics import (
     calibration_error,
     mean_scaled_interval_score,
     seasonal_period_for_freq,
+    fit_coverage_bin_edges,
+    conditional_coverage_by_bin,
 )
 from .sanity import (
     check_forecast_sanity,
@@ -38,6 +40,8 @@ __all__ = [
     "calibration_error",
     "mean_scaled_interval_score",
     "seasonal_period_for_freq",
+    "fit_coverage_bin_edges",
+    "conditional_coverage_by_bin",
     "check_forecast_sanity",
     "check_forecast_quality",
     "check_structural_validity",

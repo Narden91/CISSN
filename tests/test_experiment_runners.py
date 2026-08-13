@@ -43,6 +43,34 @@ class TestArchitectureSelection(unittest.TestCase):
             parse_benchmark_args(['--architecture', 'nonexistent'])
 
 
+class TestConformalConditioningSelection(unittest.TestCase):
+    """--conformal_conditioning must default to the pre-existing behavior and
+    never collide a scale-mode run with a cluster-mode run on disk."""
+
+    def test_cluster_is_the_default_conditioning_mode(self):
+        args = parse_benchmark_args([])
+
+        self.assertEqual(args.conformal_conditioning, 'cluster')
+
+    def test_default_conditioning_setting_name_is_unchanged(self):
+        """The default ('cluster') must produce a setting name with no
+        conditioning-mode suffix, so every existing run directory on disk
+        stays byte-identical after this flag was added."""
+        args = parse_benchmark_args([])
+
+        self.assertNotIn('cond', build_setting_name(args))
+
+    def test_scale_conditioning_gets_a_distinct_run_directory(self):
+        cluster_name = build_setting_name(parse_benchmark_args([]))
+        scale_name = build_setting_name(parse_benchmark_args(['--conformal_conditioning', 'scale']))
+
+        self.assertNotEqual(cluster_name, scale_name)
+
+    def test_rejects_unknown_conditioning_mode(self):
+        with self.assertRaises(SystemExit):
+            parse_benchmark_args(['--conformal_conditioning', 'nonexistent'])
+
+
 class TestExperimentRunners(unittest.TestCase):
     def test_multiseed_wrapper_preserves_benchmark_args(self):
         wrapper_args, benchmark_argv = parse_multiseed_args(

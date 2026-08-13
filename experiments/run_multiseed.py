@@ -85,7 +85,7 @@ def run_single_experiment(benchmark_argv: list[str], seed: int, horizon: int):
     # promises (marginal for per_feature, simultaneous coverage_joint for
     # max) -- see run_benchmark.py's Experiment.test for why plain "coverage"
     # is the wrong number to aggregate under a simultaneous strategy.
-    return {
+    result = {
         "data": effective_args.data,
         "horizon": horizon,
         "seed": seed,
@@ -99,12 +99,38 @@ def run_single_experiment(benchmark_argv: list[str], seed: int, horizon: int):
         "calibration_error": _to_float(interval.get("calibration_error", np.nan)),
         "msis": _to_float(interval.get("msis", np.nan)),
     }
+    # Paired comparators: written by run_benchmark.py under fixed, mode-tagged
+    # keys regardless of which mode was primary for this run (see
+    # Experiment.test's conditioning_mode/cluster_result/scaled_result). Pull
+    # Winkler and coverage from each so per-seed deltas can be computed
+    # without re-reading raw arrays -- this is the paper's central paired
+    # evidence and it must survive into the aggregate, not just metrics.json.
+    for comparator_key, prefix in (
+        ("interval_flat_cp", "flat"),
+        ("interval_cluster_cp", "cluster"),
+        ("interval_state_scaled", "scaled"),
+    ):
+        comparator = metrics_payload.get(comparator_key) or {}
+        result[f"{prefix}_winkler"] = _to_float(comparator.get("winkler", np.nan))
+        result[f"{prefix}_coverage"] = _to_float(comparator.get("coverage_primary", np.nan))
+        result[f"{prefix}_mean_width"] = _to_float(comparator.get("mean_width", np.nan))
+    # Signed deltas relative to the primary result reported in "interval":
+    # negative means the primary conditioning mechanism won on Winkler.
+    for prefix in ("flat", "cluster", "scaled"):
+        result[f"winkler_delta_vs_{prefix}"] = result["winkler"] - result[f"{prefix}_winkler"]
+    return result
 
 
 def aggregate_results(all_results, n_seeds_requested: int):
     """Aggregate results across seeds into mean ± std."""
     aggregated = {}
-    keys = ["mae", "mse", "rmse", "coverage", "mpiw", "winkler", "calibration_error", "msis"]
+    keys = [
+        "mae", "mse", "rmse", "coverage", "mpiw", "winkler", "calibration_error", "msis",
+        "flat_winkler", "flat_coverage", "flat_mean_width",
+        "cluster_winkler", "cluster_coverage", "cluster_mean_width",
+        "scaled_winkler", "scaled_coverage", "scaled_mean_width",
+        "winkler_delta_vs_flat", "winkler_delta_vs_cluster", "winkler_delta_vs_scaled",
+    ]
     for key in keys:
         values = [r[key] for r in all_results if key in r]
         if values:
@@ -114,6 +140,17 @@ def aggregate_results(all_results, n_seeds_requested: int):
                 "std": float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0,
                 "ci95": float(1.96 * np.nanstd(values, ddof=1) / np.sqrt(len(values))) if len(values) > 1 else 0.0,
             }
+    # Sign-consistency counts: how many seeds the primary conditioning
+    # mechanism actually beat each comparator on Winkler score. A mean delta
+    # can look favorable while the sign flips seed to seed (as it does for
+    # cluster-based SCCP vs flat CP on some cuts, see docs/methodology.md);
+    # reporting the count alongside the mean keeps that visible.
+    for prefix in ("flat", "cluster", "scaled"):
+        deltas = [r[f"winkler_delta_vs_{prefix}"] for r in all_results if f"winkler_delta_vs_{prefix}" in r]
+        finite = [d for d in deltas if np.isfinite(d)]
+        if finite:
+            aggregated[f"primary_beats_{prefix}_count"] = int(sum(1 for d in finite if d < 0))
+            aggregated[f"primary_beats_{prefix}_of"] = len(finite)
     aggregated["n_seeds"] = len(all_results)
     aggregated["complete"] = len(all_results) == n_seeds_requested
     return aggregated
@@ -170,6 +207,13 @@ def main(argv: list[str] | None = None) -> None:
               f"MAE={aggregated['mae']['mean']:.4f}±{aggregated['mae']['std']:.4f}, "
               f"Coverage={aggregated['coverage']['mean']:.4f}±{aggregated['coverage']['std']:.4f}"
               + (f"  [INCOMPLETE: {len(failed_seeds)} seed(s) failed]" if failed_seeds else ""))
+        for prefix, label in (("flat", "flat CP"), ("cluster", "cluster SCCP"), ("scaled", "state-scaled CP")):
+            count_key, of_key, delta_key = f"primary_beats_{prefix}_count", f"primary_beats_{prefix}_of", f"winkler_delta_vs_{prefix}"
+            if count_key in aggregated:
+                print(
+                    f"  primary vs {label}: winkler delta {aggregated[delta_key]['mean']:+.4f}"
+                    f"±{aggregated[delta_key]['std']:.4f}, wins {aggregated[count_key]}/{aggregated[of_key]} seeds"
+                )
 
     elapsed = time.time() - t0
     print(f"\nMulti-seed run complete in {elapsed:.1f}s")

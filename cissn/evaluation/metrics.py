@@ -104,6 +104,78 @@ def crps_gaussian(
     return float(np.mean(crps))
 
 
+def fit_coverage_bin_edges(reference_scores: np.ndarray, n_bins: int = 5) -> np.ndarray:
+    """Fit prespecified bin edges from a 1-D difficulty score on reference data.
+
+    Conditional-coverage claims require comparing methods on the SAME bins,
+    not on each method's own state partition -- otherwise a coverage-by-group
+    table is not a fair comparison. This bins a single scalar score (e.g. the
+    fitted state-scaled sigma(s), or ||state||) into n_bins equal-frequency
+    groups using quantiles of reference_scores (fit on train or calibration
+    data), returning n_bins - 1 interior edges usable by
+    ``np.digitize`` on any later data, including test.
+    """
+    reference_scores = np.asarray(reference_scores).reshape(-1)
+    if reference_scores.size == 0:
+        raise ValueError("reference_scores must contain at least one sample.")
+    if n_bins <= 0:
+        raise ValueError(f"n_bins must be a positive integer; got {n_bins}.")
+    quantile_levels = np.linspace(0.0, 1.0, n_bins + 1)[1:-1]
+    edges = np.quantile(reference_scores, quantile_levels)
+    return np.unique(edges)
+
+
+def conditional_coverage_by_bin(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    bin_edges: np.ndarray,
+    alpha: float = 0.1,
+) -> dict:
+    """Per-bin marginal coverage and the worst-slab / max-deviation summary.
+
+    Splits samples into groups by ``np.digitize(scores, bin_edges)`` -- the
+    SAME edges (from ``fit_coverage_bin_edges``) must be reused across every
+    method being compared, so coverage-by-group is a fair, method-agnostic
+    comparison rather than each method scored against its own partition.
+
+    Returns a dict with per-bin sample count and coverage, plus
+    ``worst_slab_coverage`` (the minimum bin coverage; low values mean some
+    slice of state-space is starved of coverage even when marginal coverage
+    looks fine) and ``max_coverage_deviation`` (max over bins of
+    |coverage_bin - (1 - alpha)|).
+    """
+    scores = np.asarray(scores).reshape(-1)
+    covered = (y_true >= lower) & (y_true <= upper)
+    if covered.ndim > 1:
+        # Per-sample marginal coverage fraction over the horizon-feature
+        # block; per-bin coverage below averages that over samples in the bin.
+        covered = covered.reshape(covered.shape[0], -1).mean(axis=1)
+    bin_ids = np.digitize(scores, bin_edges)
+    nominal = 1.0 - alpha
+
+    bins = {}
+    coverages = []
+    for b in range(len(bin_edges) + 1):
+        mask = bin_ids == b
+        n_b = int(mask.sum())
+        if n_b == 0:
+            continue
+        cov_b = float(covered[mask].mean())
+        bins[int(b)] = {"n_samples": n_b, "coverage": cov_b}
+        coverages.append(cov_b)
+
+    if not coverages:
+        return {"bins": {}, "worst_slab_coverage": None, "max_coverage_deviation": None}
+
+    return {
+        "bins": bins,
+        "worst_slab_coverage": float(min(coverages)),
+        "max_coverage_deviation": float(max(abs(c - nominal) for c in coverages)),
+    }
+
+
 def calibration_error(
     lower: np.ndarray,
     upper: np.ndarray,

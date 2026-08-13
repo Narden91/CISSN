@@ -84,37 +84,65 @@ def collect_run_metrics(results_root: Path) -> pd.DataFrame:
 
         point = metrics.get("point", {})
         interval = metrics.get("interval", {})
-        rows.append(
-            {
-                "artifact": str(metrics_path),
-                "setting": setting,
-                "family": parsed["family"],
-                "model": _coalesce(metrics.get("model"), config.get("model"), parsed["model"]),
-                "dataset": _coalesce(config.get("data"), parsed["dataset"]),
-                "pred_len": _coalesce(config.get("pred_len"), parsed["pred_len"]),
-                "seed": _coalesce(config.get("seed"), parsed["seed"]),
-                "mse": point.get("mse"),
-                "mae": point.get("mae"),
-                "rmse": point.get("rmse"),
-                "coverage": interval.get("coverage"),
-                "coverage_primary": interval.get("coverage_primary"),
-                "mpiw": interval.get("mean_width"),
-                "winkler": interval.get("winkler"),
-                "msis": interval.get("msis"),
-                "calibration_error": interval.get("calibration_error"),
-                "alpha": interval.get("alpha"),
-                "coverage_scope": interval.get("coverage_scope"),
-                "interval_origin": interval.get("interval_origin"),
-                "sanity_passed": metrics.get("sanity_passed"),
-                # Older artifacts predate the structural/quality split; their
-                # sanity_passed conflated the two, so fall back to it.
-                "structural_passed": _coalesce(
-                    metrics.get("structural_passed"), metrics.get("sanity_passed")
-                ),
-                "quality_flags": "; ".join(metrics.get("quality_flags") or []),
-                "protocol_present": (metrics_path.parent / "protocol.json").exists(),
-            }
-        )
+        # Paired comparators (flat CP, cluster SCCP, state-scaled CP) are
+        # written by run_benchmark.py under fixed keys regardless of which
+        # mode was primary for this run -- see Experiment.test's
+        # conditioning_mode/cluster_result/scaled_result. Missing keys (older
+        # artifacts, or a comparator that failed to calibrate) resolve to {}.
+        flat_cp = metrics.get("interval_flat_cp") or {}
+        cluster_cp = metrics.get("interval_cluster_cp") or {}
+        scaled_cp = metrics.get("interval_state_scaled") or {}
+        cond_cov = interval.get("conditional_coverage") or {}
+        row = {
+            "artifact": str(metrics_path),
+            "setting": setting,
+            "family": parsed["family"],
+            "model": _coalesce(metrics.get("model"), config.get("model"), parsed["model"]),
+            "dataset": _coalesce(config.get("data"), parsed["dataset"]),
+            "pred_len": _coalesce(config.get("pred_len"), parsed["pred_len"]),
+            "seed": _coalesce(config.get("seed"), parsed["seed"]),
+            "mse": point.get("mse"),
+            "mae": point.get("mae"),
+            "rmse": point.get("rmse"),
+            "coverage": interval.get("coverage"),
+            "coverage_primary": interval.get("coverage_primary"),
+            "mpiw": interval.get("mean_width"),
+            "winkler": interval.get("winkler"),
+            "msis": interval.get("msis"),
+            "calibration_error": interval.get("calibration_error"),
+            "alpha": interval.get("alpha"),
+            "coverage_scope": interval.get("coverage_scope"),
+            "conditioning_mode": interval.get("conditioning_mode"),
+            "interval_origin": interval.get("interval_origin"),
+            "worst_slab_coverage": cond_cov.get("worst_slab_coverage"),
+            "max_coverage_deviation": cond_cov.get("max_coverage_deviation"),
+            "flat_winkler": flat_cp.get("winkler"),
+            "flat_coverage_primary": flat_cp.get("coverage_primary"),
+            "flat_mpiw": flat_cp.get("mean_width"),
+            "cluster_winkler": cluster_cp.get("winkler"),
+            "cluster_coverage_primary": cluster_cp.get("coverage_primary"),
+            "cluster_mpiw": cluster_cp.get("mean_width"),
+            "scaled_winkler": scaled_cp.get("winkler"),
+            "scaled_coverage_primary": scaled_cp.get("coverage_primary"),
+            "scaled_mpiw": scaled_cp.get("mean_width"),
+            "sanity_passed": metrics.get("sanity_passed"),
+            # Older artifacts predate the structural/quality split; their
+            # sanity_passed conflated the two, so fall back to it.
+            "structural_passed": _coalesce(
+                metrics.get("structural_passed"), metrics.get("sanity_passed")
+            ),
+            "quality_flags": "; ".join(metrics.get("quality_flags") or []),
+            "protocol_present": (metrics_path.parent / "protocol.json").exists(),
+        }
+        primary_winkler = row["winkler"]
+        for prefix in ("flat", "cluster", "scaled"):
+            comparator_winkler = row[f"{prefix}_winkler"]
+            row[f"winkler_delta_vs_{prefix}"] = (
+                primary_winkler - comparator_winkler
+                if primary_winkler is not None and comparator_winkler is not None
+                else None
+            )
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -190,6 +218,30 @@ def main() -> None:
     point_tbl.to_csv(args.output_dir / "table_point_metrics.csv", index=False)
     interval_tbl.to_csv(args.output_dir / "table_interval_metrics.csv", index=False)
 
+    # The paper's central paired evidence: for each dataset/horizon cell, the
+    # mean Winkler delta of the primary conditioning mechanism against flat
+    # CP, cluster SCCP, and state-scaled CP, plus how many seeds it actually
+    # won on. A favorable mean can still hide a sign that flips seed to seed
+    # (see docs/methodology.md), so the win count travels alongside the mean
+    # rather than being summarized away.
+    paired_tbl = pd.DataFrame()
+    if not interval_eligible.empty:
+        group_cols = [c for c in ["dataset", "pred_len", "conditioning_mode"] if c in interval_eligible.columns]
+        delta_cols = [c for c in interval_eligible.columns if c.startswith("winkler_delta_vs_")]
+        if group_cols and delta_cols:
+            agg = interval_eligible.groupby(group_cols, dropna=False)[delta_cols].agg(["mean", "std", "count"])
+            win_counts = interval_eligible.groupby(group_cols, dropna=False)[delta_cols].agg(
+                lambda s: int((s.dropna() < 0).sum())
+            )
+            win_counts.columns = [f"{c}_wins" for c in win_counts.columns]
+            paired_tbl = pd.concat([agg, win_counts], axis=1).reset_index()
+            paired_tbl.columns = [
+                "_".join(str(x) for x in c if x).rstrip("_") if isinstance(c, tuple) else c
+                for c in paired_tbl.columns
+            ]
+            paired_tbl = paired_tbl.sort_values(group_cols).reset_index(drop=True)
+    paired_tbl.to_csv(args.output_dir / "table_paired_comparison.csv", index=False)
+
     if not ablation_df.empty:
         ablation_summary = (
             ablation_df.groupby("ablation", dropna=False)[["mse", "mae", "coverage_primary", "mpiw", "calibration_error"]]
@@ -205,6 +257,7 @@ def main() -> None:
     summary = {
         "runs_detected": int(len(run_df)),
         "primary_eligible_runs": int(len(eligible)),
+        "paired_comparison_cells": int(len(paired_tbl)),
         "ablation_files_detected": int(len(ablation_df["artifact"].unique())) if not ablation_df.empty else 0,
         "output_dir": str(args.output_dir),
     }

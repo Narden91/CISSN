@@ -48,6 +48,53 @@ Mean delta `-0.156 ± 0.053`, a `4.1%` relative improvement, negative on 3/3 see
 
 With `n = 3` this is descriptive evidence of a consistent sign, not a confirmatory test; the predeclared multi-seed, multi-dataset analysis remains the basis for any published claim.
 
+## Cluster discretisation discards most of the state's conditioning signal
+
+The K-Means partition in `StateConditionalConformal` was the original mechanism for
+conditioning intervals on the latent state. Measured on a saved ETTh1-h336 run
+(`results/validation/CISSN_ETTh1_..._seed42`, pre-RevIN, `n_clusters=5`):
+
+| quantity | value |
+| --- | --- |
+| R^2 of residual scale on the continuous 5-d state (linear regression) | 0.733 |
+| R^2 of residual scale on K-Means cluster membership (one-way ANOVA) | 0.173 |
+| test-split cluster occupancy (5 requested clusters) | `[94, 482, 1958, 0, 11]` |
+
+77% of test windows fall in a single cluster and one cluster receives zero test samples,
+so at test time the discrete predictor is close to flat CP with extra machinery. The
+continuous state carries roughly 4x the linearly-recoverable information about residual
+scale that the discretisation preserves.
+
+This motivated `StateScaledConformal`: a log-linear regression of residual scale on the
+(standardised) state gives `sigma(s)`, and conformal quantiles are calibrated on
+`residual / sigma(s)` rather than per cluster. Reconstructed on the same saved test
+residuals (not the real train/cal split — a diagnostic, not a protocol run), with a
+proper fit/calibrate separation at four chronological cut points:
+
+| cut | flat Winkler | cluster SCCP | state-scaled |
+| --- | --- | --- | --- |
+| 0.3 | 5.389 | 5.527 (loses to flat) | 5.213 |
+| 0.4 | 5.284 | 5.425 (loses to flat) | 5.071 |
+| 0.5 | 5.112 | 5.037 | 4.822 |
+| 0.6 | 5.084 | 5.019 | 4.789 |
+
+State-scaled beats flat CP at all four cuts (3-6% Winkler improvement); cluster SCCP
+loses to flat CP at two of the four. An ablation on the same diagnostic found the
+seasonal-rotation state coordinate alone (the coordinate most correlated with residual
+scale, r=0.73) recovers nearly all of the state-scaled predictor's gain, so the
+conditioning signal is concentrated in one or two coordinates rather than spread evenly
+across the five-dimensional state.
+
+This is why the paper's primary conditioning mechanism is `StateScaledConformal`
+(`--conformal_conditioning scale`), with `StateConditionalConformal` (`cluster`) reported
+as the ablation demonstrating what the discretisation loses. Every benchmark run
+calibrates and reports both plus flat CP, regardless of which is primary
+(`interval_flat_cp`, `interval_cluster_cp`, `interval_state_scaled` in `metrics.json`),
+so this is paired evidence, not two separately-run comparisons. This diagnostic must be
+reproduced under the real protocol (RUNBOOK.md Step 3b) before it supports a publication
+claim; treat the numbers above as the reason the mechanism was built, not as the
+evidence for it.
+
 ## Why CISSN trails DLinear on point accuracy
 
 The gap is a rank constraint, not a tuning failure, and it is intrinsic to the architecture.

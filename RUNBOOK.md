@@ -41,7 +41,34 @@ Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `
 uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
+Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` and `scale_stats.json` for fallback clusters and fitted scale coefficients, and `dependence_diagnostics.json`, before interpreting coverage.
+
+## Step 3b: state conditioning mode confirmation
+
+`--conformal_conditioning cluster` (K-Means partition, the historical mechanism) is the
+default. `--conformal_conditioning scale` (continuous `sigma(state)`, normalized
+conformal score) is the paper's primary contribution as of this protocol revision, but
+every run already calibrates and reports both plus flat CP regardless of the flag, so
+this step only decides which one drives the headline `interval` block and which becomes
+the CLI default.
+
+Development-time diagnostic evidence (not run under this protocol; see
+`docs/methodology.md`) found K-Means cluster membership explains a small fraction of the
+state's relationship to residual scale relative to the continuous state (R^2 ~0.17 vs
+~0.73), and that the continuous predictor beat flat CP more consistently across
+chronological cuts than the cluster predictor did. Confirm this holds under the real
+protocol before promoting it:
+
+```powershell
+uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --revin --conformal_conditioning scale --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+```
+
+Repeat for seeds `123,456`. **Decision point**: promote `scale` to the default
+conditioning mode only if `interval_state_scaled` beats `interval_flat_cp` on Winkler
+score on at least 2 of 3 seeds. If it does not, keep `cluster` as the default, report the
+comparison as a negative result for the continuous mechanism, and do not retune against
+test data. Either outcome, record it here with the observed per-seed deltas before
+proceeding to Step 4.
 
 ## Step 4: instance normalisation
 
@@ -52,6 +79,20 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42
 ```
 
 Check `vali_variance_ratio` in `history.json`. A ratio that falls while validation loss improves is amplitude collapse, not a hard dataset, and must be reported as such rather than attributed to the state bottleneck.
+
+`--revin` is proven only on ETTh1-h336 and remains opt-in (off by default) until
+confirmed elsewhere. Before making it the default for `--architecture legacy`, run it
+with and without on ETTh2 and weather at h336, 3 seeds each:
+
+```powershell
+uv run python experiments/run_benchmark.py --data ETTh2 --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+uv run python experiments/run_benchmark.py --data weather --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+```
+
+Flip the default only if RevIN does not regress test MSE or coverage on either dataset
+relative to the non-RevIN arm; if it regresses anywhere, keep it opt-in and pass
+`--revin` explicitly per dataset in the main grid rather than defaulting a fix proven on
+one dataset/horizon. Record the outcome and per-seed numbers here either way.
 
 ## Step 5: hybrid variant selection (validation only)
 
@@ -92,10 +133,12 @@ and do not retune against test data.
 
 ## Main grid
 
-Run CISSN with the multi-seed driver for each locked dataset:
+Run CISSN with the multi-seed driver for each locked dataset, using whichever
+`--conformal_conditioning` mode Step 3b confirmed (every run still calibrates and
+reports both, so this only sets which one is primary):
 
 ```powershell
-uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
+uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --conformal_conditioning scale --require_gpu --require_clean_git --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
 ```
 
 Repeat with `ETTh2`, `weather`, and `exchange_rate`. The driver must propagate all safeguards; verify this with `--help` before a long launch.
@@ -135,4 +178,12 @@ uv run python scripts/generate_publication_figures.py --results_root ./results/p
 uv run python scripts/generate_reproducibility_appendix.py --results_root ./results/publication --output ./results/publication/reproducibility.md
 ```
 
-Report mean and standard deviation across outer seeds, paired method comparisons, `coverage_primary`, width, Winkler score, MSIS, coverage scope, interval origin, cluster fallbacks, and dependence diagnostics. Do not describe the time-series result as unconditional distribution-free coverage.
+`table_paired_comparison.csv` is the central evidence table: per dataset/horizon cell,
+the primary conditioning mechanism's mean Winkler delta against flat CP, cluster SCCP,
+and state-scaled CP, plus how many seeds it actually won on
+(`winkler_delta_vs_*_wins` out of `winkler_delta_vs_*_count`). Report the win count
+alongside the mean — a favorable mean can still hide a sign that flips seed to seed, as
+it does for cluster-based SCCP against flat CP on some chronological cuts (see
+`docs/methodology.md`).
+
+Report mean and standard deviation across outer seeds, paired method comparisons, `coverage_primary`, width, Winkler score, MSIS, coverage scope, interval origin, `worst_slab_coverage`/`max_coverage_deviation` for the conditional-coverage claim, cluster/scale fallbacks, and dependence diagnostics. Do not describe the time-series result as unconditional distribution-free coverage.

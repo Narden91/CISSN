@@ -312,3 +312,21 @@ class TestForecastHeadCapacity(unittest.TestCase):
         head = ForecastHead(state_dim=5, output_dim=7, horizon=336, hidden_dim=32)
 
         self.assertGreater(head.lin_weight.std().item(), 0.2)
+
+    def test_lambda_refinement_penalty_is_skipped_without_refinement_scale(self):
+        """--lambda_refinement > 0 combined with --no_refinement must not
+        crash: the penalty targets head.refinement_scale, which only exists
+        when use_refinement=True. This reproduces the guard added to
+        experiments/run_benchmark.py's training loop directly against the
+        head, without needing a full training run."""
+        from cissn.models.forecast_head import ForecastHead
+
+        head = ForecastHead(state_dim=5, output_dim=3, horizon=24, hidden_dim=16, use_refinement=False)
+
+        self.assertFalse(hasattr(head, "refinement_scale"))
+        lambda_refinement = 0.1
+        # Mirrors the guarded expression in Experiment.train: must not raise.
+        loss = torch.tensor(0.0)
+        if lambda_refinement > 0 and hasattr(head, "refinement_scale"):
+            loss = loss + lambda_refinement * head.refinement_scale.abs()
+        self.assertEqual(loss.item(), 0.0)

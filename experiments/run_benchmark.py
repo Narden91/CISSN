@@ -19,7 +19,7 @@ from cissn.models.forecast_head import ForecastHead
 from cissn.models.hybrid import HybridCISSN
 from cissn.models.revin import RevIN
 from cissn.losses.disentangle_loss import DisentanglementLoss
-from cissn.conformal import StateConditionalConformal
+from cissn.conformal import StateConditionalConformal, StateScaledConformal
 from cissn.baselines import FlatConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
@@ -28,6 +28,7 @@ from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
     compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
     mean_scaled_interval_score, seasonal_period_for_freq,
+    fit_coverage_bin_edges, conditional_coverage_by_bin,
 )
 from cissn.evaluation.sanity import check_forecast_sanity
 from cissn.evaluation.collapse import DispersionAccumulator, dispersion_summary
@@ -49,6 +50,11 @@ def build_setting_name(args) -> str:
             variant += "_revin"
     if getattr(args, "revin", False):
         variant += "_fullrevin"
+    # Only a non-default conditioning mode changes the setting name, so every
+    # existing 'cluster' run directory (the default) stays byte-identical.
+    conditioning = getattr(args, "conformal_conditioning", "cluster")
+    if conditioning != "cluster":
+        variant += f"_{conditioning}cond"
     return (
         f"CISSN_{args.data}_{args.features}"
         f"_sl{args.seq_len}_pl{args.pred_len}_sd{args.state_dim}_dm{args.d_model}"
@@ -392,11 +398,14 @@ class Experiment:
                 loss = criterion(outputs, batch_y)
                 if disentangle_criterion is not None:
                     loss = loss + disentangle_criterion(states)
-                if self.args.lambda_refinement > 0:
+                if self.args.lambda_refinement > 0 and hasattr(self.head, "refinement_scale"):
                     # The refinement MLP is not attributable to state coordinates,
                     # so an unpenalised head drifts toward it and the structured
                     # decomposition stops explaining the forecast. Penalising its
                     # scale keeps the interpretable linear path dominant.
+                    # refinement_scale only exists when the head was built with
+                    # use_refinement=True; --no_refinement removes the module
+                    # this penalty targets, so there is nothing to penalise.
                     loss = loss + self.args.lambda_refinement * self.head.refinement_scale.abs()
                 if self.args.lambda_correction_scale > 0 and hasattr(self.model, "_correction_scale"):
                     loss = loss + self.args.lambda_correction_scale * (self.model._correction_scale() - 0.01) ** 2
@@ -533,16 +542,69 @@ class Experiment:
         self._set_train_mode(True)
         return total_loss / total_weight
 
-    def _fit_state_partition(self, train_loader, artifact_dir=None):
-        """Freeze a state partition from training data before calibration."""
-        self.conformal = StateConditionalConformal(
+    def _build_conformal(self):
+        """Construct the primary conditioning predictor for --conformal_conditioning."""
+        mode = getattr(self.args, "conformal_conditioning", "cluster")
+        if mode == "scale":
+            return StateScaledConformal(
+                alpha=self.args.conformal_alpha,
+                multivariate_strategy=self.args.multivariate_strategy,
+            )
+        return StateConditionalConformal(
             alpha=self.args.conformal_alpha,
             n_clusters=self.args.n_clusters,
             multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
             calibration_stride=self.args.calibration_stride,
         )
+
+    def _build_secondary_conformal(self):
+        """The conditioning mode NOT selected by --conformal_conditioning.
+
+        Every run reports both cluster and scale results, paired against the
+        same forecasts and calibration residuals as the primary predictor, so
+        the choice of default never hides the comparison.
+        """
+        mode = getattr(self.args, "conformal_conditioning", "cluster")
+        if mode == "scale":
+            return StateConditionalConformal(
+                alpha=self.args.conformal_alpha,
+                n_clusters=self.args.n_clusters,
+                multivariate_strategy=self.args.multivariate_strategy,
+                random_state=self.args.seed,
+                calibration_stride=self.args.calibration_stride,
+            )
+        return StateScaledConformal(
+            alpha=self.args.conformal_alpha,
+            multivariate_strategy=self.args.multivariate_strategy,
+        )
+
+    def _save_conditioning_stats(self, folder_path: Path) -> None:
+        """Write each conditioning predictor's diagnostics under a name that
+        matches its actual mode, not its primary/secondary role, so
+        'cluster_stats.json' always means the K-Means predictor's stats
+        regardless of which mode --conformal_conditioning selected."""
+        for predictor in (getattr(self, "conformal", None), getattr(self, "secondary_conformal", None)):
+            if predictor is None or not getattr(predictor, "calibrated", False):
+                continue
+            if isinstance(predictor, StateScaledConformal):
+                save_json(folder_path / "scale_stats.json", predictor.get_scale_stats())
+            elif hasattr(predictor, "get_cluster_stats"):
+                save_json(folder_path / "cluster_stats.json", predictor.get_cluster_stats())
+
+    def _fit_state_partition(self, train_loader, artifact_dir=None):
+        """Freeze both conditioning mechanisms from training data before calibration.
+
+        'Partition' names the cluster-based mode's step, but the same hook
+        also fits the state-scaled mode's sigma(s) regression, and always
+        fits both the primary and secondary predictors -- both must be
+        frozen on train states before the calibration split is seen, exactly
+        like the existing partition-before-calibration contract.
+        """
+        self.conformal = self._build_conformal()
+        self.secondary_conformal = self._build_secondary_conformal()
         states = []
+        residuals = []
         self._set_train_mode(False)
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
@@ -551,16 +613,36 @@ class Experiment:
                 total=len(train_loader),
                 enabled=not getattr(self.args, "no_progress", True),
             ):
-                final_state, _outputs, _targets = self._forward_and_slice(batch_x, batch_y)
+                final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 states.append(final_state.detach().cpu())
+                residuals.append((outputs - batch_y).abs().detach().cpu())
         training_states = torch.cat(states, dim=0)
-        self.conformal.fit_partition(training_states)
+        training_residuals = torch.cat(residuals, dim=0)
+        for predictor in (self.conformal, self.secondary_conformal):
+            if isinstance(predictor, StateScaledConformal):
+                predictor.fit_scale(training_states, training_residuals)
+            else:
+                predictor.fit_partition(training_states)
+        # Prespecified, method-agnostic bins for conditional-coverage
+        # reporting: fit once on train states/residuals so every conditioning
+        # mechanism (flat, cluster, scale) is scored on the SAME slices of
+        # state-space rather than each on its own partition. The scale
+        # predictor's fitted sigma(s) is the shared difficulty score whether
+        # or not it is the primary mode this run.
+        scale_predictor = next(
+            (p for p in (self.conformal, self.secondary_conformal) if isinstance(p, StateScaledConformal)), None
+        )
+        if scale_predictor is not None:
+            train_scores = scale_predictor._sigma(training_states.numpy())
+            self._coverage_bin_edges = fit_coverage_bin_edges(train_scores, n_bins=5)
+        else:
+            self._coverage_bin_edges = None
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "partition_states.npy", training_states.numpy())
         self._set_train_mode(True)
 
     def _calibrate_conformal(self, cal_loader, artifact_dir=None):
-        """Calibrate the StateConditionalConformal predictor on the held-out calibration split."""
+        """Calibrate both conditioning predictors on the held-out calibration split."""
         all_states = []
         all_residuals = []
 
@@ -579,29 +661,32 @@ class Experiment:
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
         self.conformal.calibrate(all_states, all_residuals)
-        # Flat CP is calibrated on the SAME residuals from the SAME model, so the
-        # SCCP-vs-flat comparison isolates state conditioning. Running flat CP as
-        # a separate training run instead would confound it with training
-        # variance, and state conditioning is the contribution under test.
+        self.secondary_conformal.calibrate(all_states, all_residuals)
+        # Flat CP, cluster SCCP, and state-scaled CP are all calibrated on the
+        # SAME residuals from the SAME model, so every comparison isolates the
+        # conditioning mechanism. Running any comparator as a separate
+        # training run instead would confound it with training variance.
         self.flat_conformal = FlatConformal(
             alpha=self.args.conformal_alpha,
             multivariate_strategy=self.args.multivariate_strategy,
         )
         self.flat_conformal.fit(all_residuals)
-        print("Calibration complete | state-conditional and flat conformal intervals ready")
+        print("Calibration complete | primary, secondary, and flat conformal intervals ready")
 
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "calibration_states.npy", all_states.numpy())
             np.save(Path(artifact_dir) / "calibration_residuals.npy", all_residuals.numpy())
-            save_json(Path(artifact_dir) / "cluster_stats.json", self.conformal.get_cluster_stats())
+            self._save_conditioning_stats(Path(artifact_dir))
 
-        # Record serial dependence; diagnostics never alter interval widths.
-        exchange_results = self.conformal.diagnose_dependence(all_states, all_residuals)
-        if artifact_dir is not None:
-            save_json(Path(artifact_dir) / "dependence_diagnostics.json", exchange_results)
-        for k, value in exchange_results.items():
-            if value.get("warning"):
-                print(f"  calibration warning | cluster {k}: {value['warning']}")
+        # Record serial dependence for the primary conditioning mechanism when
+        # it is cluster-based; diagnostics never alter interval widths.
+        if hasattr(self.conformal, "diagnose_dependence"):
+            exchange_results = self.conformal.diagnose_dependence(all_states, all_residuals)
+            if artifact_dir is not None:
+                save_json(Path(artifact_dir) / "dependence_diagnostics.json", exchange_results)
+            for k, value in exchange_results.items():
+                if value.get("warning"):
+                    print(f"  calibration warning | cluster {k}: {value['warning']}")
         self._set_train_mode(True)
 
     def _predict_intervals(self, test_states: np.ndarray, preds: np.ndarray):
@@ -617,32 +702,78 @@ class Experiment:
         )
         return lower.numpy(), upper.numpy(), getattr(self.conformal, "last_predicted_clusters_", None)
 
-    def _compare_against_flat_conformal(self, preds, trues) -> dict:
-        """Score flat CP on the same forecasts, isolating the value of state conditioning.
+    def _conditional_coverage_scores(self, test_states: np.ndarray):
+        """Method-agnostic difficulty score for test states, from the fitted
+        StateScaledConformal's sigma(s) -- see _fit_state_partition, which
+        fits self._coverage_bin_edges from the SAME score on train data."""
+        scale_predictor = next(
+            (p for p in (getattr(self, "conformal", None), getattr(self, "secondary_conformal", None))
+             if isinstance(p, StateScaledConformal)),
+            None,
+        )
+        if scale_predictor is None:
+            return None
+        return scale_predictor._sigma(test_states)
 
-        SCCP only earns its extra machinery if conditioning on the latent state
-        beats a single global quantile. Both calibrators are fitted on identical
-        calibration residuals from the same model, so this comparison is paired:
-        the only difference is the partition.
-        """
-        flat = getattr(self, "flat_conformal", None)
-        if flat is None or not flat.calibrated:
-            return {}
-
-        lower, upper = flat.predict(torch.from_numpy(preds).float())
-        lower_np, upper_np = lower.numpy(), upper.numpy()
+    def _score_interval_comparator(self, lower_np, upper_np, trues, coverage_scope, test_states=None) -> dict:
+        """Shared scoring for any calibrated comparator's already-built bounds."""
         coverage = compute_picp(lower_np, upper_np, trues)
         coverage_joint = compute_joint_picp(lower_np, upper_np, trues)
-        primary = coverage_joint if flat.coverage_scope == "simultaneous" else coverage
-        return {
+        primary = coverage_joint if coverage_scope == "simultaneous" else coverage
+        result = {
             "coverage": float(coverage),
             "coverage_joint": float(coverage_joint),
             "coverage_primary": float(primary),
             "mean_width": float(compute_mpiw(lower_np, upper_np)),
             "winkler": float(winkler_score(lower_np, upper_np, trues, alpha=self.args.conformal_alpha)),
             "calibration_error": float(abs(primary - (1.0 - self.args.conformal_alpha))),
-            "coverage_scope": flat.coverage_scope,
+            "coverage_scope": coverage_scope,
         }
+        bin_edges = getattr(self, "_coverage_bin_edges", None)
+        if test_states is not None and bin_edges is not None:
+            scores = self._conditional_coverage_scores(test_states)
+            if scores is not None:
+                result["conditional_coverage"] = conditional_coverage_by_bin(
+                    lower_np, upper_np, trues, scores, bin_edges, alpha=self.args.conformal_alpha
+                )
+        return result
+
+    def _compare_against_flat_conformal(self, preds, trues, test_states=None) -> dict:
+        """Score flat CP on the same forecasts, isolating the value of state conditioning.
+
+        Every conditioning mechanism only earns its extra machinery if it
+        beats a single global quantile. All calibrators are fitted on
+        identical calibration residuals from the same model, so this
+        comparison is paired: the only difference is the conditioning
+        mechanism.
+        """
+        flat = getattr(self, "flat_conformal", None)
+        if flat is None or not flat.calibrated:
+            return {}
+        lower, upper = flat.predict(torch.from_numpy(preds).float())
+        return self._score_interval_comparator(
+            lower.numpy(), upper.numpy(), trues, flat.coverage_scope, test_states=test_states
+        )
+
+    def _compare_against_secondary_conformal(self, test_states, preds, trues) -> dict:
+        """Score the non-primary state conditioning mode on the same forecasts.
+
+        --conformal_conditioning selects which mode is primary (drives the
+        headline interval/coverage_by_cluster fields); this reports the other
+        mode paired against the same calibration residuals and test
+        forecasts, so a run never has to be repeated to get both numbers.
+        """
+        secondary = getattr(self, "secondary_conformal", None)
+        if secondary is None or not secondary.calibrated:
+            return {}
+        lower, upper = secondary.predict(
+            torch.from_numpy(test_states).float(), torch.from_numpy(preds).float()
+        )
+        result = self._score_interval_comparator(
+            lower.numpy(), upper.numpy(), trues, secondary.coverage_scope, test_states=test_states
+        )
+        result["mode"] = "cluster" if isinstance(secondary, StateConditionalConformal) else "scale"
+        return result
 
     def test(self, setting):
         test_data, test_loader = self._get_data(flag='test')
@@ -716,6 +847,8 @@ class Experiment:
         cluster_labels = None
         coverage_by_cluster = {}
         flat_comparison = {}
+        secondary_comparison = {}
+        conditional_coverage = None
         if hasattr(self, 'conformal') and self.conformal.calibrated:
             lower_np, upper_np, cluster_labels = self._predict_intervals(test_states, preds)
             coverage = compute_picp(lower_np, upper_np, trues)
@@ -733,7 +866,16 @@ class Experiment:
             calib_err = abs(coverage_primary - (1.0 - self.args.conformal_alpha))
             if cluster_labels is not None:
                 coverage_by_cluster = self._coverage_by_cluster(lower_np, upper_np, trues, cluster_labels)
-            flat_comparison = self._compare_against_flat_conformal(preds, trues)
+            conditional_coverage = None
+            bin_edges = getattr(self, "_coverage_bin_edges", None)
+            if bin_edges is not None:
+                primary_scores = self._conditional_coverage_scores(test_states)
+                if primary_scores is not None:
+                    conditional_coverage = conditional_coverage_by_bin(
+                        lower_np, upper_np, trues, primary_scores, bin_edges, alpha=self.args.conformal_alpha
+                    )
+            flat_comparison = self._compare_against_flat_conformal(preds, trues, test_states=test_states)
+            secondary_comparison = self._compare_against_secondary_conformal(test_states, preds, trues)
             train_data, _ = self._get_data(flag='train')
             seasonal_period = seasonal_period_for_freq(self.args.freq)
             msis = mean_scaled_interval_score(
@@ -745,13 +887,22 @@ class Experiment:
             )
             if flat_comparison:
                 delta = winkler - flat_comparison["winkler"]
-                verdict = "SCCP better" if delta < 0 else "flat CP better or equal"
+                verdict = "primary better" if delta < 0 else "flat CP better or equal"
                 print(
                     f"  flat CP  | coverage={flat_comparison['coverage']:.4f} | "
                     f"width={flat_comparison['mean_width']:.4f} | "
                     f"winkler={flat_comparison['winkler']:.4f}"
                 )
-                print(f"  state conditioning | winkler delta={delta:+.4f} -> {verdict}")
+                print(f"  state conditioning vs flat | winkler delta={delta:+.4f} -> {verdict}")
+            if secondary_comparison:
+                delta2 = winkler - secondary_comparison["winkler"]
+                verdict2 = "primary better" if delta2 < 0 else "secondary better or equal"
+                print(
+                    f"  secondary ({secondary_comparison['mode']}) | coverage={secondary_comparison['coverage']:.4f} | "
+                    f"width={secondary_comparison['mean_width']:.4f} | "
+                    f"winkler={secondary_comparison['winkler']:.4f}"
+                )
+                print(f"  primary vs secondary | winkler delta={delta2:+.4f} -> {verdict2}")
         else:
             lower_np = np.full_like(preds, np.nan)
             upper_np = np.full_like(preds, np.nan)
@@ -785,6 +936,7 @@ class Experiment:
         folder_path = Path(self.args.results_dir) / setting
         folder_path.mkdir(parents=True, exist_ok=True)
 
+        conditioning_mode = getattr(self.args, "conformal_conditioning", "cluster")
         point_metrics = {"mae": mae, "mse": mse, "rmse": rmse, **test_dispersion}
         interval_metrics = {
             "coverage": coverage if coverage is not None else None,
@@ -796,16 +948,27 @@ class Experiment:
             "msis": msis if msis is not None else None,
             "alpha": self.args.conformal_alpha,
             "coverage_scope": getattr(self.conformal, "coverage_scope", "marginal") if hasattr(self, "conformal") else None,
+            "conditioning_mode": conditioning_mode,
+            "conditional_coverage": conditional_coverage,
             "interval_origin": "conformalized",
             "units": "z-scored (per-feature train-split standardization)",
         }
+        # Mode-tagged keys so a downstream reader always finds cluster and
+        # scale results under fixed names regardless of which was primary for
+        # this run -- interval_metrics/secondary_comparison already share one
+        # underlying score, this only relabels which dict holds which.
+        cluster_result = interval_metrics if conditioning_mode == "cluster" else secondary_comparison
+        scaled_result = secondary_comparison if conditioning_mode == "cluster" else interval_metrics
         metrics_payload = {
             "setting": setting,
             "point": point_metrics,
             "interval": interval_metrics,
-            # Paired flat-CP baseline on identical forecasts and calibration
-            # residuals: the evidence for or against state conditioning.
+            # Paired comparators on identical forecasts and calibration
+            # residuals: the evidence for or against state conditioning, and
+            # for the continuous-scale mode over the discrete-cluster mode.
             "interval_flat_cp": flat_comparison,
+            "interval_cluster_cp": cluster_result,
+            "interval_state_scaled": scaled_result,
             "sanity_passed": sanity_report["passed"],
             "structural_passed": sanity_report["structural_passed"],
             "quality_flags": sanity_report["warnings"],
@@ -836,8 +999,7 @@ class Experiment:
         runtime["test_samples"] = len(test_data)
         save_json(folder_path / "runtime.json", runtime)
         save_json(folder_path / "protocol.json", self.args.protocol)
-        if hasattr(self, "conformal") and self.conformal.calibrated and hasattr(self.conformal, "get_cluster_stats"):
-            save_json(folder_path / "cluster_stats.json", self.conformal.get_cluster_stats())
+        self._save_conditioning_stats(folder_path)
 
         return sanity_report
 
@@ -1280,6 +1442,13 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--conformal_alpha', type=float, default=0.1, help='conformal significance level')
     parser.add_argument('--n_clusters', type=int, default=5, help='requested SCCP clusters')
     parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max]')
+    parser.add_argument('--conformal_conditioning', type=str, default='cluster', choices=['cluster', 'scale'],
+                        help="primary state conditioning mechanism: 'cluster' calibrates one quantile per "
+                             "K-Means state cluster (StateConditionalConformal); 'scale' calibrates a single "
+                             "quantile on residuals normalized by a continuous log-linear scale sigma(state) "
+                             "(StateScaledConformal). Every run calibrates and reports both, paired against the "
+                             "same forecasts; this flag only selects which one drives the primary 'interval' "
+                             "block and coverage_by_cluster.json.")
     parser.add_argument('--calibration_stride', type=int, default=1,
                         help='keep every kth chronological calibration origin for dependence-aware calibration')
     parser.add_argument('--cal_fraction', type=float, default=0.2,

@@ -18,6 +18,28 @@ def split_conformal_q_level(n: int, alpha: float) -> float:
     return min(np.ceil((n + 1) * (1 - alpha)) / (n + 1), 1.0)
 
 
+def _to_numpy(value: Union[torch.Tensor, np.ndarray], name: str) -> np.ndarray:
+    """Shared by StateConditionalConformal and StateScaledConformal."""
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+    array = np.asarray(value)
+    if array.size == 0:
+        raise ValueError(f"{name} must contain at least one sample.")
+    return array
+
+
+def _validate_states(states: np.ndarray) -> np.ndarray:
+    """Shared by StateConditionalConformal and StateScaledConformal."""
+    if states.ndim != 2:
+        raise ValueError(f"states must have shape (n_samples, state_dim); got {states.shape}.")
+    return states
+
+
+def _compute_quantile(residuals: np.ndarray, q_level: float):
+    """Shared by StateConditionalConformal and StateScaledConformal."""
+    return np.quantile(residuals, q_level, axis=0, method="higher")
+
+
 class StateConditionalConformal:
     """
     State-Conditional Conformal Prediction (SCCP).
@@ -82,20 +104,9 @@ class StateConditionalConformal:
         self.last_predicted_clusters_: Optional[np.ndarray] = None
         self.calibrated = False
 
-    @staticmethod
-    def _to_numpy(value: Union[torch.Tensor, np.ndarray], name: str) -> np.ndarray:
-        if isinstance(value, torch.Tensor):
-            value = value.detach().cpu().numpy()
-        array = np.asarray(value)
-        if array.size == 0:
-            raise ValueError(f"{name} must contain at least one sample.")
-        return array
-
-    @staticmethod
-    def _validate_states(states: np.ndarray) -> np.ndarray:
-        if states.ndim != 2:
-            raise ValueError(f"states must have shape (n_samples, state_dim); got {states.shape}.")
-        return states
+    _to_numpy = staticmethod(_to_numpy)
+    _validate_states = staticmethod(_validate_states)
+    _compute_quantile = staticmethod(_compute_quantile)
 
     def _prepare_residuals(self, residuals: np.ndarray, n_samples: int) -> Tuple[np.ndarray, Tuple[int, ...]]:
         if residuals.ndim == 0:
@@ -112,10 +123,6 @@ class StateConditionalConformal:
         if self.multivariate_strategy == "max":
             return flattened.max(axis=1), ()
         return residuals, tuple(residuals.shape[1:])
-
-    @staticmethod
-    def _compute_quantile(residuals: np.ndarray, q_level: float):
-        return np.quantile(residuals, q_level, axis=0, method="higher")
 
     @staticmethod
     def _compute_acf1(residuals: np.ndarray) -> Optional[float]:
@@ -334,3 +341,243 @@ class StateConditionalConformal:
 
             results[k] = entry
         return results
+
+
+class StateScaledConformal:
+    """
+    State-Scaled Conformal Prediction.
+
+    Uses the learned latent state as a continuous difficulty estimator: a
+    log-linear regression of per-sample residual magnitude on the (scaled)
+    state gives a scale sigma(s), and the conformal score is the residual
+    normalized by that scale (the standard normalized/locally-weighted
+    conformal score of Papadopoulos et al., applied with a learned structured
+    state as the difficulty estimator).
+
+    This differs from StateConditionalConformal, which discretizes the state
+    into K-Means clusters and calibrates one quantile per cluster. Measured on
+    this repository's diagnostic runs, cluster membership captures only a
+    fraction of the state's relationship to residual scale relative to using
+    the continuous state directly (R^2 ~0.17 vs ~0.73), which the continuous
+    scale is designed to recover.
+    """
+
+    VALID_MULTIVARIATE_STRATEGIES = {"per_feature", "max"}
+
+    def __init__(
+        self,
+        alpha: float = 0.1,
+        multivariate_strategy: str = "per_feature",
+        ridge: float = 1e-3,
+        sigma_floor: float = 1e-3,
+    ):
+        """
+        Args:
+            alpha: Significance level (coverage = 1 - alpha)
+            multivariate_strategy: 'per_feature' calibrates a separate
+                normalized score for every horizon-feature cell; 'max'
+                calibrates one normalized score for a simultaneous
+                horizon-feature block.
+            ridge: L2 penalty added to the scale regression for numerical
+                stability; the regression target is 1-D (mean log-residual),
+                so this is a small stabilizer, not a tuned hyperparameter.
+            sigma_floor: Minimum allowed value of the fitted scale, guarding
+                against division by ~0 for states far from the fitted range.
+        """
+        if not 0 < alpha < 1:
+            raise ValueError(f"alpha must lie strictly between 0 and 1; got {alpha}.")
+        if multivariate_strategy not in self.VALID_MULTIVARIATE_STRATEGIES:
+            supported = ", ".join(sorted(self.VALID_MULTIVARIATE_STRATEGIES))
+            raise ValueError(f"Unknown multivariate strategy {multivariate_strategy!r}. Supported values: {supported}.")
+        if ridge < 0:
+            raise ValueError(f"ridge must be non-negative; got {ridge}.")
+        if sigma_floor <= 0:
+            raise ValueError(f"sigma_floor must be positive; got {sigma_floor}.")
+
+        self.alpha = alpha
+        self.multivariate_strategy = multivariate_strategy
+        self.coverage_scope = "simultaneous" if multivariate_strategy == "max" else "marginal"
+        self.ridge = ridge
+        self.sigma_floor = sigma_floor
+        self._reset_fit_state()
+
+    def _reset_fit_state(self) -> None:
+        self.scaler: Optional[StandardScaler] = None
+        self.beta_: Optional[np.ndarray] = None
+        self.intercept_: float = 0.0
+        self.quantiles: dict = {}
+        self.quantile_shape: tuple = ()
+        self.calibration_samples_ = 0
+        self.scale_fitted = False
+        self.calibrated = False
+
+    _to_numpy = staticmethod(_to_numpy)
+    _validate_states = staticmethod(_validate_states)
+    _compute_quantile = staticmethod(_compute_quantile)
+
+    def _prepare_residuals(self, residuals: np.ndarray, n_samples: int) -> Tuple[np.ndarray, Tuple[int, ...]]:
+        if residuals.ndim == 0:
+            raise ValueError("residuals must include a sample axis as the first dimension.")
+        if residuals.shape[0] != n_samples:
+            raise ValueError(
+                f"states and residuals must share the same number of samples; got {n_samples} and {residuals.shape[0]}."
+            )
+        if np.any(residuals < 0):
+            raise ValueError("residuals must be absolute non-negative errors.")
+        if residuals.ndim == 1:
+            return residuals, ()
+        flattened = residuals.reshape(n_samples, -1)
+        if self.multivariate_strategy == "max":
+            return flattened.max(axis=1), ()
+        return residuals, tuple(residuals.shape[1:])
+
+    def fit_scale(
+        self,
+        reference_states: Union[torch.Tensor, np.ndarray],
+        reference_residuals: Union[torch.Tensor, np.ndarray],
+    ) -> None:
+        """Fit sigma(s) = exp(beta . scale(s) + intercept) from training data.
+
+        The regression target is log(mean absolute residual + eps) per
+        sample, averaged over every non-sample axis of the residual tensor,
+        so a single scalar scale is learned per state even when residuals
+        are multi-dimensional (horizon x feature). Must be called before
+        calibrate(), and must be fit on data disjoint from the calibration
+        split -- mirroring StateConditionalConformal.fit_partition().
+        """
+        states = self._validate_states(self._to_numpy(reference_states, "reference_states"))
+        residuals = self._to_numpy(reference_residuals, "reference_residuals")
+        if residuals.shape[0] != states.shape[0]:
+            raise ValueError(
+                "reference_states and reference_residuals must share the same number of samples; "
+                f"got {states.shape[0]} and {residuals.shape[0]}."
+            )
+        if np.any(residuals < 0):
+            raise ValueError("reference_residuals must be absolute non-negative errors.")
+        self._reset_fit_state()
+
+        self.scaler = StandardScaler()
+        scaled_states = self.scaler.fit_transform(states)
+
+        flat = residuals.reshape(residuals.shape[0], -1)
+        target = np.log(flat.mean(axis=1) + 1e-8)
+
+        design = np.concatenate([scaled_states, np.ones((scaled_states.shape[0], 1))], axis=1)
+        n_features = design.shape[1]
+        gram = design.T @ design + self.ridge * np.eye(n_features)
+        coefs = np.linalg.solve(gram, design.T @ target)
+        self.beta_ = coefs[:-1]
+        self.intercept_ = float(coefs[-1])
+        self.scale_fitted = True
+
+    def _sigma(self, states: np.ndarray) -> np.ndarray:
+        if not self.scale_fitted:
+            raise RuntimeError("Call fit_scale() before computing sigma.")
+        scaled = self.scaler.transform(states)
+        log_sigma = scaled @ self.beta_ + self.intercept_
+        return np.maximum(np.exp(log_sigma), self.sigma_floor)
+
+    def calibrate(
+        self,
+        states: Union[torch.Tensor, np.ndarray],
+        residuals: Union[torch.Tensor, np.ndarray],
+    ) -> None:
+        """Calibrate a frozen state scale on chronological calibration residuals."""
+        if not self.scale_fitted:
+            raise RuntimeError("Call fit_scale() before calibrate().")
+
+        states_np = self._validate_states(self._to_numpy(states, "states"))
+        residuals_np = self._to_numpy(residuals, "residuals")
+        residuals_np, self.quantile_shape = self._prepare_residuals(residuals_np, states_np.shape[0])
+
+        sigma = self._sigma(states_np)
+        normalized = residuals_np / sigma.reshape(-1, *([1] * (residuals_np.ndim - 1)))
+
+        q_level = split_conformal_q_level(normalized.shape[0], self.alpha)
+        self.quantiles = self._compute_quantile(normalized, q_level)
+        self.calibration_samples_ = int(states_np.shape[0])
+        self.calibrated = True
+        logger.info(
+            "State-scaled CP calibrated: samples=%d, strategy=%s",
+            self.calibration_samples_, self.multivariate_strategy,
+        )
+
+    def fit(self, states: Union[torch.Tensor, np.ndarray], residuals: Union[torch.Tensor, np.ndarray]) -> None:
+        """Convenience API for IID tests; experiments use separate scale-fit and calibration data."""
+        self.fit_scale(states, residuals)
+        self.calibrate(states, residuals)
+
+    def get_scale_stats(self) -> dict:
+        """Return JSON-serializable fitted scale diagnostics."""
+        if not self.calibrated:
+            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        return {
+            "alpha": float(self.alpha),
+            "multivariate_strategy": self.multivariate_strategy,
+            "coverage_scope": self.coverage_scope,
+            "calibration_samples": int(self.calibration_samples_),
+            "beta": [float(b) for b in self.beta_],
+            "intercept": float(self.intercept_),
+            "ridge": float(self.ridge),
+            "sigma_floor": float(self.sigma_floor),
+            "quantile_shape": list(np.asarray(self.quantiles).shape),
+        }
+
+    def predict(
+        self,
+        states: Union[torch.Tensor, np.ndarray],
+        point_forecasts: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate prediction intervals scaled by the fitted per-sample sigma(s).
+
+        Args:
+            states: (n_samples, state_dim)
+            point_forecasts: Forecast tensor with leading sample axis.
+
+        Returns:
+            lower_bound, upper_bound with the same shape as point_forecasts.
+        """
+        if not self.calibrated:
+            raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
+        if not isinstance(point_forecasts, torch.Tensor):
+            raise TypeError("point_forecasts must be a torch.Tensor.")
+        if point_forecasts.ndim == 0:
+            raise ValueError("point_forecasts must include a sample axis as the first dimension.")
+
+        states_np = self._validate_states(self._to_numpy(states, "states"))
+        if states_np.shape[0] != point_forecasts.shape[0]:
+            raise ValueError(
+                "states and point_forecasts must share the same number of samples; "
+                f"got {states_np.shape[0]} and {point_forecasts.shape[0]}."
+            )
+
+        sigma = self._sigma(states_np)
+        sigma_tensor = torch.as_tensor(sigma, device=point_forecasts.device, dtype=point_forecasts.dtype)
+        while sigma_tensor.ndim < point_forecasts.ndim:
+            sigma_tensor = sigma_tensor.unsqueeze(-1)
+
+        # Broadcast the single fitted quantile array to the forecast shape,
+        # then scale per-sample by sigma(s) -- the quantile is shared across
+        # samples (fit on normalized residuals), sigma is not.
+        q_tensor = torch.as_tensor(
+            np.asarray(self.quantiles), device=point_forecasts.device, dtype=point_forecasts.dtype
+        )
+        forecast_shape = tuple(point_forecasts.shape[1:])
+        if not self.quantile_shape:
+            while q_tensor.ndim < point_forecasts.ndim - 1:
+                q_tensor = q_tensor.unsqueeze(-1)
+            q_tensor = q_tensor.unsqueeze(0)
+        elif forecast_shape == self.quantile_shape:
+            q_tensor = q_tensor.unsqueeze(0)
+        elif len(self.quantile_shape) == 1 and point_forecasts.ndim == 3 and forecast_shape[-1:] == self.quantile_shape:
+            q_tensor = q_tensor.reshape(1, 1, -1)
+        else:
+            raise ValueError(
+                "point_forecasts trailing shape is incompatible with calibrated quantiles: "
+                f"expected {self.quantile_shape} or (horizon, {self.quantile_shape[0] if self.quantile_shape else None}) "
+                f"for per-feature output calibration, got {forecast_shape}."
+            )
+
+        width = q_tensor * sigma_tensor
+        return point_forecasts - width, point_forecasts + width

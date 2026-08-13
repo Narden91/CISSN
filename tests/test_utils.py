@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 
-from cissn.conformal import StateConditionalConformal
+from cissn.conformal import StateConditionalConformal, StateScaledConformal
 
 
 class TestConformalContracts(unittest.TestCase):
@@ -227,6 +227,170 @@ class TestConformalContracts(unittest.TestCase):
             expected = torch.nn.functional.avg_pool1d(padded, kernel_size=3, stride=1)
             actual = model.decompose(torch.cat([x.permute(0, 2, 1)[:, :, :1], x.permute(0, 2, 1), x.permute(0, 2, 1)[:, :, -1:]], dim=2))
         self.assertTrue(torch.allclose(actual, expected))
+
+
+class TestStateScaledConformal(unittest.TestCase):
+    """StateScaledConformal: continuous state-conditional scale, calibrated on
+    normalized residuals, as an alternative to K-Means cluster quantiles."""
+
+    def test_fit_scale_before_calibrate_is_enforced(self):
+        conformal = StateScaledConformal(alpha=0.1)
+        states = torch.randn(20, 5)
+        residuals = torch.abs(torch.randn(20, 3, 2))
+
+        with self.assertRaises(RuntimeError):
+            conformal.calibrate(states, residuals)
+
+    def test_converges_to_flat_conformal_when_state_carries_no_signal(self):
+        """With a state independent of residual scale, beta -> ~0 and the
+        fitted quantile*sigma width should match FlatConformal closely --
+        the scaled predictor must not invent structure that isn't there."""
+        from cissn.baselines.flat_conformal import FlatConformal
+
+        rng = np.random.default_rng(0)
+        n_fit, n_cal = 300, 300
+        states = rng.standard_normal((n_fit + n_cal, 5))
+        residuals = np.abs(rng.standard_normal((n_fit + n_cal, 3, 2))) + 1.0
+
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy='per_feature')
+        scaled.fit_scale(states[:n_fit], residuals[:n_fit])
+        scaled.calibrate(states[n_fit:], residuals[n_fit:])
+
+        flat = FlatConformal(alpha=0.1, multivariate_strategy='per_feature')
+        flat.fit(residuals[n_fit:])
+
+        forecasts = torch.zeros(50, 3, 2)
+        test_states = states[n_fit:n_fit + 50]
+        lower, upper = scaled.predict(test_states, forecasts)
+        flat_lower, flat_upper = flat.predict(forecasts)
+
+        scaled_width = float((upper - lower).mean())
+        flat_width = float((flat_upper - flat_lower).mean())
+        self.assertAlmostEqual(scaled_width, flat_width, delta=0.15 * flat_width)
+
+    def test_recovers_state_dependent_scale(self):
+        """When residual scale is truly a function of the state, the fitted
+        sigma(s) must track it: predicted intervals should be wider for
+        states associated with larger residuals."""
+        rng = np.random.default_rng(1)
+        n = 800
+        states = rng.standard_normal((n, 5))
+        # Residual scale grows with state[:, 0]; state[:, 0] in [-3, 3] roughly.
+        true_sigma = np.exp(0.5 * states[:, 0])
+        residuals = np.abs(rng.standard_normal((n, 2)) * true_sigma[:, None])
+
+        n_fit = n // 2
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy='per_feature')
+        scaled.fit_scale(states[:n_fit], residuals[:n_fit])
+        scaled.calibrate(states[n_fit:], residuals[n_fit:])
+
+        low_state = np.tile(np.array([-2.0, 0.0, 0.0, 0.0, 0.0]), (10, 1))
+        high_state = np.tile(np.array([2.0, 0.0, 0.0, 0.0, 0.0]), (10, 1))
+        forecasts = torch.zeros(10, 2)
+        low_lower, low_upper = scaled.predict(low_state, forecasts)
+        high_lower, high_upper = scaled.predict(high_state, forecasts)
+
+        self.assertGreater(
+            float((high_upper - high_lower).mean()),
+            float((low_upper - low_lower).mean()),
+            "sigma(s) did not track state-dependent residual scale",
+        )
+
+    def test_max_strategy_produces_scalar_quantile(self):
+        conformal = StateScaledConformal(alpha=0.1, multivariate_strategy='max')
+        rng = np.random.default_rng(2)
+        states = rng.standard_normal((60, 3))
+        residuals = np.abs(rng.standard_normal((60, 4, 2)))
+
+        conformal.fit_scale(states[:30], residuals[:30])
+        conformal.calibrate(states[30:], residuals[30:])
+
+        self.assertEqual(conformal.quantile_shape, ())
+        lower, upper = conformal.predict(states[30:40], torch.zeros(10, 4, 2))
+        self.assertEqual(tuple(lower.shape), (10, 4, 2))
+
+    def test_per_feature_strategy_preserves_horizon_feature_shape(self):
+        conformal = StateScaledConformal(alpha=0.1, multivariate_strategy='per_feature')
+        rng = np.random.default_rng(3)
+        states = rng.standard_normal((60, 3))
+        residuals = np.abs(rng.standard_normal((60, 4, 2)))
+
+        conformal.fit_scale(states[:30], residuals[:30])
+        conformal.calibrate(states[30:], residuals[30:])
+
+        self.assertEqual(conformal.quantile_shape, (4, 2))
+        lower, upper = conformal.predict(states[30:40], torch.zeros(10, 4, 2))
+        self.assertEqual(tuple(lower.shape), (10, 4, 2))
+
+    def test_rejects_negative_residuals(self):
+        conformal = StateScaledConformal(alpha=0.1)
+        states = torch.randn(20, 3)
+        residuals = torch.randn(20, 2)  # can be negative
+
+        with self.assertRaises(ValueError):
+            conformal.fit_scale(states, residuals)
+
+
+class TestConditionalCoverageMetric(unittest.TestCase):
+    def test_fit_coverage_bin_edges_produces_equal_frequency_bins(self):
+        from cissn.evaluation.metrics import fit_coverage_bin_edges
+
+        rng = np.random.default_rng(4)
+        scores = rng.uniform(0, 1, 500)
+        edges = fit_coverage_bin_edges(scores, n_bins=5)
+
+        self.assertEqual(len(edges), 4)
+        self.assertTrue(np.all(np.diff(edges) > 0))
+
+    def test_conditional_coverage_by_bin_detects_a_starved_slab(self):
+        """A method with good marginal coverage but a starved bin must be
+        caught by worst_slab_coverage even though marginal PICP looks fine."""
+        from cissn.evaluation.metrics import fit_coverage_bin_edges, conditional_coverage_by_bin
+
+        rng = np.random.default_rng(5)
+        n = 400
+        scores = rng.uniform(0, 1, n)
+        edges = fit_coverage_bin_edges(scores, n_bins=4)
+
+        y_true = np.zeros(n)
+        lower = np.full(n, -1.0)
+        upper = np.full(n, 1.0)
+        # Starve the top score bin: half its samples fall outside [-1, 1].
+        top_bin_mask = scores > np.quantile(scores, 0.75)
+        y_true[top_bin_mask] = rng.choice([0.0, 5.0], size=top_bin_mask.sum())
+
+        result = conditional_coverage_by_bin(lower, upper, y_true, scores, edges, alpha=0.1)
+
+        overall_coverage = float(((y_true >= lower) & (y_true <= upper)).mean())
+        self.assertGreater(overall_coverage, 0.85)
+        self.assertLess(result["worst_slab_coverage"], overall_coverage)
+        self.assertGreater(result["max_coverage_deviation"], 0.05)
+
+    def test_same_bin_edges_produce_comparable_results_across_methods(self):
+        """Two different interval methods scored on the SAME bin_edges must
+        report per-bin sample counts that sum to the same total -- this is
+        what makes the comparison fair rather than each method grading
+        itself on its own partition."""
+        from cissn.evaluation.metrics import fit_coverage_bin_edges, conditional_coverage_by_bin
+
+        rng = np.random.default_rng(6)
+        n = 200
+        scores = rng.uniform(0, 1, n)
+        edges = fit_coverage_bin_edges(scores, n_bins=5)
+        y_true = rng.standard_normal(n)
+
+        narrow = conditional_coverage_by_bin(
+            np.full(n, -0.5), np.full(n, 0.5), y_true, scores, edges, alpha=0.1
+        )
+        wide = conditional_coverage_by_bin(
+            np.full(n, -3.0), np.full(n, 3.0), y_true, scores, edges, alpha=0.1
+        )
+
+        total_narrow = sum(b["n_samples"] for b in narrow["bins"].values())
+        total_wide = sum(b["n_samples"] for b in wide["bins"].values())
+        self.assertEqual(total_narrow, total_wide)
+        self.assertEqual(set(narrow["bins"].keys()), set(wide["bins"].keys()))
+        self.assertGreaterEqual(wide["worst_slab_coverage"], narrow["worst_slab_coverage"])
 
 
 if __name__ == '__main__':
