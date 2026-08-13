@@ -12,7 +12,11 @@ from .metrics import (
     mean_scaled_interval_score,
     seasonal_period_for_freq,
 )
-from .sanity import check_forecast_sanity
+from .sanity import (
+    check_forecast_sanity,
+    check_forecast_quality,
+    check_structural_validity,
+)
 from .plots import (
     calibration_curve,
     reliability_diagram,
@@ -35,6 +39,8 @@ __all__ = [
     "mean_scaled_interval_score",
     "seasonal_period_for_freq",
     "check_forecast_sanity",
+    "check_forecast_quality",
+    "check_structural_validity",
     "calibration_curve",
     "reliability_diagram",
     "decomposition_plot",

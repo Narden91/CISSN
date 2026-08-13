@@ -106,6 +106,12 @@ def collect_run_metrics(results_root: Path) -> pd.DataFrame:
                 "coverage_scope": interval.get("coverage_scope"),
                 "interval_origin": interval.get("interval_origin"),
                 "sanity_passed": metrics.get("sanity_passed"),
+                # Older artifacts predate the structural/quality split; their
+                # sanity_passed conflated the two, so fall back to it.
+                "structural_passed": _coalesce(
+                    metrics.get("structural_passed"), metrics.get("sanity_passed")
+                ),
+                "quality_flags": "; ".join(metrics.get("quality_flags") or []),
                 "protocol_present": (metrics_path.parent / "protocol.json").exists(),
             }
         )
@@ -167,8 +173,11 @@ def main() -> None:
     run_df.to_csv(args.output_dir / "all_runs_flat.csv", index=False)
     ablation_df.to_csv(args.output_dir / "ablations_flat.csv", index=False)
 
+    # Eligibility is structural only. A finite, well-formed but poor forecast is
+    # a valid result -- often the reportable one -- so forecast quality must
+    # never remove a run from the tables. Quality travels as an advisory column.
     eligible = run_df[
-        (run_df["sanity_passed"] == True)
+        (run_df["structural_passed"] == True)
         & (run_df["protocol_present"] == True)
     ] if not run_df.empty else run_df
     point_tbl = summarize(eligible, ["mse", "mae", "rmse"])

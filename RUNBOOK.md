@@ -33,7 +33,7 @@ Stop if any command fails. `verify_datasets.py` must pass for the four locked da
 uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts, even when `sanity_passed` is false. Do not include a failed review in publication tables. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
+Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts. Exclude a run from publication tables only when `structural_passed` is false, which means the artifact is unreadable (empty, non-finite, shape-inconsistent, or inverted interval bounds). Forecast quality never removes a run: `quality.flags` is advisory, and a finite but poor forecast is a valid result that must stay visible. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
 
 ## Step 3: CISSN end-to-end
 
@@ -41,7 +41,44 @@ Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `
 uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Include the result in publication tables only when `sanity_passed: true`. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
+Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` for fallback clusters and `dependence_diagnostics.json` before interpreting coverage.
+
+## Step 4: hybrid variant selection (validation only)
+
+The legacy architecture routes the whole forecast through the 5-d state, so its
+forecast map has rank <= 5 and most of the raw history is unrecoverable. The
+hybrid keeps DLinear as the base and gives the state an additive correction:
+
+```text
+total = DLinear(history) + LinearCorrectionHead(StateEncoder(history))
+```
+
+The correction head is zero-initialised and the base is frozen during
+correction training, so correction-stage epoch 0 reproduces the frozen DLinear
+exactly and a failed correction stage falls back to it. `runtime.json` records
+`base_val_loss` and `correction_improved_on_base` for every hybrid run.
+
+Run the three prespecified variants on ETTh1-h336 with seeds `42,123,456`:
+
+```powershell
+uv run python experiments/run_benchmark.py --architecture hybrid --data ETTh1 --pred_len 336 --seed 42 --lambda_cov 0 --lambda_temp 0 --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --strict_artifacts --checkpoints ./checkpoints/selection --results_dir ./results/selection
+uv run python experiments/run_benchmark.py --architecture hybrid --state_dynamics anchored --data ETTh1 --pred_len 336 --seed 42 --lambda_cov 0 --lambda_temp 0 --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --strict_artifacts --checkpoints ./checkpoints/selection --results_dir ./results/selection
+uv run python experiments/run_benchmark.py --architecture hybrid --state_dynamics anchored --state_revin --data ETTh1 --pred_len 336 --seed 42 --lambda_cov 0 --lambda_temp 0 --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --strict_artifacts --checkpoints ./checkpoints/selection --results_dir ./results/selection
+```
+
+Select on **validation** MSE only. Promote a hybrid variant only when it shows
+at least `1%` mean improvement over paired DLinear, improves on at least two of
+three seeds, is no worse than `2%` on any seed, and degrades no feature's mean
+MSE by more than `5%`. Ties within `0.5%` resolve to anchored dynamics without
+RevIN.
+
+`--state_revin` rescales the correction by the input-window feature scale. This
+preserves epoch-0 exactness but changes the epoch-0 gradient scale, so the RevIN
+variant is not comparable to the other two at an equal learning rate; treat it
+as a separate arm rather than a drop-in ablation.
+
+If no variant meets these criteria, stop: report the hybrid as a negative result
+and do not retune against test data.
 
 ## Main grid
 
@@ -80,7 +117,7 @@ uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 
 
 ## Publication review
 
-Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `sanity_passed: false`, different splits, and raw-UQ results from the primary table.
+Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `structural_passed: false`, different splits, and raw-UQ results from the primary table. Do not exclude a run for poor forecast quality; report it with its advisory flags.
 
 ```powershell
 uv run python scripts/generate_publication_tables.py --results_root ./results/publication --output_dir ./results/publication/tables

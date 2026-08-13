@@ -112,7 +112,7 @@ def _write_appendix(
         "",
         "Canonical commands are in `RUNBOOK.md`:",
         "",
-        "- Gates 0, 1, and 2",
+        "- Setup, reference reproduction, and end-to-end steps",
         "- Main CISSN, baseline, and ablation grids",
         "",
         "## Sample Run Paths",

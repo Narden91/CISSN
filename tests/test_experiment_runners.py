@@ -3,9 +3,44 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from experiments.run_benchmark import parse_args as parse_benchmark_args
+from experiments.run_benchmark import (
+    build_setting_name,
+    parse_args as parse_benchmark_args,
+)
 from experiments.run_baseline import compute_metrics, parse_ensemble_seeds
 from experiments.run_multiseed import build_benchmark_run_argv, parse_multiseed_args
+
+
+class TestArchitectureSelection(unittest.TestCase):
+    """The hybrid must be strictly opt-in and must never share a run directory
+    with a legacy run, or the two would overwrite each other's checkpoints."""
+
+    def test_legacy_is_the_default_architecture(self):
+        args = parse_benchmark_args([])
+
+        self.assertEqual(args.architecture, 'legacy')
+        self.assertEqual(args.state_dynamics, 'legacy')
+        self.assertFalse(args.state_revin)
+
+    def test_legacy_setting_name_is_unchanged_by_the_hybrid_option(self):
+        args = parse_benchmark_args([])
+
+        self.assertNotIn('hybrid', build_setting_name(args))
+
+    def test_every_architecture_variant_gets_a_distinct_run_directory(self):
+        variants = [
+            [],
+            ['--architecture', 'hybrid'],
+            ['--architecture', 'hybrid', '--state_dynamics', 'anchored'],
+            ['--architecture', 'hybrid', '--state_dynamics', 'anchored', '--state_revin'],
+        ]
+        names = [build_setting_name(parse_benchmark_args(v)) for v in variants]
+
+        self.assertEqual(len(set(names)), len(names))
+
+    def test_rejects_unknown_architecture(self):
+        with self.assertRaises(SystemExit):
+            parse_benchmark_args(['--architecture', 'nonexistent'])
 
 
 class TestExperimentRunners(unittest.TestCase):

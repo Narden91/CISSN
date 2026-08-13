@@ -32,7 +32,7 @@ Each completed run saves predictions, targets, interval bounds when applicable, 
 
 ## Documentation
 
-- [RUNBOOK.md](RUNBOOK.md): runnable publication protocol and gates.
+- [RUNBOOK.md](RUNBOOK.md): runnable publication protocol and acceptance criteria.
 - [docs/architecture.md](docs/architecture.md): implementation architecture.
 - [docs/datasets.md](docs/datasets.md): datasets and split protocol.
 - [docs/methodology.md](docs/methodology.md): scientific scope and reporting.

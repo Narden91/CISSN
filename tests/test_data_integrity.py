@@ -138,26 +138,109 @@ class TestForecastReview(unittest.TestCase):
     completes without raising. check_forecast_sanity is the check that
     would have caught it immediately from the saved pred/true arrays."""
 
-    def test_near_constant_prediction_fails(self):
+    def test_near_constant_prediction_is_flagged_but_stays_valid(self):
         rng = np.random.default_rng(0)
         trues = rng.normal(size=(500, 24, 7))
         preds = np.zeros_like(trues) + 1e-4  # near-constant, mimics white-noise collapse
 
         report = check_forecast_sanity(preds, trues)
 
-        self.assertFalse(report["passed"])
-        self.assertTrue(any("constant" in f for f in report["failures"]))
+        # Degenerate output is a quality problem, not a structural one: the
+        # arrays are finite and well-formed, so the run stays reportable.
+        self.assertTrue(report["structural_passed"])
+        self.assertTrue(any("constant" in w for w in report["warnings"]))
 
-    def test_insufficient_mean_reference_improvement_is_reported(self):
+    def test_poor_forecast_remains_publication_visible(self):
         rng = np.random.default_rng(0)
         trues = rng.normal(size=(500, 24, 7))
-        # Predictions with full variance but uncorrelated with targets: MSE ~= 2*var(trues).
+        # Full variance but uncorrelated with targets: MSE ~= 2*var(trues).
         preds = rng.normal(size=(500, 24, 7))
+        y_train = rng.normal(size=(2000, 7))
+
+        report = check_forecast_sanity(preds, trues, y_train=y_train)
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["structural_passed"])
+        self.assertEqual(report["failures"], [])
+        self.assertTrue(
+            any("training-split reference" in w for w in report["warnings"])
+        )
+
+    def test_quality_references_come_from_train_split_only(self):
+        """No test statistic may influence the quality reference."""
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(500, 24, 7))
+        preds = trues + rng.normal(scale=0.1, size=trues.shape)
+        y_train = rng.normal(size=(2000, 7))
+
+        report = check_forecast_sanity(
+            preds, trues, y_train=y_train, seasonal_period=24
+        )
+
+        refs = report["quality"]["reference_mse"]
+        self.assertIn("train_mean", refs)
+        self.assertIn("seasonal_naive", refs)
+        self.assertIn("persistence", refs)
+
+    def test_references_are_evaluated_at_the_forecast_horizon(self):
+        """A 1-step persistence error must not be used to score an h-step forecast.
+
+        On a trending series the h-step lagged error grows with h; scoring a
+        24-step forecast against a 1-step baseline would flag good models as
+        weak purely because the baseline solved an easier problem.
+        """
+        t = np.arange(2000, dtype=float).reshape(-1, 1)
+        y_train = np.concatenate([t * 0.01, t * 0.02], axis=1)
+        trues = np.zeros((100, 24, 2))
+        preds = np.zeros_like(trues)
+
+        h1 = check_forecast_sanity(preds, trues, y_train=y_train, horizon=1)
+        h24 = check_forecast_sanity(preds, trues, y_train=y_train, horizon=24)
+
+        self.assertLess(
+            h1["quality"]["reference_mse"]["persistence"],
+            h24["quality"]["reference_mse"]["persistence"],
+        )
+
+    def test_horizon_defaults_to_the_trues_horizon_axis(self):
+        t = np.arange(2000, dtype=float).reshape(-1, 1)
+        y_train = np.concatenate([t * 0.01, t * 0.02], axis=1)
+        trues = np.zeros((100, 24, 2))
+
+        inferred = check_forecast_sanity(np.zeros_like(trues), trues, y_train=y_train)
+        explicit = check_forecast_sanity(
+            np.zeros_like(trues), trues, y_train=y_train, horizon=24
+        )
+
+        self.assertEqual(
+            inferred["quality"]["reference_mse"], explicit["quality"]["reference_mse"]
+        )
+
+    def test_seasonal_naive_uses_whole_cycles_covering_the_horizon(self):
+        rng = np.random.default_rng(0)
+        y_train = rng.normal(size=(2000, 3))
+        trues = np.zeros((50, 30, 3))
+
+        report = check_forecast_sanity(
+            np.zeros_like(trues), trues, y_train=y_train, seasonal_period=24, horizon=30
+        )
+
+        # horizon 30 with period 24 needs two full cycles (lag 48), not one.
+        expected = float(np.mean((y_train[48:] - y_train[:-48]) ** 2))
+        self.assertAlmostEqual(
+            report["quality"]["reference_mse"]["seasonal_naive"], expected, places=10
+        )
+
+    def test_no_reference_reported_without_train_data(self):
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(200, 24, 7))
+        preds = rng.normal(size=(200, 24, 7))
 
         report = check_forecast_sanity(preds, trues)
 
-        self.assertFalse(report["passed"])
-        self.assertTrue(any("10% reduction" in f for f in report["failures"]))
+        # Without a training split there is no admissible reference; the check
+        # must report none rather than fall back to a test-derived baseline.
+        self.assertEqual(report["quality"]["reference_mse"], {})
 
     def test_reasonable_forecast_passes(self):
         rng = np.random.default_rng(0)
@@ -169,13 +252,51 @@ class TestForecastReview(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["failures"], [])
 
-    def test_failed_review_is_recorded_without_raising(self):
+    def test_non_finite_predictions_fail_structurally(self):
         trues = np.random.default_rng(0).normal(size=(100, 10))
-        preds = np.zeros_like(trues)
+        preds = trues.copy()
+        preds[0, 0] = np.nan
 
         report = check_forecast_sanity(preds, trues)
 
         self.assertFalse(report["passed"])
+        self.assertFalse(report["structural_passed"])
+        self.assertTrue(any("non-finite" in f for f in report["failures"]))
+
+    def test_empty_and_mismatched_arrays_fail_structurally(self):
+        empty = check_forecast_sanity(np.array([]), np.array([]))
+        self.assertFalse(empty["structural_passed"])
+        self.assertTrue(any("empty" in f for f in empty["failures"]))
+
+        rng = np.random.default_rng(0)
+        mismatched = check_forecast_sanity(
+            rng.normal(size=(100, 10)), rng.normal(size=(100, 9))
+        )
+        self.assertFalse(mismatched["structural_passed"])
+        self.assertTrue(any("shape mismatch" in f for f in mismatched["failures"]))
+
+    def test_inverted_interval_bounds_fail_structurally(self):
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(100, 10))
+        preds = trues + 0.1
+        lower, upper = preds + 1.0, preds - 1.0  # inverted
+
+        report = check_forecast_sanity(preds, trues, lower=lower, upper=upper)
+
+        self.assertFalse(report["structural_passed"])
+        self.assertTrue(any("upper < lower" in f for f in report["failures"]))
+
+    def test_all_nan_bounds_are_valid_point_only_run(self):
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(100, 10))
+        preds = trues + 0.1
+        nan_bounds = np.full_like(preds, np.nan)
+
+        report = check_forecast_sanity(
+            preds, trues, lower=nan_bounds, upper=nan_bounds
+        )
+
+        self.assertTrue(report["structural_passed"])
 
     def test_history_flags_non_improving_validation_loss(self):
         rng = np.random.default_rng(0)
@@ -188,7 +309,7 @@ class TestForecastReview(unittest.TestCase):
 
         report = check_forecast_sanity(preds, trues, history=history)
 
-        self.assertTrue(report["passed"])  # only a warning, not a hard failure
+        self.assertTrue(report["passed"])  # advisory only, never a hard failure
         self.assertTrue(any("did not improve" in w for w in report["warnings"]))
         self.assertTrue(any("learning rate" in w for w in report["warnings"]))
 

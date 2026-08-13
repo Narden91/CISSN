@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
+from cissn.models.hybrid import HybridCISSN
 from cissn.losses.disentangle_loss import DisentanglementLoss
 from cissn.conformal import StateConditionalConformal
 from cissn.data.data_loader import get_data_loader
@@ -34,9 +35,19 @@ def _format_float_token(value: float) -> str:
 
 
 def build_setting_name(args) -> str:
+    # Architecture variants must not collide on disk: a hybrid run and a legacy
+    # run with otherwise-identical settings would otherwise share a checkpoint
+    # and results directory and silently overwrite each other.
+    architecture = getattr(args, "architecture", "legacy")
+    variant = ""
+    if architecture != "legacy":
+        variant = f"_{architecture}_{getattr(args, 'state_dynamics', 'legacy')}"
+        if getattr(args, "state_revin", False):
+            variant += "_revin"
     return (
         f"CISSN_{args.data}_{args.features}"
         f"_sl{args.seq_len}_pl{args.pred_len}_sd{args.state_dim}_dm{args.d_model}"
+        f"{variant}"
         f"_lc{_format_float_token(args.lambda_cov)}_lt{_format_float_token(args.lambda_temp)}"
         f"_a{_format_float_token(args.conformal_alpha)}_{args.multivariate_strategy}"
         f"_seed{args.seed}"
@@ -588,11 +599,6 @@ class Experiment:
 
         history_path = Path(self.args.checkpoints) / setting / "history.json"
         history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else None
-        sanity_report = check_forecast_sanity(preds, trues, history=history)
-        for msg in sanity_report["failures"]:
-            print(f"Result review | issue: {msg}")
-        for msg in sanity_report["warnings"]:
-            print(f"Result review | note: {msg}")
 
         mae = mean_absolute_error(trues.flatten(), preds.flatten())
         mse = mean_squared_error(trues.flatten(), preds.flatten())
@@ -639,6 +645,25 @@ class Experiment:
 
         print(f"Point forecast | mse={mse:.6f} | mae={mae:.6f} | rmse={rmse:.6f}")
 
+        # Structural validity is checked against the interval bounds too, so it
+        # runs after they exist. Quality references come from the training split
+        # only -- never from test statistics.
+        train_data_for_ref, _ = self._get_data(flag='train')
+        sanity_report = check_forecast_sanity(
+            preds,
+            trues,
+            history=history,
+            lower=lower_np,
+            upper=upper_np,
+            y_train=train_data_for_ref.data_y,
+            seasonal_period=seasonal_period_for_freq(self.args.freq),
+            horizon=self.args.pred_len,
+        )
+        for msg in sanity_report["failures"]:
+            print(f"Result review | structural failure: {msg}")
+        for msg in sanity_report["warnings"]:
+            print(f"Result review | quality note: {msg}")
+
         folder_path = Path(self.args.results_dir) / setting
         folder_path.mkdir(parents=True, exist_ok=True)
 
@@ -661,6 +686,8 @@ class Experiment:
             "point": point_metrics,
             "interval": interval_metrics,
             "sanity_passed": sanity_report["passed"],
+            "structural_passed": sanity_report["structural_passed"],
+            "quality_flags": sanity_report["warnings"],
         }
 
         np.save(folder_path / 'metrics.npy', np.array([mae, mse, rmse]))
@@ -691,7 +718,319 @@ class Experiment:
         if hasattr(self, "conformal") and self.conformal.calibrated and hasattr(self.conformal, "get_cluster_stats"):
             save_json(folder_path / "cluster_stats.json", self.conformal.get_cluster_stats())
 
-        return
+        return sanity_report
+
+
+class HybridExperiment(Experiment):
+    """Two-stage hybrid training: fit DLinear, freeze it, then fit the correction.
+
+    Stage 1 trains the DLinear base alone with the standard budget and restores
+    its best validation checkpoint. Stage 2 freezes that base and trains only
+    the state encoder and correction head.
+
+    Because the correction head is zero-initialised, stage-2 epoch 0 reproduces
+    the frozen base exactly. That epoch-0 state is saved as a fallback before
+    any correction step runs, so a correction stage that fails to improve
+    validation loss degrades to DLinear rather than to something worse.
+
+    ``self.model``/``self.head`` are bound to the encoder and correction head so
+    every inherited method (partition fitting, calibration, interval prediction,
+    checkpoint IO) keeps working unchanged. Only the forward pass differs, and
+    that is overridden in ``_forward_and_slice``.
+    """
+
+    def __init__(self, args):
+        self.args = args
+        self.device = select_device(require_gpu=getattr(args, 'require_gpu', False))
+        self.hybrid = self._build_hybrid().to(self.device)
+        # Bind to the inherited names so base-class machinery is reused as-is.
+        self.model = self.hybrid.encoder
+        self.head = self.hybrid.correction
+
+    def _build_hybrid(self) -> HybridCISSN:
+        return HybridCISSN(
+            input_dim=self.args.enc_in,
+            seq_len=self.args.seq_len,
+            pred_len=self.args.pred_len,
+            output_dim=self.args.c_out,
+            state_dim=self.args.state_dim,
+            hidden_dim=self.args.d_model,
+            dropout=self.args.dropout,
+            state_revin=getattr(self.args, 'state_revin', False),
+            state_dynamics=getattr(self.args, 'state_dynamics', 'legacy'),
+            seasonal_period=seasonal_period_for_freq(self.args.freq),
+        )
+
+    def _forward_and_slice(self, batch_x, batch_y, return_all_states=False):
+        batch_x = batch_x.float().to(self.device, non_blocking=True)
+        batch_y = batch_y.float().to(self.device, non_blocking=True)
+
+        if return_all_states:
+            all_states = self.hybrid.encoder(batch_x, return_all_states=True)
+            final_state = all_states[:, -1, :]
+        else:
+            all_states = None
+            final_state = self.hybrid._state_from_history(batch_x)
+
+        outputs = self.hybrid(batch_x)
+        f_dim = -1 if self.args.features == 'MS' else 0
+        outputs = outputs[:, -self.args.pred_len:, f_dim:]
+        batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+
+        if return_all_states:
+            return all_states, final_state, outputs, batch_y
+        return final_state, outputs, batch_y
+
+    def _select_optimizer(self):
+        # Stage 2 only ever updates the correction branch; the frozen base is
+        # excluded from the optimizer as well as from autograd.
+        return optim.Adam(self.hybrid.correction_parameters(), lr=self.args.learning_rate)
+
+    def _select_disentangle_criterion(self):
+        # The hybrid defaults to no covariance/temporal penalty: those terms were
+        # introduced to shape a state that carried the whole forecast, and here
+        # the state only carries a correction. Legacy reproduction can re-enable
+        # them by passing non-zero lambdas explicitly.
+        if self.args.lambda_cov == 0 and self.args.lambda_temp == 0:
+            return None
+        return super()._select_disentangle_criterion()
+
+    def _base_checkpoint_path(self, path) -> Path:
+        return Path(path) / "checkpoint_base.pth"
+
+    def _train_base(self, train_loader, vali_loader, path) -> list[dict]:
+        """Stage 1: train the DLinear base alone and restore its best checkpoint."""
+        base = self.hybrid.base
+        optimizer = optim.Adam(base.parameters(), lr=self.args.learning_rate)
+        criterion = self._select_criterion()
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        best_path = self._base_checkpoint_path(path)
+        history: list[dict] = []
+
+        for epoch in range(self.args.train_epochs):
+            base.train()
+            epoch_time = time.time()
+            total_loss = torch.zeros((), device=self.device)
+            total_weight = 0
+
+            for batch_x, batch_y, _bxm, _bym in track(
+                train_loader,
+                description=f"Base epoch {epoch + 1}/{self.args.train_epochs}",
+                total=len(train_loader),
+                enabled=not getattr(self.args, "no_progress", True),
+            ):
+                optimizer.zero_grad(set_to_none=True)
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
+                f_dim = -1 if self.args.features == 'MS' else 0
+                outputs = base(batch_x)[:, -self.args.pred_len:, f_dim:]
+                targets = batch_y[:, -self.args.pred_len:, f_dim:]
+
+                loss = criterion(outputs, targets)
+                loss.backward()
+                if self.args.grad_clip and self.args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(base.parameters(), max_norm=self.args.grad_clip)
+                optimizer.step()
+
+                total_loss += loss.detach() * outputs.numel()
+                total_weight += outputs.numel()
+
+            if total_weight == 0:
+                raise RuntimeError("Training loader produced no prediction elements.")
+            train_loss = float((total_loss / total_weight).item())
+            vali_loss = self._vali_base(vali_loader, criterion)
+
+            improved = early_stopping(vali_loss, base, None, str(path))
+            if improved:
+                torch.save(base.state_dict(), best_path)
+            history.append({
+                "stage": "base",
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "vali_loss": vali_loss,
+                "lr": optimizer.param_groups[0]['lr'],
+            })
+            print_epoch_summary(
+                epoch=epoch + 1, total_epochs=self.args.train_epochs, train_loss=train_loss,
+                validation_loss=vali_loss, learning_rate=optimizer.param_groups[0]['lr'],
+                elapsed_seconds=time.time() - epoch_time, improved=improved,
+                patience_counter=early_stopping.counter, patience=early_stopping.patience,
+            )
+            if early_stopping.early_stop:
+                break
+            adjust_learning_rate(optimizer, epoch + 1, self.args)
+
+        if best_path.exists():
+            base.load_state_dict(torch.load(best_path, map_location=self.device, weights_only=True))
+        return history
+
+    def _vali_base(self, vali_loader, criterion) -> float:
+        base = self.hybrid.base
+        base.eval()
+        total_loss = 0.0
+        total_weight = 0
+        f_dim = -1 if self.args.features == 'MS' else 0
+        with torch.no_grad():
+            for batch_x, batch_y, _bxm, _bym in vali_loader:
+                batch_x = batch_x.float().to(self.device, non_blocking=True)
+                batch_y = batch_y.float().to(self.device, non_blocking=True)
+                outputs = base(batch_x)[:, -self.args.pred_len:, f_dim:]
+                targets = batch_y[:, -self.args.pred_len:, f_dim:]
+                total_loss += criterion(outputs, targets).item() * outputs.numel()
+                total_weight += outputs.numel()
+        if total_weight == 0:
+            raise RuntimeError("Validation loader produced no prediction elements.")
+        base.train()
+        return total_loss / total_weight
+
+    def train(self, setting):
+        train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
+        cal_data, cal_loader = self._get_data(flag='cal')
+
+        path = os.path.join(self.args.checkpoints, setting)
+        os.makedirs(path, exist_ok=True)
+        self.checkpoint_path = path
+        save_json(Path(path) / "config.json", vars(self.args))
+        save_json(Path(path) / "environment.json", environment_snapshot(self.device))
+
+        train_start = time.time()
+        print("\n  Stage 1/2 | DLinear base")
+        history = self._train_base(train_loader, vali_loader, path)
+
+        print("\n  Stage 2/2 | five-state correction (base frozen)")
+        self.hybrid.freeze_base()
+        criterion = self._select_criterion()
+
+        # Save the epoch-0 fallback BEFORE any correction step. The correction
+        # head is still zero here, so this checkpoint is exactly the frozen
+        # DLinear base and is what a failed correction stage falls back to.
+        base_vali_loss = self.vali(vali_loader, criterion)
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        early_stopping(base_vali_loss, self.model, self.head, path)
+        history.append({
+            "stage": "correction",
+            "epoch": 0,
+            "train_loss": None,
+            "vali_loss": base_vali_loss,
+            "lr": self.args.learning_rate,
+            "note": "zero-initialised correction; identical to frozen DLinear base",
+        })
+        print(f"  epoch 0 (frozen base) | vali_loss={base_vali_loss:.7f}")
+
+        model_optim = self._select_optimizer()
+        disentangle_criterion = self._select_disentangle_criterion()
+        correction_parameters = self.hybrid.correction_parameters()
+
+        for epoch in range(self.args.train_epochs):
+            total_train_loss = torch.zeros((), device=self.device)
+            total_forecast_loss = torch.zeros((), device=self.device)
+            total_train_weight = 0
+            epoch_states = []
+            epoch_final_states = []
+
+            self.hybrid.train()
+            epoch_time = time.time()
+
+            for batch_x, batch_y, _bxm, _bym in track(
+                train_loader,
+                description=f"Correction epoch {epoch + 1}/{self.args.train_epochs}",
+                total=len(train_loader),
+                enabled=not getattr(self.args, "no_progress", True),
+            ):
+                model_optim.zero_grad(set_to_none=True)
+                states, final_state, outputs, targets = self._forward_and_slice(
+                    batch_x, batch_y, return_all_states=True
+                )
+                forecast_loss = criterion(outputs, targets)
+                loss = forecast_loss
+                if disentangle_criterion is not None:
+                    loss = loss + disentangle_criterion(states)
+
+                batch_weight = outputs.numel()
+                total_train_loss += loss.detach() * batch_weight
+                total_forecast_loss += forecast_loss.detach() * batch_weight
+                total_train_weight += batch_weight
+                epoch_states.append(states.detach())
+                epoch_final_states.append(final_state.detach())
+
+                loss.backward()
+                if self.args.grad_clip and self.args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(correction_parameters, max_norm=self.args.grad_clip)
+                model_optim.step()
+
+            if total_train_weight == 0:
+                raise RuntimeError("Training loader produced no prediction elements.")
+            train_loss = float((total_train_loss / total_train_weight).item())
+            forecast_loss = float((total_forecast_loss / total_train_weight).item())
+            vali_loss = self.vali(vali_loader, criterion)
+
+            disent_metrics = DisentanglementLoss.get_metrics(torch.cat(epoch_states, dim=0))
+            improved = early_stopping(vali_loss, self.model, self.head, path)
+            history.append({
+                "stage": "correction",
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "forecast_loss": forecast_loss,
+                "vali_loss": vali_loss,
+                "lr": model_optim.param_groups[0]['lr'],
+                "off_diag_corr": disent_metrics["mean_abs_off_diag_corr"],
+            })
+            print_epoch_summary(
+                epoch=epoch + 1, total_epochs=self.args.train_epochs, train_loss=train_loss,
+                validation_loss=vali_loss, learning_rate=model_optim.param_groups[0]['lr'],
+                elapsed_seconds=time.time() - epoch_time, improved=improved,
+                patience_counter=early_stopping.counter, patience=early_stopping.patience,
+            )
+            if early_stopping.early_stop:
+                break
+            adjust_learning_rate(model_optim, epoch + 1, self.args)
+
+        best_correction_loss = float(early_stopping.val_loss_min)
+        fell_back = best_correction_loss >= base_vali_loss
+        if fell_back:
+            print(
+                "  correction stage did not improve on the frozen base; "
+                "restoring the epoch-0 (DLinear-equivalent) checkpoint."
+            )
+        save_json(Path(path) / "history.json", history)
+
+        self._load_checkpoint(path)
+        calibration_start = time.time()
+        if self._uses_state_partition():
+            self._fit_state_partition(train_loader, path)
+        self._calibrate_conformal(cal_loader, path)
+        self.train_runtime_ = {
+            "train_seconds": time.time() - train_start,
+            "calibration_seconds": time.time() - calibration_start,
+            "train_samples": len(train_data),
+            "validation_samples": len(vali_data),
+            "calibration_samples": len(cal_data),
+            "epochs_requested": self.args.train_epochs,
+            "epochs_run": len(history),
+            "early_stopped": early_stopping.early_stop,
+            "best_val_loss": best_correction_loss,
+            "base_val_loss": base_vali_loss,
+            "correction_improved_on_base": not fell_back,
+        }
+        save_json(Path(path) / "runtime.json", self.train_runtime_)
+        return self.hybrid
+
+    def _load_checkpoint(self, path):
+        """Restore the base plus the best correction-stage checkpoint."""
+        base_path = self._base_checkpoint_path(path)
+        if base_path.exists():
+            self.hybrid.base.load_state_dict(
+                torch.load(base_path, map_location=self.device, weights_only=True)
+            )
+        super()._load_checkpoint(path)
+
+    def vali(self, vali_loader, criterion):
+        loss = super().vali(vali_loader, criterion)
+        # The parent restores train() on both submodules; re-assert the freeze so
+        # a frozen base cannot silently re-enter train mode mid-run.
+        self.hybrid.train()
+        return loss
 
 
 def adjust_learning_rate(optimizer, epoch, args):
@@ -756,6 +1095,13 @@ def parse_args(argv: Optional[list[str]] = None):
 
     parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
     parser.add_argument('--c_out', type=int, default=7, help='output size')
+    parser.add_argument('--architecture', type=str, default='legacy', choices=['legacy', 'hybrid'],
+                        help="'legacy' encodes history through the 5-d state only; "
+                             "'hybrid' forecasts with DLinear and adds a five-state correction")
+    parser.add_argument('--state_dynamics', type=str, default='legacy', choices=['legacy', 'anchored'],
+                        help='state transition parameterisation for the hybrid correction branch')
+    parser.add_argument('--state_revin', action='store_true',
+                        help='apply reversible instance norm to the state branch only (hybrid)')
     parser.add_argument('--d_model', type=int, default=64, help='model hidden dimension')
     parser.add_argument('--state_dim', type=int, default=5, help='latent state dimension')
     parser.add_argument('--dropout', type=float, default=0.05, help='dropout rate')
@@ -770,6 +1116,10 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='require a clean committed worktree for a publication run')
     parser.add_argument('--no_progress', action='store_true',
                         help='disable terminal progress bars for CI or captured logs')
+    parser.add_argument('--strict_artifacts', action='store_true',
+                        help='exit nonzero when a run produces structurally invalid artifacts')
+    # Retired alias: quality never excluded a run, so this now maps to the
+    # structural check. Accepted silently for existing scripts.
     parser.add_argument('--strict_sanity', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--train_epochs', type=int, default=20, help='training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
@@ -796,7 +1146,9 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='fraction of the canonical train window carved out as the calibration split')
     parser.set_defaults(**config_defaults)
     args = parser.parse_args(args=cli_argv)
-    vars(args).pop("strict_sanity", None)
+    # --strict_sanity is a deprecated alias for --strict_artifacts.
+    if vars(args).pop("strict_sanity", False):
+        args.strict_artifacts = True
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)
     if args.features == 'MS' and 'c_out' not in protected:
@@ -816,11 +1168,18 @@ def main(argv: Optional[list[str]] = None) -> None:
     setting = build_setting_name(args)
     print_run_header("CISSN benchmark", args, setting)
     
-    exp = Experiment(args)
+    exp = HybridExperiment(args) if args.architecture == 'hybrid' else Experiment(args)
     print("\n[1/2] Training and calibration")
     exp.train(setting)
     print("\n[2/2] Test evaluation")
-    exp.test(setting)
-    
+    sanity_report = exp.test(setting)
+
+    # Only structural invalidity is fatal. A poor-but-well-formed forecast is a
+    # valid result and must still exit zero so it stays publication-visible.
+    if args.strict_artifacts and not sanity_report["structural_passed"]:
+        print("Structural artifact validation failed; see sanity.json.", file=sys.stderr)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     main()

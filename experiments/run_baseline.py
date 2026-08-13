@@ -190,15 +190,25 @@ def save_result_artifacts(
     lower: Optional[np.ndarray] = None,
     upper: Optional[np.ndarray] = None,
     history: Optional[list[dict]] = None,
+    y_train: Optional[np.ndarray] = None,
 ) -> Path:
     folder_path = Path(args.results_dir) / setting
     folder_path.mkdir(parents=True, exist_ok=True)
 
-    sanity_report = check_forecast_sanity(preds, trues, history=history)
+    sanity_report = check_forecast_sanity(
+        preds,
+        trues,
+        history=history,
+        lower=lower,
+        upper=upper,
+        y_train=y_train,
+        seasonal_period=seasonal_period_for_freq(args.freq),
+        horizon=args.pred_len,
+    )
     for msg in sanity_report["failures"]:
-        print(f"Result review | issue: {msg}")
+        print(f"Result review | structural failure: {msg}")
     for msg in sanity_report["warnings"]:
-        print(f"Result review | note: {msg}")
+        print(f"Result review | quality note: {msg}")
 
     np.save(folder_path / "pred.npy", preds)
     np.save(folder_path / "true.npy", trues)
@@ -214,6 +224,8 @@ def save_result_artifacts(
             "point": point_metrics,
             "interval": interval_metrics,
             "sanity_passed": sanity_report["passed"],
+            "structural_passed": sanity_report["structural_passed"],
+            "quality_flags": sanity_report["warnings"],
         },
     )
     save_json(folder_path / "sanity.json", sanity_report)
@@ -409,7 +421,7 @@ def run_point_baseline(args, setting: str):
     }
     return save_result_artifacts(
         args, setting, point_metrics, interval_metrics, preds, trues, runtime,
-        lower=lower, upper=upper, history=history,
+        lower=lower, upper=upper, history=history, y_train=train_data.data_y,
     )
 
 
@@ -660,7 +672,7 @@ def run_mc_dropout(args, setting: str):
     history = load_history(Path(args.checkpoints) / setting)
     return save_result_artifacts(
         args, setting, point_metrics, interval_metrics, preds, trues, runtime,
-        lower=lower, upper=upper, history=history,
+        lower=lower, upper=upper, history=history, y_train=train_data.data_y,
     )
 
 
@@ -747,6 +759,7 @@ def run_deep_ensemble(args, setting: str):
         runtime,
         lower=lower_np,
         upper=upper_np,
+        y_train=train_data.data_y,
     )
 
 
@@ -790,6 +803,9 @@ def parse_args():
                         help="require a clean committed worktree for a publication run")
     parser.add_argument("--no_progress", action="store_true",
                         help="disable terminal progress bars for CI or captured logs")
+    parser.add_argument("--strict_artifacts", action="store_true",
+                        help="exit nonzero when a run produces structurally invalid artifacts")
+    # Retired alias for --strict_artifacts; accepted silently for existing scripts.
     parser.add_argument("--strict_sanity", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--train_epochs", type=int, default=20, help="training epochs")
     parser.add_argument("--batch_size", type=int, default=128,
@@ -821,7 +837,8 @@ def parse_args():
 
     parser.set_defaults(**config_defaults)
     args = parser.parse_args()
-    vars(args).pop("strict_sanity", None)
+    if vars(args).pop("strict_sanity", False):
+        args.strict_artifacts = True
 
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)
