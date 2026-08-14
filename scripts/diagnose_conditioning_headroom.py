@@ -10,18 +10,22 @@ This script reports, from a saved run's artifacts:
    test forecasts. A comparison where one method calibrates on more data than
    another is not evidence about conditioning -- that error produced a result
    this repository had to retract (see docs/methodology.md).
-2. **Oracle ceiling for a scalar sigma.** State-scaled CP where sigma is the
-   *true* per-sample test residual scale. This uses test labels, so it is not a
-   usable method -- it is an upper bound on any learned **scalar** sigma.
+2. **Label-informed scalar reference.** State-scaled CP where sigma is the
+   *realized* per-sample residual scale. This uses evaluation labels, so it is
+   not a usable predictor, an oracle bound, or selection evidence.
 3. **Variance decomposition.** How much residual variance sits on the
    per-sample axis (all a scalar sigma can reach) against the per-cell axis
    (already captured by `per_feature` quantiles).
 
-The scalar bound is not a bound on state conditioning as such. The conditioning
+The scalar reference is not a bound on state conditioning as such. The conditioning
 signal is a state x cell interaction: the state changes *which cells are hard*,
 not how hard a window is overall. So the `percell` column and cluster SCCP
-routinely beat the scalar `oracle` column -- they exploit an axis the scalar
-geometry cannot represent. Read the oracle as bounding `scaled`, not `percell`.
+routinely beat the scalar label-informed column -- they exploit an axis the scalar
+geometry cannot represent. Treat it as a diagnostic only.
+
+Evidence role: this script reloads saved evaluation artifacts and repeatedly
+partitions them. Its output is always exploratory. It must never choose defaults,
+modify a study manifest, or enter a confirmatory table.
 
 Usage:
     uv run python scripts/diagnose_conditioning_headroom.py \\
@@ -53,11 +57,11 @@ def _flat_bounds(cal_residuals: np.ndarray, test_preds: np.ndarray, alpha: float
     return test_preds - q, test_preds + q
 
 
-def _oracle_bounds(cal_residuals, test_residuals, test_preds, alpha):
-    """Upper bound: sigma is the true per-sample residual scale, test labels included.
+def _label_informed_scalar_bounds(cal_residuals, test_residuals, test_preds, alpha):
+    """Diagnostic bounds using realized evaluation residual scales.
 
-    Not a usable predictor. It answers 'if a difficulty estimator were perfect,
-    how much would it be worth?' -- which bounds every learned sigma(s).
+    This is intentionally label-informed and has no upper-bound interpretation:
+    it optimizes neither Winkler score nor every scalar difficulty function.
     """
     cal_sigma = cal_residuals.reshape(cal_residuals.shape[0], -1).mean(1).reshape(-1, 1, 1)
     test_sigma = test_residuals.reshape(test_residuals.shape[0], -1).mean(1).reshape(-1, 1, 1)
@@ -150,28 +154,37 @@ def diagnose(run_dir: Path, alpha: float, n_clusters: int, seed: int, cuts=DEFAU
             "corr_sigma_true_scale": float(np.corrcoef(sigma_test, true_scale)[0, 1]),
         }
 
-        lower, upper = _oracle_bounds(cal_residuals, test_residuals, test_preds, alpha)
-        entry["oracle_per_sample"] = _score(lower, upper, test_trues, alpha)
+        lower, upper = _label_informed_scalar_bounds(cal_residuals, test_residuals, test_preds, alpha)
+        entry["label_informed_per_sample_reference"] = _score(lower, upper, test_trues, alpha)
 
         flat_w = entry["flat_cp"]["winkler"]
         entry["winkler_delta_vs_flat"] = {
             "cluster_cp": entry["cluster_cp"]["winkler"] - flat_w,
             "state_scaled_cp": entry["state_scaled_cp"]["winkler"] - flat_w,
             "state_scaled_per_cell_cp": entry["state_scaled_per_cell_cp"]["winkler"] - flat_w,
-            "oracle_per_sample": entry["oracle_per_sample"]["winkler"] - flat_w,
+            "label_informed_per_sample_reference": (
+                entry["label_informed_per_sample_reference"]["winkler"] - flat_w
+            ),
         }
         rows.append(entry)
 
     cal_end = int(n * cuts[-1])
     summary = {
         "run_dir": str(run_dir),
+        "evidence_role": "exploratory_test_reuse",
+        "selection_eligible": False,
         "alpha": alpha,
         "n_clusters": n_clusters,
         "cuts": list(cuts),
         "per_cut": rows,
         "variance_decomposition": _variance_decomposition(residuals[cal_end:]),
     }
-    for method in ("cluster_cp", "state_scaled_cp", "state_scaled_per_cell_cp", "oracle_per_sample"):
+    for method in (
+        "cluster_cp",
+        "state_scaled_cp",
+        "state_scaled_per_cell_cp",
+        "label_informed_per_sample_reference",
+    ):
         deltas = [r["winkler_delta_vs_flat"][method] for r in rows]
         summary.setdefault("summary_vs_flat", {})[method] = {
             "mean_winkler_delta": float(np.mean(deltas)),
@@ -193,14 +206,14 @@ def main() -> None:
 
     result = diagnose(Path(args.run_dir), args.alpha, args.n_clusters, args.seed)
 
-    print(f"{'cut':<6}{'flat':>9}{'cluster':>10}{'scaled':>10}{'percell':>10}{'oracle':>10}")
+    print(f"{'cut':<6}{'flat':>9}{'cluster':>10}{'scaled':>10}{'percell':>10}{'label-ref':>10}")
     for row in result["per_cut"]:
         print(
             f"{row['cut']:<6}{row['flat_cp']['winkler']:9.3f}"
             f"{row['cluster_cp']['winkler']:10.3f}"
             f"{row['state_scaled_cp']['winkler']:10.3f}"
             f"{row['state_scaled_per_cell_cp']['winkler']:10.3f}"
-            f"{row['oracle_per_sample']['winkler']:10.3f}"
+            f"{row['label_informed_per_sample_reference']['winkler']:10.3f}"
         )
     print("\nMean Winkler delta vs flat CP (negative = better than flat):")
     for method, stats in result["summary_vs_flat"].items():

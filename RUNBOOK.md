@@ -2,6 +2,8 @@
 
 This is the sole launch protocol. Results from earlier protocols are not publication evidence and must not be pooled with these artifacts.
 
+> Evidence note: ETTh1 test artifacts have already informed development. They remain diagnostics only. Selection must use chronological pre-test folds; ETTh2, weather, and exchange-rate tests stay sealed until a decision lock is written.
+
 ## Locked design
 
 - Datasets: `ETTh1`, `ETTh2`, `weather`, `exchange_rate`.
@@ -44,6 +46,8 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42
 Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` and `scale_stats.json` for fallback clusters and fitted scale coefficients, and `dependence_diagnostics.json`, before interpreting coverage.
 
 ## Step 3b: state conditioning mode confirmation
+
+> Selection override: this legacy section is development-only because its diagnostic and commands read test artifacts. Do not use any outcome here to choose conditioning. The choice belongs to frozen chronological pre-test folds and a decision lock.
 
 `--conformal_conditioning cluster` (K-Means partition, the historical mechanism) is the
 default. `--conformal_conditioning scale` (continuous `sigma(state)`, normalized
@@ -104,6 +108,8 @@ Record the observed per-seed deltas here either way before proceeding to Step 4.
 
 ## Step 4: instance normalisation
 
+> Selection override: historical ETTh1 values and the ETTh2/weather test commands below are not a default-selection procedure. Choose RevIN only from frozen pre-test folds before opening any final test.
+
 Legacy CISSN collapses toward the training mean on ETTh1-h336: the forecast keeps only ~7% of the target's variance, which lowers MSE without tracking the signal. `--revin` removes the level-tracking burden that causes this. Measured over seeds `42,123,456` (see `docs/methodology.md`), test MSE falls `1.280 → 0.771` and coverage moves `0.788 → 0.908` with narrower intervals, with no change to the latent state dimension.
 
 ```powershell
@@ -128,8 +134,9 @@ one dataset/horizon. Record the outcome and per-seed numbers here either way.
 
 ## Step 5: hybrid variant selection (validation only)
 
-The legacy architecture routes the whole forecast through the 5-d state, so its
-forecast map has rank <= 5 and most of the raw history is unrecoverable. The
+The legacy architecture routes the forecast through a five-dimensional latent bottleneck.
+With nonlinear refinement and RevIN side statistics, this does not impose a rank-5 bound
+on the full forecast matrix. The
 hybrid keeps DLinear as the base and gives the state an additive correction:
 
 ```text
@@ -225,4 +232,4 @@ alongside the mean — a favorable mean can still hide a sign that flips seed to
 it does for cluster-based SCCP against flat CP on some chronological cuts (see
 `docs/methodology.md`).
 
-Report mean and standard deviation across outer seeds, paired method comparisons, `coverage_primary`, width, Winkler score, MSIS, coverage scope, interval origin, `worst_slab_coverage`/`max_coverage_deviation` for the conditional-coverage claim, cluster/scale fallbacks, and dependence diagnostics. Do not describe the time-series result as unconditional distribution-free coverage.
+Report mean and standard deviation across outer seeds, paired method comparisons, `coverage_primary`, width, Winkler score, MSIS, coverage scope, interval origin, `worst_prespecified_bin_coverage`/`max_coverage_deviation`, cluster/scale fallbacks, and dependence diagnostics. Do not describe the time-series result as unconditional distribution-free coverage.

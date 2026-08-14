@@ -19,12 +19,14 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 7,
         "c_out": 7,
         "target": "OT",
+        "seasonal_period": 24,
         "horizons": [24, 96, 192, 336, 720],
         "integrity": {
             "n_rows": 17420,
             "date_start": "2016-07-01 00:00:00",
             "date_end": "2018-06-26 19:00:00",
             "sha256": "f18de3ad269cef59bb07b5438d79bb3042d3be49bdeecf01c1cd6d29695ee066",
+            "semantic_sha256": "58256e4f718e7b2c215418f808b961b6e9b1d4c45cd8aed12d55501165a9a49a",
             "min_col_mean_abs": 0.5,
             "min_lag1_autocorr": 0.80,
         },
@@ -36,12 +38,14 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 7,
         "c_out": 7,
         "target": "OT",
+        "seasonal_period": 24,
         "horizons": [24, 96, 192, 336, 720],
         "integrity": {
             "n_rows": 17420,
             "date_start": "2016-07-01 00:00:00",
             "date_end": "2018-06-26 19:00:00",
             "sha256": "a3dc2c597b9218c7ce1cd55eb77b283fd459a1d09d753063f944967dd6b9218b",
+            "semantic_sha256": "92d53a9dab0da72aedb714c3c51ac0e605032ab26b794993d2d0b0aa3ca0b26e",
             "min_col_mean_abs": 0.5,
             "min_lag1_autocorr": 0.80,
         },
@@ -53,6 +57,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 7,
         "c_out": 7,
         "target": "OT",
+        "seasonal_period": 96,
         "horizons": [24, 96, 192, 336, 720],
         "integrity": {
             "n_rows": 69680,
@@ -70,6 +75,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 7,
         "c_out": 7,
         "target": "OT",
+        "seasonal_period": 96,
         "horizons": [24, 96, 192, 336, 720],
         "integrity": {
             "n_rows": 69680,
@@ -87,12 +93,14 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 21,
         "c_out": 21,
         "target": "OT",
+        "seasonal_period": 144,
         "horizons": [96, 192, 336, 720],
         "integrity": {
             "n_rows": 52696,
             "date_start": "2020-01-01 00:10:00",
             "date_end": "2021-01-01 00:00:00",
             "sha256": "34ee981d07313e51da2a50bb600072c8ae4a69cb4b0651f4cb93a069d7a2ba63",
+            "semantic_sha256": "20172e6cc66cad15bd9681792838e5f338c76e349535e92163fde35652290a1a",
             "min_col_mean_abs": 0.5,
             "min_lag1_autocorr": 0.60,
         },
@@ -104,12 +112,14 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 8,
         "c_out": 8,
         "target": "OT",
+        "seasonal_period": 7,
         "horizons": [96, 192, 336, 720],
         "integrity": {
             "n_rows": 7588,
             "date_start": "1990/1/1 0:00",
             "date_end": "2010/10/10 0:00",
             "sha256": "48b4d9d3d508f5104162e85b9a6042e3557fde11aa9f2944eba8c0d0efc89842",
+            "semantic_sha256": "424ad5c161c34bf75426b1dd2f0333d13bcfe6a0686a3fb4c89a42489afded03",
             "min_col_mean_abs": 0.1,
             "min_lag1_autocorr": 0.80,
         },
@@ -121,6 +131,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 321,
         "c_out": 321,
         "target": "OT",
+        "seasonal_period": 24,
         "horizons": [96, 192, 336, 720],
         "integrity": {
             "n_rows": 26304,
@@ -138,6 +149,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 862,
         "c_out": 862,
         "target": "OT",
+        "seasonal_period": 24,
         "horizons": [96, 192, 336, 720],
         "integrity": {
             "n_rows": 17544,
@@ -155,6 +167,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 7,
         "c_out": 7,
         "target": "OT",
+        "seasonal_period": 52,
         "horizons": [24, 36, 48, 60],
         "integrity": {
             "n_rows": 966,
@@ -172,6 +185,7 @@ DATASET_REGISTRY: dict[str, dict[str, Any]] = {
         "enc_in": 137,
         "c_out": 137,
         "target": "OT",
+        "seasonal_period": 144,
         "horizons": [96, 192, 336, 720],
         # solar_AL.txt has no header/date column; structural checks only.
         "integrity": None,
@@ -203,7 +217,25 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_dataset(name: str, data_root: str | Path | None = None, strict: bool = True) -> dict[str, Any]:
+def _semantic_sha256(df: pd.DataFrame) -> str:
+    """Hash parsed values so CSV whitespace and line endings cannot hide edits."""
+    digest = hashlib.sha256()
+    digest.update("\x1f".join(map(str, df.columns)).encode("utf-8"))
+    for column in df.columns:
+        values = df[column]
+        if pd.api.types.is_numeric_dtype(values):
+            digest.update(np.asarray(values, dtype="<f8").tobytes(order="C"))
+        else:
+            digest.update("\x1e".join(values.astype(str).str.strip()).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def verify_dataset(
+    name: str,
+    data_root: str | Path | None = None,
+    strict: bool = True,
+    require_exact_checksum: bool = False,
+) -> dict[str, Any]:
     """Check a dataset CSV on disk against its registered integrity fingerprint.
 
     Verifies row count, date bounds, checksum (if known), and two structural
@@ -224,6 +256,8 @@ def verify_dataset(name: str, data_root: str | Path | None = None, strict: bool 
         "dataset": name, "path": str(path), "passed": True, "failures": [], "warnings": [],
         "expected_sha256": integrity.get("sha256") if integrity else None,
         "actual_sha256": None,
+        "expected_semantic_sha256": integrity.get("semantic_sha256") if integrity else None,
+        "actual_semantic_sha256": None,
     }
 
     if not path.exists():
@@ -239,6 +273,7 @@ def verify_dataset(name: str, data_root: str | Path | None = None, strict: bool 
         return report
 
     df = pd.read_csv(path)
+    report["actual_semantic_sha256"] = _semantic_sha256(df)
     n_rows = len(df)
     if n_rows != integrity["n_rows"]:
         report["failures"].append(f"row count {n_rows} != expected {integrity['n_rows']}")
@@ -279,6 +314,14 @@ def verify_dataset(name: str, data_root: str | Path | None = None, strict: bool 
             f"sha256 mismatch (got {actual_sha256[:12]}…, expected {integrity['sha256'][:12]}…); "
             "file differs byte-for-byte from the known-good download but passed structural checks"
         )
+
+    if require_exact_checksum and actual_sha256 != integrity["sha256"]:
+        report["failures"].append("raw checksum mismatch")
+    expected_semantic = integrity.get("semantic_sha256")
+    if expected_semantic and report["actual_semantic_sha256"] != expected_semantic:
+        report["warnings"].append("semantic checksum mismatch; parsed values differ from the registry")
+        if require_exact_checksum:
+            report["failures"].append("semantic checksum mismatch")
 
     report["passed"] = not report["failures"]
     if not report["passed"] and strict:

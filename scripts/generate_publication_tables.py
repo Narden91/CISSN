@@ -18,6 +18,8 @@ from typing import Any
 
 import pandas as pd
 
+from cissn.study import load_study_manifest, validate_study_results
+
 
 SETTING_BASELINE_RE = re.compile(
     r"^BASELINE_(?P<model>[^_]+)_(?P<data>[^_]+)_[^_]+_sl\d+_pl(?P<pred>\d+)_seed(?P<seed>\d+)"
@@ -72,15 +74,18 @@ def _parse_setting(setting: str) -> dict[str, Any]:
     return base
 
 
-def collect_run_metrics(results_root: Path) -> pd.DataFrame:
+def collect_run_metrics(results_root: Path, approved_dirs: set[Path] | None = None) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for metrics_path in results_root.glob("**/metrics.json"):
+        if approved_dirs is not None and metrics_path.parent not in approved_dirs:
+            continue
         metrics = _safe_read_json(metrics_path)
         if not metrics:
             continue
         setting = metrics.get("setting") or metrics_path.parent.name
         parsed = _parse_setting(setting)
         config = _safe_read_json(metrics_path.parent / "config.json") or {}
+        protocol = _safe_read_json(metrics_path.parent / "protocol.json") or {}
 
         point = metrics.get("point", {})
         interval = metrics.get("interval", {})
@@ -101,6 +106,7 @@ def collect_run_metrics(results_root: Path) -> pd.DataFrame:
             "dataset": _coalesce(config.get("data"), parsed["dataset"]),
             "pred_len": _coalesce(config.get("pred_len"), parsed["pred_len"]),
             "seed": _coalesce(config.get("seed"), parsed["seed"]),
+            "design_hash": protocol.get("design_hash"),
             "mse": point.get("mse"),
             "mae": point.get("mae"),
             "rmse": point.get("rmse"),
@@ -178,7 +184,7 @@ def summarize(df: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
     available = [m for m in metrics if m in df.columns]
     if df.empty or not available:
         return pd.DataFrame()
-    group_cols = ["family", "model", "dataset", "pred_len"]
+    group_cols = ["family", "model", "dataset", "pred_len", "design_hash"]
     present = [c for c in group_cols if c in df.columns]
     out = df.groupby(present, dropna=False)[available].agg(["mean", "std"]).reset_index()
     out.columns = [
@@ -191,11 +197,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate publication CSV tables.")
     parser.add_argument("--results_root", type=Path, default=Path("./results"))
     parser.add_argument("--output_dir", type=Path, default=Path("./results/publication_tables"))
+    parser.add_argument("--study_manifest", type=Path,
+                        help="required for locked publication tables; validates exact completed cells")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    run_df = collect_run_metrics(args.results_root)
+    approved_dirs = None
+    if args.study_manifest is not None:
+        study_manifest = load_study_manifest(args.study_manifest)
+        if study_manifest["evidence_role"] != "confirmation":
+            raise ValueError("Publication tables require a confirmation study manifest.")
+        approved_dirs = validate_study_results(args.results_root, study_manifest)
+    run_df = collect_run_metrics(args.results_root, approved_dirs)
     ablation_df = collect_ablation_outputs(args.results_root)
 
     run_df.to_csv(args.output_dir / "all_runs_flat.csv", index=False)
@@ -211,7 +225,7 @@ def main() -> None:
     point_tbl = summarize(eligible, ["mse", "mae", "rmse"])
     interval_eligible = eligible[
         eligible["coverage_primary"].notna()
-        & ~eligible["interval_origin"].isin(["raw_uq"])
+        & ~eligible["interval_origin"].fillna("").str.startswith("raw_")
     ] if not eligible.empty else eligible
     interval_tbl = summarize(interval_eligible, ["coverage_primary", "mpiw", "winkler", "msis", "calibration_error"])
 
@@ -226,7 +240,7 @@ def main() -> None:
     # rather than being summarized away.
     paired_tbl = pd.DataFrame()
     if not interval_eligible.empty:
-        group_cols = [c for c in ["dataset", "pred_len", "conditioning_mode"] if c in interval_eligible.columns]
+        group_cols = [c for c in ["dataset", "pred_len", "conditioning_mode", "design_hash"] if c in interval_eligible.columns]
         delta_cols = [c for c in interval_eligible.columns if c.startswith("winkler_delta_vs_")]
         if group_cols and delta_cols:
             agg = interval_eligible.groupby(group_cols, dropna=False)[delta_cols].agg(["mean", "std", "count"])

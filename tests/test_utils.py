@@ -1,6 +1,7 @@
 import json
 import unittest
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -200,6 +201,19 @@ class TestConformalContracts(unittest.TestCase):
         stats = conformal.get_cluster_stats()
         self.assertEqual(stats["calibration_stride"], 2)
         self.assertEqual(stats["calibration_samples"], 10)
+
+    def test_dependence_diagnostic_uses_real_adjacent_origins(self):
+        conformal = StateConditionalConformal(alpha=0.1, n_clusters=2)
+        conformal.calibrated = True
+        conformal.kmeans = SimpleNamespace(n_clusters=2)
+        conformal.assign_clusters = lambda states: np.array([0, 1] * 5)
+        states = np.zeros((10, 2))
+        residuals = np.arange(10, dtype=float)
+
+        result = conformal.diagnose_dependence(states, residuals, origin_indices=np.arange(10))
+
+        self.assertEqual(result[0]["n_lag1_pairs"], 0)
+        self.assertIsNone(result[0]["acf_lag1"])
 
     def test_flat_conformal_uses_horizon_feature_quantiles(self):
         from cissn.baselines.flat_conformal import FlatConformal
@@ -544,6 +558,9 @@ class TestConditionalCoverageMetric(unittest.TestCase):
         overall_coverage = float(((y_true >= lower) & (y_true <= upper)).mean())
         self.assertGreater(overall_coverage, 0.85)
         self.assertLess(result["worst_slab_coverage"], overall_coverage)
+        self.assertEqual(
+            result["worst_prespecified_bin_coverage"], result["worst_slab_coverage"]
+        )
         self.assertGreater(result["max_coverage_deviation"], 0.05)
 
     def test_same_bin_edges_produce_comparable_results_across_methods(self):
@@ -571,6 +588,43 @@ class TestConditionalCoverageMetric(unittest.TestCase):
         self.assertEqual(total_narrow, total_wide)
         self.assertEqual(set(narrow["bins"].keys()), set(wide["bins"].keys()))
         self.assertGreaterEqual(wide["worst_slab_coverage"], narrow["worst_slab_coverage"])
+
+
+class TestMeanScaledIntervalScore(unittest.TestCase):
+    def test_multivariate_msis_uses_time_axis_per_feature(self):
+        from cissn.evaluation.metrics import mean_scaled_interval_score
+
+        y_train = np.column_stack((np.arange(12, dtype=float), np.arange(0, 120, 10, dtype=float)))
+        y_true = np.array([[[4.0, 40.0]], [[6.0, 60.0]]])
+        lower = y_true - np.array([[[1.0, 10.0]]])
+        upper = y_true + np.array([[[1.0, 10.0]]])
+
+        actual = mean_scaled_interval_score(lower, upper, y_true, y_train, seasonal_period=1, alpha=0.1)
+        self.assertAlmostEqual(actual, 2.0, places=7)
+
+    def test_msis_rejects_mismatched_feature_count(self):
+        from cissn.evaluation.metrics import mean_scaled_interval_score
+
+        y_train = np.arange(12, dtype=float).reshape(6, 2)
+        lower = np.zeros((2, 1, 1))
+        with self.assertRaisesRegex(ValueError, "Forecast feature count"):
+            mean_scaled_interval_score(lower, lower + 1, lower, y_train, seasonal_period=1)
+
+
+class TestPerOriginIntervalScores(unittest.TestCase):
+    def test_preserves_chronological_origin_rows(self):
+        from cissn.evaluation.metrics import per_origin_interval_scores
+
+        y_true = np.array([[[0.0]], [[2.0]]])
+        lower = np.array([[[-1.0]], [[-1.0]]])
+        upper = np.array([[[1.0]], [[1.0]]])
+
+        scores = per_origin_interval_scores(lower, upper, y_true, alpha=0.1)
+
+        self.assertEqual(scores.shape, (2, 3))
+        self.assertTrue(np.allclose(scores[:, 0], [1.0, 0.0]))
+        self.assertTrue(np.allclose(scores[:, 1], [2.0, 2.0]))
+        self.assertLess(scores[0, 2], scores[1, 2])
 
 
 if __name__ == '__main__':

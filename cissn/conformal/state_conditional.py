@@ -173,6 +173,21 @@ class StateConditionalConformal(_StateConformalBase):
         rho = float(np.dot(diff_r[:-1], diff_r[1:]) / denom)
         return 0.0 if not np.isfinite(rho) else rho
 
+    @staticmethod
+    def _compute_lagged_correlation(left: np.ndarray, right: np.ndarray) -> Optional[float]:
+        if left.shape[0] < 5:
+            return None
+        if left.ndim > 1:
+            left = left.reshape(left.shape[0], -1).mean(axis=1)
+            right = right.reshape(right.shape[0], -1).mean(axis=1)
+        left = left - left.mean()
+        right = right - right.mean()
+        denom = float(np.linalg.norm(left) * np.linalg.norm(right))
+        if denom <= 1e-12:
+            return 0.0
+        rho = float(np.dot(left, right) / denom)
+        return 0.0 if not np.isfinite(rho) else rho
+
     def _build_quantile_tensor(self, cluster_labels: np.ndarray, point_forecasts: torch.Tensor) -> torch.Tensor:
         """Gather each sample's cluster quantile, broadcast to the forecast shape.
 
@@ -337,12 +352,14 @@ class StateConditionalConformal(_StateConformalBase):
         self,
         states: Union[torch.Tensor, np.ndarray],
         residuals: Union[torch.Tensor, np.ndarray],
+        origin_indices: Optional[np.ndarray] = None,
     ) -> dict:
         """
         Report within-cluster lag-1 autocorrelation without modifying intervals.
 
         Returns a dict mapping cluster_id -> dict with keys:
-            acf_lag1, n_samples, and a warning when serial dependence is high.
+            acf_lag1, n_samples, n_lag1_pairs, and a warning when serial
+            dependence is high. Only true adjacent origins are paired.
         """
         states = self._validate_states(self._to_numpy(states, "states"))
         residuals = self._to_numpy(residuals, "residuals")
@@ -352,20 +369,31 @@ class StateConditionalConformal(_StateConformalBase):
         if not self.calibrated:
             raise RuntimeError("Conformal predictor not calibrated. Call fit() first.")
         cluster_labels = self.assign_clusters(states)
+        if origin_indices is None:
+            origin_indices = np.arange(n_samples, dtype=np.int64)
+        origin_indices = np.asarray(origin_indices).reshape(-1)
+        if origin_indices.shape[0] != n_samples:
+            raise ValueError("origin_indices must have one entry per state.")
 
         results = {}
         for k in range(self.kmeans.n_clusters):
             mask = cluster_labels == k
             n_k = mask.sum()
-            entry = {"n_samples": int(n_k)}
+            adjacent = (
+                (cluster_labels[:-1] == k)
+                & (cluster_labels[1:] == k)
+                & (origin_indices[1:] - origin_indices[:-1] == 1)
+            )
+            n_pairs = int(adjacent.sum())
+            entry = {"n_samples": int(n_k), "n_lag1_pairs": n_pairs}
 
-            if n_k < 5:
+            if n_pairs < 5:
                 entry["acf_lag1"] = None
-                entry["warning"] = "too few samples for ACF computation"
+                entry["warning"] = "too few adjacent origin pairs for ACF computation"
                 results[k] = entry
                 continue
 
-            rho = self._compute_acf1(residuals[mask])
+            rho = self._compute_lagged_correlation(residuals[:-1][adjacent], residuals[1:][adjacent])
             entry["acf_lag1"] = rho
 
             if rho is not None and abs(rho) > 0.3:

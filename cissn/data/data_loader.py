@@ -1,6 +1,9 @@
 import logging
 import os
+import random
+from pathlib import Path
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 from cissn.data.dataset import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Solar
 from cissn.data.registry import supported_datasets, verify_dataset
@@ -9,7 +12,7 @@ from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
-_verified_datasets: set[str] = set()
+_verified_datasets: dict[Path, tuple[int, int]] = {}
 
 _DATA_REGISTRY: dict = {
     'ETTh1':         (Dataset_ETT_hour,   'h'),
@@ -23,6 +26,12 @@ _DATA_REGISTRY: dict = {
     'ILI':           (Dataset_Custom,     'w'),
     'solar':         (Dataset_Solar,      't'),
 }
+
+
+def _seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> Tuple[Any, DataLoader]:
     """
@@ -51,9 +60,15 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
     if flag not in {'train', 'val', 'cal', 'test', 'pred'}:
         raise ValueError(f"flag must be one of 'train', 'val', 'cal', 'test', 'pred'; got {flag!r}.")
 
-    if args.data not in _verified_datasets and not os.environ.get('CISSN_SKIP_DATA_VERIFY'):
-        verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
-        _verified_datasets.add(args.data)
+    if not os.environ.get('CISSN_SKIP_DATA_VERIFY'):
+        dataset_path = (Path(args.root_path) / args.data_path).resolve()
+        if not dataset_path.exists():
+            verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
+        stat = dataset_path.stat()
+        fingerprint = (stat.st_size, stat.st_mtime_ns)
+        if _verified_datasets.get(dataset_path) != fingerprint:
+            verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
+            _verified_datasets[dataset_path] = fingerprint
 
     Data, default_freq = _DATA_REGISTRY[args.data]
     freq = getattr(args, 'freq', default_freq) or default_freq
@@ -101,6 +116,8 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
 
     logger.debug("%s split: %d samples", flag, dataset_length)
     
+    split_seed = {"train": 0, "val": 1, "cal": 2, "test": 3, "pred": 4}[flag]
+    generator = torch.Generator().manual_seed(int(getattr(args, "seed", 0)) + split_seed)
     data_loader = DataLoader(
         data_set,
         batch_size=batch_size,
@@ -109,6 +126,8 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         drop_last=drop_last,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=args.num_workers > 0,
+        generator=generator,
+        worker_init_fn=_seed_worker if args.num_workers > 0 else None,
     )
     
     return data_set, data_loader

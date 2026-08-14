@@ -122,6 +122,9 @@ def run_single_experiment(benchmark_argv: list[str], seed: int, horizon: int):
 
 
 def aggregate_results(all_results, n_seeds_requested: int):
+    seeds = [int(result["seed"]) for result in all_results]
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("Duplicate seeds cannot be aggregated.")
     """Aggregate results across seeds into mean ± std."""
     aggregated = {}
     keys = [
@@ -135,10 +138,12 @@ def aggregate_results(all_results, n_seeds_requested: int):
         values = [r[key] for r in all_results if key in r]
         if values:
             values = np.asarray(values, dtype=float)
+            if not np.isfinite(values).all():
+                raise ValueError(f"Cannot aggregate non-finite metric {key}.")
             aggregated[key] = {
-                "mean": float(np.nanmean(values)),
+                "mean": float(np.mean(values)),
                 "std": float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0,
-                "ci95": float(1.96 * np.nanstd(values, ddof=1) / np.sqrt(len(values))) if len(values) > 1 else 0.0,
+                "seed_variability_ci95_t": _seed_variability_ci(values),
             }
     # Sign-consistency counts: how many seeds the primary conditioning
     # mechanism actually beat each comparator on Winkler score. A mean delta
@@ -154,6 +159,14 @@ def aggregate_results(all_results, n_seeds_requested: int):
     aggregated["n_seeds"] = len(all_results)
     aggregated["complete"] = len(all_results) == n_seeds_requested
     return aggregated
+
+
+def _seed_variability_ci(values: np.ndarray) -> float | None:
+    if len(values) < 2:
+        return None
+    from scipy.stats import t
+
+    return float(t.ppf(0.975, len(values) - 1) * np.std(values, ddof=1) / np.sqrt(len(values)))
 
 
 def write_raw_csv(path: str, results_by_horizon: dict) -> None:
@@ -176,6 +189,8 @@ def main(argv: list[str] | None = None) -> None:
 
     spec = get_dataset_spec(base_args.data)
     seeds = [int(s.strip()) for s in wrapper_args.seeds.split(',') if s.strip()]
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("--seeds must contain unique values.")
     horizons = spec["horizons"] if wrapper_args.all_horizons else [base_args.pred_len]
 
     t0 = time.time()

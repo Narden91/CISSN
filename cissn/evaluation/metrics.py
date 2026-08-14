@@ -74,6 +74,37 @@ def winkler_score(
     return float(np.mean(width + penalty_low + penalty_high))
 
 
+def per_origin_interval_scores(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    y_true: np.ndarray,
+    alpha: float = 0.1,
+) -> np.ndarray:
+    """Return coverage, width, and Winkler score for each forecast origin.
+
+    Rows preserve chronological origin order. This is the atomic evidence used
+    by paired moving-block inference; aggregate metrics alone lose that pairing.
+    """
+    if lower.shape != upper.shape or lower.shape != y_true.shape:
+        raise ValueError("lower, upper, and y_true must have the same shape.")
+    if lower.ndim < 1:
+        raise ValueError("interval arrays must have an origin axis.")
+    axes = tuple(range(1, lower.ndim))
+    covered = (y_true >= lower) & (y_true <= upper)
+    element_score = (
+        (upper - lower)
+        + (2.0 / alpha) * np.maximum(lower - y_true, 0)
+        + (2.0 / alpha) * np.maximum(y_true - upper, 0)
+    )
+    if not axes:
+        return np.column_stack((covered.astype(float), upper - lower, element_score))
+    return np.column_stack((
+        covered.mean(axis=axes),
+        (upper - lower).mean(axis=axes),
+        element_score.mean(axis=axes),
+    ))
+
+
 def crps_gaussian(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -133,7 +164,7 @@ def conditional_coverage_by_bin(
     bin_edges: np.ndarray,
     alpha: float = 0.1,
 ) -> dict:
-    """Per-bin marginal coverage and the worst-slab / max-deviation summary.
+    """Per-bin marginal coverage and prespecified-bin summaries.
 
     Splits samples into groups by ``np.digitize(scores, bin_edges)`` -- the
     SAME edges (from ``fit_coverage_bin_edges``) must be reused across every
@@ -141,10 +172,9 @@ def conditional_coverage_by_bin(
     comparison rather than each method scored against its own partition.
 
     Returns a dict with per-bin sample count and coverage, plus
-    ``worst_slab_coverage`` (the minimum bin coverage; low values mean some
-    slice of state-space is starved of coverage even when marginal coverage
-    looks fine) and ``max_coverage_deviation`` (max over bins of
-    |coverage_bin - (1 - alpha)|).
+    ``worst_prespecified_bin_coverage`` is the minimum coverage among the
+    supplied bins. It is a descriptive diagnostic, not a worst-slab guarantee.
+    ``worst_slab_coverage`` remains as a compatibility alias for old readers.
     """
     scores = np.asarray(scores).reshape(-1)
     covered = (y_true >= lower) & (y_true <= upper)
@@ -167,11 +197,18 @@ def conditional_coverage_by_bin(
         coverages.append(cov_b)
 
     if not coverages:
-        return {"bins": {}, "worst_slab_coverage": None, "max_coverage_deviation": None}
+        return {
+            "bins": {},
+            "worst_prespecified_bin_coverage": None,
+            "worst_slab_coverage": None,
+            "max_coverage_deviation": None,
+        }
 
+    worst_coverage = float(min(coverages))
     return {
         "bins": bins,
-        "worst_slab_coverage": float(min(coverages)),
+        "worst_prespecified_bin_coverage": worst_coverage,
+        "worst_slab_coverage": worst_coverage,
         "max_coverage_deviation": float(max(abs(c - nominal) for c in coverages)),
     }
 
@@ -221,21 +258,47 @@ def mean_scaled_interval_score(
     in-sample seasonal-naive MAE, making it comparable across series of
     different scale (Gneiting & Raftery 2007; M4 competition convention).
 
-    MSIS = winkler_score(lower, upper, y_true, alpha) / seasonal_naive_mae(y_train)
+    Computes a seasonal-naive denominator independently for each feature along
+    the time axis, then averages the scaled cellwise interval score. Flattening
+    a multivariate series here would mix channels and turn a time lag into a
+    scalar-position lag.
 
     Args:
-        y_train: In-sample (training-split) target values used to compute the
-            scaling denominator; must be 1-D or flattened before scaling.
+        y_train: In-sample target values with shape ``(time,)`` or
+            ``(time, features)``.
         seasonal_period: Naive-forecast lag (e.g. 24 for hourly data with daily
             seasonality). Must be < len(y_train).
     """
-    y_train = np.asarray(y_train).reshape(-1)
+    y_train = np.asarray(y_train, dtype=float)
+    lower = np.asarray(lower, dtype=float)
+    upper = np.asarray(upper, dtype=float)
+    y_true = np.asarray(y_true, dtype=float)
+    if lower.shape != upper.shape or lower.shape != y_true.shape:
+        raise ValueError("lower, upper, and y_true must have identical shapes.")
+    if y_train.ndim == 1:
+        y_train = y_train[:, None]
+    if y_train.ndim != 2:
+        raise ValueError("y_train must have shape (time,) or (time, features).")
+    if lower.ndim == 1:
+        lower = lower[:, None]
+        upper = upper[:, None]
+        y_true = y_true[:, None]
+    if lower.shape[-1] != y_train.shape[-1]:
+        raise ValueError(
+            "Forecast feature count must match y_train; "
+            f"got {lower.shape[-1]} and {y_train.shape[-1]}."
+        )
     if seasonal_period <= 0 or seasonal_period >= y_train.shape[0]:
         raise ValueError(
             f"seasonal_period must satisfy 0 < seasonal_period < len(y_train); "
             f"got seasonal_period={seasonal_period}, len(y_train)={y_train.shape[0]}."
         )
-    denom = float(np.mean(np.abs(y_train[seasonal_period:] - y_train[:-seasonal_period])))
-    if denom <= 1e-8:
+    denominators = np.mean(
+        np.abs(y_train[seasonal_period:] - y_train[:-seasonal_period]), axis=0
+    )
+    if np.any(denominators <= 1e-8):
         raise ValueError("Seasonal-naive scaling denominator is ~0; MSIS is undefined for a constant series.")
-    return winkler_score(lower, upper, y_true, alpha=alpha) / denom
+    width = upper - lower
+    penalty_low = (2.0 / alpha) * np.maximum(lower - y_true, 0)
+    penalty_high = (2.0 / alpha) * np.maximum(y_true - upper, 0)
+    return float(np.mean((width + penalty_low + penalty_high) / denominators))

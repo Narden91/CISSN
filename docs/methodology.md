@@ -1,5 +1,7 @@
 # Scientific scope and reporting
 
+> Evidence status: historical ETTh1 test values are development diagnostics. They cannot select RevIN, interval geometry, or hybrid variants. New final claims require pre-test chronological selection and untouched ETTh2, weather, and exchange-rate tests.
+
 The interval procedure is split conformal under its stated exchangeability assumptions. Overlapping time-series windows are dependent, so unconditional finite-sample coverage is not claimed for the deployed time-series protocol. The runner records within-cluster lag-1 residual autocorrelation in `dependence_diagnostics.json`; it does not apply an unsupported ACF inflation factor.
 
 The locked comparison uses the same chronological calibration split, alpha, score geometry, preprocessing, validation budget, and reporting metrics for CISSN and baselines. Main tables report MSE, MAE, primary coverage, mean interval width, Winkler score, calibration error, and MSIS. Every result includes predictions, targets, bounds where available, training history, sanity report, runtime, configuration, environment, and protocol manifest.

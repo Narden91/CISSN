@@ -13,6 +13,7 @@ Reference: Rangapuram et al., "Deep State Space Models for Time Series Forecasti
 """
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional
@@ -33,6 +34,8 @@ class DeepState(StructuredDecayMixin):
     """
 
     STATE_DIM = 4  # level, trend, seasonal_cos, seasonal_sin
+    LOG_SIGMA_MIN = -7.0
+    LOG_SIGMA_MAX = 5.0
 
     def __init__(
         self,
@@ -150,6 +153,21 @@ class DeepState(StructuredDecayMixin):
         state, _ = self._initial_state(x)
         return self._forecast_from_state(state)
 
+    def predict_distribution(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return Gaussian forecast mean and log standard deviation."""
+        state, final_hidden = self._initial_state(x)
+        mean = self._forecast_from_state(state)
+        log_sigma = self.log_sigma_proj(final_hidden).clamp(
+            min=self.LOG_SIGMA_MIN, max=self.LOG_SIGMA_MAX
+        )
+        return mean, log_sigma.unsqueeze(1).expand(-1, self.pred_len, -1)
+
+    @staticmethod
+    def gaussian_nll(mean: torch.Tensor, target: torch.Tensor, log_sigma: torch.Tensor) -> torch.Tensor:
+        """Elementwise Gaussian negative log likelihood, averaged over outputs."""
+        variance = torch.exp(2.0 * log_sigma)
+        return 0.5 * (((target - mean) ** 2) / variance + 2.0 * log_sigma + math.log(2.0 * math.pi)).mean()
+
     def predict_interval(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -162,17 +180,12 @@ class DeepState(StructuredDecayMixin):
         Returns:
             mean, lower, upper — all (batch, pred_len, output_dim)
         """
-        from scipy.stats import norm
-        z = torch.tensor(norm.ppf(1 - self.alpha / 2), dtype=x.dtype, device=x.device)
-
-        state, final_hidden = self._initial_state(x)
-        log_sigma = self.log_sigma_proj(final_hidden)         # (B, output_dim)
-        sigma = torch.exp(log_sigma).clamp(min=1e-6)          # (B, output_dim)
-
-        mean = self._forecast_from_state(state)
-        sigma_out = sigma.unsqueeze(1).expand(-1, self.pred_len, -1)
-
-        return mean, mean - z * sigma_out, mean + z * sigma_out
+        mean, log_sigma = self.predict_distribution(x)
+        z = math.sqrt(2.0) * torch.erfinv(
+            torch.tensor(1.0 - self.alpha, dtype=x.dtype, device=x.device)
+        )
+        sigma = torch.exp(log_sigma)
+        return mean, mean - z * sigma, mean + z * sigma
 
     def get_contributions(self, state: Optional[torch.Tensor] = None) -> dict:
         """Return current state component names. No gradient-based attribution."""

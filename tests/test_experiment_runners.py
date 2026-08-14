@@ -1,14 +1,20 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from experiments.run_benchmark import (
+    Experiment,
     build_setting_name,
+    enforce_evidence_contract,
     parse_args as parse_benchmark_args,
+    require_clean_source,
 )
 from experiments.run_baseline import compute_metrics, parse_ensemble_seeds
-from experiments.run_multiseed import build_benchmark_run_argv, parse_multiseed_args
+from experiments.run_multiseed import aggregate_results, build_benchmark_run_argv, parse_multiseed_args
 
 
 class TestArchitectureSelection(unittest.TestCase):
@@ -72,6 +78,63 @@ class TestConformalConditioningSelection(unittest.TestCase):
 
 
 class TestExperimentRunners(unittest.TestCase):
+    def test_confirmation_requires_sealed_run_safeguards(self):
+        args = SimpleNamespace(
+            evidence_role="confirmation",
+            immutable_artifacts=False,
+            strict_determinism=True,
+            require_clean_git=True,
+        )
+        with self.assertRaisesRegex(ValueError, "immutable_artifacts"):
+            enforce_evidence_contract(args)
+
+        args.immutable_artifacts = True
+        enforce_evidence_contract(args)
+
+    def test_selection_is_refused_by_test_evaluation_runner(self):
+        args = SimpleNamespace(evidence_role="selection")
+        with self.assertRaisesRegex(ValueError, "validation-only"):
+            enforce_evidence_contract(args)
+
+    def test_calibration_stride_selects_one_shared_chronological_index(self):
+        experiment = Experiment.__new__(Experiment)
+        experiment.args = SimpleNamespace(calibration_stride=3)
+
+        indices = experiment._shared_calibration_indices(10)
+
+        self.assertTrue(np.array_equal(indices, np.array([0, 3, 6, 9])))
+        self.assertEqual(len(indices), 4)
+
+    def test_conditioning_and_quantile_calibration_use_disjoint_origins(self):
+        selected = np.arange(0, 12, dtype=np.int64)
+
+        conditioning, calibration = Experiment._split_calibration_indices(selected)
+
+        self.assertTrue(np.array_equal(conditioning, np.arange(0, 6)))
+        self.assertTrue(np.array_equal(calibration, np.arange(6, 12)))
+        self.assertFalse(np.intersect1d(conditioning, calibration).size)
+
+    def test_config_rejects_unknown_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "invalid.yaml"
+            path.write_text("training:\n  learnng_rate: 0.001\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unknown config key"):
+                parse_benchmark_args(["--config", str(path)])
+
+    def test_config_rejects_invalid_typed_value(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "invalid.yaml"
+            path.write_text("training:\n  train_epochs: not-an-int\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Invalid value"):
+                parse_benchmark_args(["--config", str(path)])
+
+    def test_clean_source_fails_closed_when_git_is_unavailable(self):
+        args = SimpleNamespace(require_clean_git=True)
+        with patch("experiments.run_benchmark.environment_snapshot") as snapshot:
+            snapshot.return_value = {"git_commit": None, "git_status": None, "git_dirty": None}
+            with self.assertRaisesRegex(RuntimeError, "readable committed Git"):
+                require_clean_source(args)
+
     def test_multiseed_wrapper_preserves_benchmark_args(self):
         wrapper_args, benchmark_argv = parse_multiseed_args(
             [
@@ -117,6 +180,12 @@ class TestExperimentRunners(unittest.TestCase):
         self.assertTrue(args.walk_forward)
         self.assertEqual(args.lradj, 'cosine')
 
+    def test_test_origin_stride_preserves_trailing_origin(self):
+        args = parse_benchmark_args(["--test_origin_stride", "3"])
+
+        self.assertEqual(args.test_origin_stride, 3)
+        self.assertFalse(args.walk_forward)
+
     def test_retired_strict_sanity_argument_remains_accepted(self):
         args = parse_benchmark_args(['--strict_sanity'])
 
@@ -150,6 +219,15 @@ class TestExperimentRunners(unittest.TestCase):
 
         self.assertEqual(len(first), len(set(first)))
         self.assertNotEqual(first, second)
+
+    def test_multiseed_aggregation_rejects_duplicate_seed(self):
+        rows = [
+            {"seed": 7, "mse": 1.0},
+            {"seed": 7, "mse": 2.0},
+        ]
+
+        with self.assertRaisesRegex(ValueError, "Duplicate seeds"):
+            aggregate_results(rows, n_seeds_requested=2)
 
 
 if __name__ == '__main__':

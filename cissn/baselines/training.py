@@ -38,6 +38,7 @@ def train_baseline_epoch(
     grad_clip: float = 1.0,
     show_progress: bool = False,
     progress_description: str = "Training",
+    probabilistic: bool = False,
 ) -> float:
     """Train one epoch for baselines exposing `forward(x) -> forecast`."""
     model.train()
@@ -49,8 +50,14 @@ def train_baseline_epoch(
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-        outputs, targets = slice_forecast(model(batch_x), batch_y, pred_len, features)
-        loss = criterion(outputs, targets)
+        if probabilistic:
+            mean, log_sigma = model.predict_distribution(batch_x)
+            outputs, targets = slice_forecast(mean, batch_y, pred_len, features)
+            log_sigma, _ = slice_forecast(log_sigma, batch_y, pred_len, features)
+            loss = model.gaussian_nll(outputs, targets, log_sigma)
+        else:
+            outputs, targets = slice_forecast(model(batch_x), batch_y, pred_len, features)
+            loss = criterion(outputs, targets)
         loss.backward()
         if grad_clip and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)

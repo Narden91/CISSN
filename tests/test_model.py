@@ -61,5 +61,22 @@ class TestCISSNModel(unittest.TestCase):
 
         self.assertTrue(torch.allclose(actual, expected, atol=1e-6, rtol=1e-6))
 
+    def test_deepstate_nll_trains_scale_projection(self):
+        from cissn.baselines import DeepState
+
+        torch.manual_seed(0)
+        model = DeepState(input_dim=3, pred_len=4, output_dim=2, hidden_dim=8)
+        inputs = torch.randn(5, 6, 3)
+        targets = torch.randn(5, 4, 2)
+
+        mean, log_sigma = model.predict_distribution(inputs)
+        loss = model.gaussian_nll(mean, targets, log_sigma)
+        loss.backward()
+
+        gradient = model.log_sigma_proj.weight.grad
+        self.assertIsNotNone(gradient)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(float(gradient.abs().sum()), 0.0)
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,5 +1,13 @@
 # CISSN repository guide
 
+## Evidence status
+
+ETTh1 test artifacts have been used during development. Historical ETTh1 numbers are
+diagnostic only: they cannot select defaults or support a fresh final claim. Selection
+uses chronological pre-test folds; locked final evaluation uses untouched ETTh2, weather,
+and exchange-rate tests. Do not call a label-informed scalar diagnostic an oracle or an
+upper bound.
+
 ## Scope
 
 CISSN forecasts multivariate time series with a structured five-dimensional latent state and state-conditional conformal intervals. The executable publication protocol is `RUNBOOK.md`; do not create alternative experiment plans.

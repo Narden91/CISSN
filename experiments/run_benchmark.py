@@ -11,7 +11,6 @@ import torch.optim as optim
 import numpy as np
 import argparse
 import time
-import hashlib
 from pathlib import Path
 from typing import Optional
 from cissn.models.encoder import DisentangledStateEncoder
@@ -23,11 +22,15 @@ from cissn.conformal import StateConditionalConformal, StateScaledConformal
 from cissn.baselines import FlatConformal
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets, verify_dataset
-from cissn.utils import EarlyStopping, print_epoch_summary, print_run_header, select_device, track
+from cissn.utils import (
+    EarlyStopping, canonical_hash, create_temporary_result_root, finalize_result_directory,
+    print_epoch_summary, print_run_header, require_new_run, select_device, track,
+    write_completion_manifest,
+)
 from cissn.evaluation.metrics import (
     mean_squared_error, mean_absolute_error,
-    compute_picp, compute_joint_picp, compute_mpiw, winkler_score,
-    mean_scaled_interval_score, seasonal_period_for_freq,
+    compute_picp, compute_joint_picp, compute_mpiw, winkler_score, per_origin_interval_scores,
+    mean_scaled_interval_score,
     fit_coverage_bin_edges, conditional_coverage_by_bin,
 )
 from cissn.evaluation.sanity import check_forecast_sanity
@@ -63,6 +66,12 @@ def build_setting_name(args) -> str:
         f"_a{_format_float_token(args.conformal_alpha)}_{args.multivariate_strategy}"
         f"_seed{args.seed}"
     )
+
+
+def build_run_setting(args, base_setting: str) -> str:
+    if not getattr(args, "immutable_artifacts", False):
+        return base_setting
+    return f"{base_setting}__{args.protocol['design_hash'][:12]}"
 
 
 def _json_default(value):
@@ -150,6 +159,45 @@ def provided_cli_options(argv: list[str]) -> set[str]:
     return options
 
 
+def validate_config_defaults(parser: argparse.ArgumentParser, defaults: dict) -> None:
+    """Reject config keys that argparse would otherwise accept silently."""
+    actions = {action.dest: action for action in parser._actions}
+    unknown = sorted(set(defaults) - set(actions))
+    if unknown:
+        raise ValueError(f"Unknown config key(s): {', '.join(unknown)}")
+    for key, value in defaults.items():
+        action = actions[key]
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            if not isinstance(value, bool):
+                raise ValueError(f"Config key {key!r} must be boolean.")
+            continue
+        if action.type is not None and value is not None:
+            try:
+                value = action.type(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid value for config key {key!r}: {value!r}") from exc
+        if action.choices is not None and value not in action.choices:
+            raise ValueError(f"Invalid value for config key {key!r}: {value!r}")
+
+
+def validate_runtime_args(args) -> None:
+    positive = ("seq_len", "label_len", "pred_len", "enc_in", "c_out", "d_model", "state_dim",
+                "batch_size", "train_epochs", "n_clusters", "calibration_stride")
+    for key in positive:
+        if hasattr(args, key) and getattr(args, key) <= 0:
+            raise ValueError(f"--{key} must be positive.")
+    if not 0.0 <= args.dropout < 1.0:
+        raise ValueError("--dropout must be in [0, 1).")
+    if not 0.0 < args.conformal_alpha < 1.0:
+        raise ValueError("--conformal_alpha must be in (0, 1).")
+    if not 0.0 < args.cal_fraction < 1.0:
+        raise ValueError("--cal_fraction must be in (0, 1).")
+    if args.learning_rate <= 0.0:
+        raise ValueError("--learning_rate must be positive.")
+    if args.num_workers < 0:
+        raise ValueError("--num_workers cannot be negative.")
+
+
 def apply_dataset_defaults(args, protected_keys: set[str]) -> None:
     spec = get_dataset_spec(args.data)
     for key in ("root_path", "data_path", "freq", "target", "enc_in", "c_out"):
@@ -157,7 +205,10 @@ def apply_dataset_defaults(args, protected_keys: set[str]) -> None:
             setattr(args, key, spec[key])
 
 
-def set_random_seed(seed: int) -> None:
+def set_random_seed(seed: int, strict: bool = False) -> None:
+    if strict:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
@@ -173,6 +224,7 @@ def environment_snapshot(device: torch.device) -> dict:
         except Exception:
             return None
 
+    git_status = _git_value(["git", "status", "--short"])
     return {
         "python": sys.version,
         "platform": platform.platform(),
@@ -182,29 +234,70 @@ def environment_snapshot(device: torch.device) -> dict:
         "cuda_available": torch.cuda.is_available(),
         "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "git_commit": _git_value(["git", "rev-parse", "HEAD"]),
-        "git_dirty": bool(_git_value(["git", "status", "--short"])),
+        "git_status": git_status,
+        "git_dirty": None if git_status is None else bool(git_status),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
     }
 
 
 def build_protocol_manifest(args) -> dict:
     """Capture immutable launch inputs needed to compare and reproduce a run."""
-    excluded = {"checkpoints", "results_dir", "require_clean_git"}
+    excluded = {"checkpoints", "results_dir", "require_clean_git", "immutable_artifacts"}
     config = {key: value for key, value in vars(args).items() if key not in excluded and key != "protocol"}
-    dataset = verify_dataset(args.data, data_root=args.root_path, strict=True)
+    dataset = verify_dataset(
+        args.data,
+        data_root=args.root_path,
+        strict=True,
+        require_exact_checksum=getattr(args, "immutable_artifacts", False),
+    )
+    source = environment_snapshot(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    design_payload = {
+        "config": config,
+        "dataset": {
+            key: dataset.get(key)
+            for key in ("dataset", "actual_sha256", "actual_semantic_sha256")
+        },
+        "git_commit": source["git_commit"],
+    }
     payload = {
         "protocol": "cissn-publication-2026",
         "config": config,
         "dataset": dataset,
-        "source": environment_snapshot(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
+        "source": source,
+        "design_hash": canonical_hash(design_payload),
+        "execution_fingerprint": canonical_hash(source),
     }
-    encoded = json.dumps(payload, sort_keys=True, default=_json_default).encode("utf-8")
-    payload["protocol_hash"] = hashlib.sha256(encoded).hexdigest()
+    payload["protocol_hash"] = canonical_hash(payload)
     return payload
 
 
 def require_clean_source(args) -> None:
-    if getattr(args, "require_clean_git", False) and environment_snapshot(torch.device("cpu"))["git_dirty"]:
+    if not getattr(args, "require_clean_git", False):
+        return
+    source = environment_snapshot(torch.device("cpu"))
+    if source["git_commit"] is None or source["git_status"] is None:
+        raise RuntimeError("Publication runs require a readable committed Git worktree.")
+    if source["git_dirty"]:
         raise RuntimeError("Publication runs require a clean committed Git worktree.")
+
+
+def enforce_evidence_contract(args) -> None:
+    """Make a sealed confirmation run reproducible and non-overwritable."""
+    role = getattr(args, "evidence_role", "development")
+    if role == "selection":
+        raise ValueError(
+            "Selection is not supported by the test-evaluation runner; use a chronological "
+            "validation-only controller so the test loader is never instantiated."
+        )
+    if role != "confirmation":
+        return
+    missing = [
+        flag for flag in ("immutable_artifacts", "strict_determinism", "require_clean_git")
+        if not getattr(args, flag, False)
+    ]
+    if missing:
+        names = ", ".join(f"--{flag}" for flag in missing)
+        raise ValueError(f"Confirmation runs require {names}.")
 
 
 class Experiment:
@@ -470,13 +563,19 @@ class Experiment:
         save_json(Path(path) / "history.json", history)
 
         self._load_checkpoint(path)
-        calibration_start = time.time()
+        fit_seconds = time.time() - train_start
+        partition_start = time.time()
         if self._uses_state_partition():
             self._fit_state_partition(train_loader, path)
+        partition_seconds = time.time() - partition_start
         self._calibrate_conformal(cal_loader, path)
         self.train_runtime_ = {
-            "train_seconds": time.time() - train_start,
-            "calibration_seconds": time.time() - calibration_start,
+            "train_seconds": fit_seconds,
+            "fit_seconds": fit_seconds,
+            "partition_seconds": partition_seconds,
+            "conditioning_fit_seconds": getattr(self, "conditioning_fit_seconds_", 0.0),
+            "calibration_seconds": getattr(self, "quantile_calibration_seconds_", 0.0),
+            "total_seconds": time.time() - train_start,
             "train_samples": len(train_data),
             "validation_samples": len(vali_data),
             "calibration_samples": len(cal_data),
@@ -556,7 +655,7 @@ class Experiment:
             n_clusters=self.args.n_clusters,
             multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
-            calibration_stride=self.args.calibration_stride,
+            calibration_stride=1,
         )
 
     def _build_secondary_conformal(self):
@@ -573,7 +672,7 @@ class Experiment:
                 n_clusters=self.args.n_clusters,
                 multivariate_strategy=self.args.multivariate_strategy,
                 random_state=self.args.seed,
-                calibration_stride=self.args.calibration_stride,
+                calibration_stride=1,
             )
         return StateScaledConformal(
             alpha=self.args.conformal_alpha,
@@ -595,18 +694,10 @@ class Experiment:
                 save_json(folder_path / "cluster_stats.json", predictor.get_cluster_stats())
 
     def _fit_state_partition(self, train_loader, artifact_dir=None):
-        """Freeze both conditioning mechanisms from training data before calibration.
-
-        'Partition' names the cluster-based mode's step, but the same hook
-        also fits the state-scaled mode's sigma(s) regression, and always
-        fits both the primary and secondary predictors -- both must be
-        frozen on train states before the calibration split is seen, exactly
-        like the existing partition-before-calibration contract.
-        """
+        """Freeze label-free cluster partitions before held-out calibration."""
         self.conformal = self._build_conformal()
         self.secondary_conformal = self._build_secondary_conformal()
         states = []
-        residuals = []
         self._set_train_mode(False)
         with torch.no_grad():
             for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
@@ -617,28 +708,10 @@ class Experiment:
             ):
                 final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 states.append(final_state.detach().cpu())
-                residuals.append((outputs - batch_y).abs().detach().cpu())
         training_states = torch.cat(states, dim=0)
-        training_residuals = torch.cat(residuals, dim=0)
         for predictor in (self.conformal, self.secondary_conformal):
-            if isinstance(predictor, StateScaledConformal):
-                predictor.fit_scale(training_states, training_residuals)
-            else:
+            if not isinstance(predictor, StateScaledConformal):
                 predictor.fit_partition(training_states)
-        # Prespecified, method-agnostic bins for conditional-coverage
-        # reporting: fit once on train states/residuals so every conditioning
-        # mechanism (flat, cluster, scale) is scored on the SAME slices of
-        # state-space rather than each on its own partition. The scale
-        # predictor's fitted sigma(s) is the shared difficulty score whether
-        # or not it is the primary mode this run.
-        scale_predictor = next(
-            (p for p in (self.conformal, self.secondary_conformal) if isinstance(p, StateScaledConformal)), None
-        )
-        if scale_predictor is not None:
-            train_scores = scale_predictor.difficulty_score(training_states)
-            self._coverage_bin_edges = fit_coverage_bin_edges(train_scores, n_bins=5)
-        else:
-            self._coverage_bin_edges = None
         if artifact_dir is not None:
             np.save(Path(artifact_dir) / "partition_states.npy", training_states.numpy())
         self._set_train_mode(True)
@@ -662,8 +735,29 @@ class Experiment:
 
         all_states = torch.cat(all_states, dim=0)
         all_residuals = torch.cat(all_residuals, dim=0)
-        self.conformal.calibrate(all_states, all_residuals)
-        self.secondary_conformal.calibrate(all_states, all_residuals)
+        selected_indices = self._shared_calibration_indices(all_states.shape[0])
+        conditioning_indices, calibration_indices = self._split_calibration_indices(selected_indices)
+        conditioning_states = all_states[conditioning_indices]
+        conditioning_residuals = all_residuals[conditioning_indices]
+        calibration_states = all_states[calibration_indices]
+        calibration_residuals = all_residuals[calibration_indices]
+        self.conditioning_indices_ = conditioning_indices
+        self.calibration_indices_ = calibration_indices
+
+        scale_predictor = next(
+            (p for p in (self.conformal, self.secondary_conformal) if isinstance(p, StateScaledConformal)), None
+        )
+        if scale_predictor is None:
+            raise RuntimeError("CISSN calibration requires a state-scaled comparator.")
+        conditioning_start = time.time()
+        scale_predictor.fit_scale(conditioning_states, conditioning_residuals)
+        self._coverage_bin_edges = fit_coverage_bin_edges(
+            np.linalg.norm(conditioning_states.numpy(), axis=1), n_bins=5
+        )
+        self.conditioning_fit_seconds_ = time.time() - conditioning_start
+        quantile_calibration_start = time.time()
+        self.conformal.calibrate(calibration_states, calibration_residuals)
+        self.secondary_conformal.calibrate(calibration_states, calibration_residuals)
         # Flat CP, cluster SCCP, and state-scaled CP are all calibrated on the
         # SAME residuals from the SAME model, so every comparison isolates the
         # conditioning mechanism. Running any comparator as a separate
@@ -672,24 +766,43 @@ class Experiment:
             alpha=self.args.conformal_alpha,
             multivariate_strategy=self.args.multivariate_strategy,
         )
-        self.flat_conformal.fit(all_residuals)
+        self.flat_conformal.fit(calibration_residuals)
+        self.quantile_calibration_seconds_ = time.time() - quantile_calibration_start
         print("Calibration complete | primary, secondary, and flat conformal intervals ready")
 
         if artifact_dir is not None:
-            np.save(Path(artifact_dir) / "calibration_states.npy", all_states.numpy())
-            np.save(Path(artifact_dir) / "calibration_residuals.npy", all_residuals.numpy())
+            np.save(Path(artifact_dir) / "conditioning_states.npy", conditioning_states.numpy())
+            np.save(Path(artifact_dir) / "conditioning_residuals.npy", conditioning_residuals.numpy())
+            np.save(Path(artifact_dir) / "calibration_states.npy", calibration_states.numpy())
+            np.save(Path(artifact_dir) / "calibration_residuals.npy", calibration_residuals.numpy())
+            np.save(Path(artifact_dir) / "conditioning_indices.npy", conditioning_indices)
+            np.save(Path(artifact_dir) / "calibration_indices.npy", calibration_indices)
             self._save_conditioning_stats(Path(artifact_dir))
 
         # Record serial dependence for the primary conditioning mechanism when
         # it is cluster-based; diagnostics never alter interval widths.
         if hasattr(self.conformal, "diagnose_dependence"):
-            exchange_results = self.conformal.diagnose_dependence(all_states, all_residuals)
+            exchange_results = self.conformal.diagnose_dependence(
+                calibration_states, calibration_residuals, origin_indices=calibration_indices
+            )
             if artifact_dir is not None:
                 save_json(Path(artifact_dir) / "dependence_diagnostics.json", exchange_results)
             for k, value in exchange_results.items():
                 if value.get("warning"):
                     print(f"  calibration warning | cluster {k}: {value['warning']}")
         self._set_train_mode(True)
+
+    def _shared_calibration_indices(self, n_samples: int) -> np.ndarray:
+        if n_samples <= 0:
+            raise RuntimeError("Calibration loader produced no samples.")
+        return np.arange(0, n_samples, self.args.calibration_stride, dtype=np.int64)
+
+    @staticmethod
+    def _split_calibration_indices(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if indices.size < 4:
+            raise RuntimeError("Need at least four calibration origins for conditioning and quantile calibration.")
+        split = indices.size // 2
+        return indices[:split], indices[split:]
 
     def _predict_intervals(self, test_states: np.ndarray, preds: np.ndarray):
         """Dispatch to the calibrated conformal predictor's interval call.
@@ -705,17 +818,8 @@ class Experiment:
         return lower.numpy(), upper.numpy(), getattr(self.conformal, "last_predicted_clusters_", None)
 
     def _conditional_coverage_scores(self, test_states: np.ndarray):
-        """Method-agnostic difficulty score for test states, from the fitted
-        StateScaledConformal's sigma(s) -- see _fit_state_partition, which
-        fits self._coverage_bin_edges from the SAME score on train data."""
-        scale_predictor = next(
-            (p for p in (getattr(self, "conformal", None), getattr(self, "secondary_conformal", None))
-             if isinstance(p, StateScaledConformal)),
-            None,
-        )
-        if scale_predictor is None:
-            return None
-        return scale_predictor.difficulty_score(test_states)
+        """Label-free latent-state magnitude used by every interval method."""
+        return np.linalg.norm(np.asarray(test_states), axis=1)
 
     def _score_interval_comparator(self, lower_np, upper_np, trues, coverage_scope, test_states=None) -> dict:
         """Shared scoring for any calibrated comparator's already-built bounds."""
@@ -753,6 +857,9 @@ class Experiment:
         if flat is None or not flat.calibrated:
             return {}
         lower, upper = flat.predict(torch.from_numpy(preds).float())
+        self._flat_per_origin_interval_scores = per_origin_interval_scores(
+            lower.numpy(), upper.numpy(), trues, self.args.conformal_alpha
+        )
         return self._score_interval_comparator(
             lower.numpy(), upper.numpy(), trues, flat.coverage_scope, test_states=test_states
         )
@@ -770,6 +877,9 @@ class Experiment:
             return {}
         lower, upper = secondary.predict(
             torch.from_numpy(test_states).float(), torch.from_numpy(preds).float()
+        )
+        self._secondary_per_origin_interval_scores = per_origin_interval_scores(
+            lower.numpy(), upper.numpy(), trues, self.args.conformal_alpha
         )
         result = self._score_interval_comparator(
             lower.numpy(), upper.numpy(), trues, secondary.coverage_scope, test_states=test_states
@@ -789,24 +899,17 @@ class Experiment:
         test_states = []
 
         self._set_train_mode(False)
+        test_origin_stride = getattr(self.args, "test_origin_stride", 1)
+        test_origin_indices = np.arange(0, len(test_data), test_origin_stride, dtype=np.int64)
 
         with torch.no_grad():
-            if getattr(self.args, 'walk_forward', False):
+            if test_origin_stride > 1:
                 n_windows = len(test_data)
-                n_covered = (n_windows // self.args.pred_len) * self.args.pred_len
-                if n_covered < n_windows:
-                    warnings.warn(
-                        f"Walk-forward evaluation: {n_windows - n_covered} of {n_windows} "
-                        f"trailing test samples are dropped because {n_windows} is not "
-                        f"divisible by pred_len={self.args.pred_len}.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                print("Walk-forward evaluation")
+                print(f"Test-origin stride evaluation | stride={test_origin_stride}")
                 for i in track(
-                    range(0, n_covered, self.args.pred_len),
+                    test_origin_indices,
                     description="Testing",
-                    total=n_covered // self.args.pred_len,
+                    total=len(test_origin_indices),
                     enabled=not getattr(self.args, "no_progress", True),
                 ):
                     bx, by, bxm, bym = test_data[i]
@@ -850,6 +953,8 @@ class Experiment:
         coverage_by_cluster = {}
         flat_comparison = {}
         secondary_comparison = {}
+        self._flat_per_origin_interval_scores = None
+        self._secondary_per_origin_interval_scores = None
         conditional_coverage = None
         if hasattr(self, 'conformal') and self.conformal.calibrated:
             lower_np, upper_np, cluster_labels = self._predict_intervals(test_states, preds)
@@ -879,9 +984,12 @@ class Experiment:
             flat_comparison = self._compare_against_flat_conformal(preds, trues, test_states=test_states)
             secondary_comparison = self._compare_against_secondary_conformal(test_states, preds, trues)
             train_data, _ = self._get_data(flag='train')
-            seasonal_period = seasonal_period_for_freq(self.args.freq)
+            seasonal_period = get_dataset_spec(self.args.data)["seasonal_period"]
+            train_targets = train_data.data_y
+            if self.args.features == "MS":
+                train_targets = train_targets[:, -1:]
             msis = mean_scaled_interval_score(
-                lower_np, upper_np, trues, train_data.data_y, seasonal_period, alpha=self.args.conformal_alpha
+                lower_np, upper_np, trues, train_targets, seasonal_period, alpha=self.args.conformal_alpha
             )
             print(
                 f"Intervals | coverage@{(1.0 - self.args.conformal_alpha) * 100:.0f}%={coverage:.4f} | "
@@ -927,7 +1035,7 @@ class Experiment:
             lower=lower_np,
             upper=upper_np,
             y_train=train_data_for_ref.data_y,
-            seasonal_period=seasonal_period_for_freq(self.args.freq),
+            seasonal_period=get_dataset_spec(self.args.data)["seasonal_period"],
             horizon=self.args.pred_len,
         )
         for msg in sanity_report["failures"]:
@@ -986,6 +1094,13 @@ class Experiment:
         np.save(folder_path / 'upper.npy', upper_np)
         np.save(folder_path / 'states.npy', test_states)
         np.save(folder_path / 'residuals.npy', np.abs(preds - trues))
+        np.save(folder_path / "test_origin_indices.npy", test_origin_indices)
+        per_origin = per_origin_interval_scores(lower_np, upper_np, trues, self.args.conformal_alpha)
+        np.save(folder_path / "per_origin_interval_metrics.npy", per_origin)
+        flat_per_origin = getattr(self, "_flat_per_origin_interval_scores", None)
+        if flat_per_origin is None:
+            flat_per_origin = np.full((len(preds), 3), np.nan, dtype=np.float64)
+        np.save(folder_path / "per_origin_interval_flat_cp_metrics.npy", flat_per_origin)
         if cluster_labels is not None:
             np.save(folder_path / 'cluster_labels.npy', cluster_labels)
 
@@ -999,9 +1114,22 @@ class Experiment:
         runtime = dict(getattr(self, "train_runtime_", {}))
         runtime["test_seconds"] = time.time() - test_start
         runtime["test_samples"] = len(test_data)
+        runtime["test_origins_evaluated"] = int(preds.shape[0])
+        runtime["test_origin_stride"] = int(test_origin_stride)
         save_json(folder_path / "runtime.json", runtime)
         save_json(folder_path / "protocol.json", self.args.protocol)
         self._save_conditioning_stats(folder_path)
+        if getattr(self.args, "immutable_artifacts", False):
+            write_completion_manifest(
+                folder_path,
+                [
+                    "metrics.json", "sanity.json", "config.json", "environment.json", "protocol.json",
+                    "runtime.json", "history.json", "pred.npy", "true.npy", "lower.npy", "upper.npy",
+                    "states.npy", "residuals.npy", "test_origin_indices.npy", "per_origin_interval_metrics.npy",
+                    "per_origin_interval_flat_cp_metrics.npy",
+                ],
+                self.args.protocol,
+            )
 
         return sanity_report
 
@@ -1046,7 +1174,7 @@ class HybridExperiment(Experiment):
             dropout=self.args.dropout,
             state_revin=getattr(self.args, 'state_revin', False),
             state_dynamics=getattr(self.args, 'state_dynamics', 'legacy'),
-            seasonal_period=seasonal_period_for_freq(self.args.freq),
+            seasonal_period=get_dataset_spec(self.args.data)["seasonal_period"],
         )
 
     def _forward_and_slice(self, batch_x, batch_y, return_all_states=False):
@@ -1372,8 +1500,6 @@ def parse_args(argv: Optional[list[str]] = None):
     cli_options = provided_cli_options(cli_argv)
 
     parser = argparse.ArgumentParser(description='CISSN Benchmark Runner', parents=[pre_parser])
-    parser.set_defaults(**config_defaults)
-
     parser.add_argument('--data', type=str, default='ETTh1', choices=supported_datasets(), help='dataset name')
     parser.add_argument('--root_path', type=str, default='./data/ETT/', help='data root directory')
     parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data filename')
@@ -1422,6 +1548,13 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='disable terminal progress bars for CI or captured logs')
     parser.add_argument('--strict_artifacts', action='store_true',
                         help='exit nonzero when a run produces structurally invalid artifacts')
+    parser.add_argument('--strict_determinism', action='store_true',
+                        help='require deterministic PyTorch algorithms and record the setting')
+    parser.add_argument('--immutable_artifacts', action='store_true',
+                        help='write a content-addressed run and refuse existing artifacts')
+    parser.add_argument('--evidence_role', choices=['development', 'selection', 'confirmation'],
+                        default='development',
+                        help='evidence tier recorded in protocol; confirmation enforces sealed-run safeguards')
     # Retired alias: quality never excluded a run, so this now maps to the
     # structural check. Accepted silently for existing scripts.
     parser.add_argument('--strict_sanity', action='store_true', help=argparse.SUPPRESS)
@@ -1440,10 +1573,12 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     
     # New arguments for improvements
-    parser.add_argument('--walk_forward', action='store_true', help='Enable walk-forward rolling window evaluation')
+    parser.add_argument('--test_origin_stride', type=int, default=1,
+                        help='evaluate every kth fixed test origin; does not refit or update the model')
+    parser.add_argument('--walk_forward', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--conformal_alpha', type=float, default=0.1, help='conformal significance level')
     parser.add_argument('--n_clusters', type=int, default=5, help='requested SCCP clusters')
-    parser.add_argument('--multivariate_strategy', type=str, default='per_feature', help='Conformal strategy [per_feature, max]')
+    parser.add_argument('--multivariate_strategy', choices=['per_feature', 'max'], default='per_feature', help='Conformal strategy [per_feature, max]')
     parser.add_argument('--conformal_conditioning', type=str, default='cluster', choices=['cluster', 'scale'],
                         help="primary state conditioning mechanism: 'cluster' calibrates one quantile per "
                              "K-Means state cluster (StateConditionalConformal); 'scale' calibrates a single "
@@ -1462,28 +1597,41 @@ def parse_args(argv: Optional[list[str]] = None):
                         help='keep every kth chronological calibration origin for dependence-aware calibration')
     parser.add_argument('--cal_fraction', type=float, default=0.2,
                         help='fraction of the canonical train window carved out as the calibration split')
+    validate_config_defaults(parser, config_defaults)
     parser.set_defaults(**config_defaults)
     args = parser.parse_args(args=cli_argv)
     # --strict_sanity is a deprecated alias for --strict_artifacts.
     if vars(args).pop("strict_sanity", False):
         args.strict_artifacts = True
+    if args.walk_forward:
+        if "test_origin_stride" in cli_options:
+            raise ValueError("Use --test_origin_stride alone; --walk_forward is a deprecated alias.")
+        warnings.warn("--walk_forward is deprecated; using --test_origin_stride pred_len.", DeprecationWarning)
+        args.test_origin_stride = args.pred_len
     protected = set(config_defaults) | cli_options
     apply_dataset_defaults(args, protected)
     if args.features == 'MS' and 'c_out' not in protected:
         args.c_out = 1
-    if args.calibration_stride <= 0:
-        raise ValueError('--calibration_stride must be positive.')
+    validate_runtime_args(args)
+    if args.test_origin_stride <= 0:
+        raise ValueError("--test_origin_stride must be positive.")
 
     return args
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
+    enforce_evidence_contract(args)
     require_clean_source(args)
+    set_random_seed(args.seed, strict=args.strict_determinism)
     args.protocol = build_protocol_manifest(args)
-    set_random_seed(args.seed)
 
-    setting = build_setting_name(args)
+    setting = build_run_setting(args, build_setting_name(args))
+    final_results_dir = None
+    if args.immutable_artifacts:
+        require_new_run(Path(args.checkpoints) / setting, Path(args.results_dir) / setting)
+        final_results_dir = Path(args.results_dir)
+        args.results_dir = str(create_temporary_result_root(final_results_dir))
     print_run_header("CISSN benchmark", args, setting)
     
     exp = HybridExperiment(args) if args.architecture == 'hybrid' else Experiment(args)
@@ -1491,6 +1639,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     exp.train(setting)
     print("\n[2/2] Test evaluation")
     sanity_report = exp.test(setting)
+    if final_results_dir is not None:
+        finalized = finalize_result_directory(args.results_dir, final_results_dir, setting)
+        print(f"Finalized immutable artifacts at {finalized}")
 
     # Only structural invalidity is fatal. A poor-but-well-formed forecast is a
     # valid result and must still exit zero so it stays publication-visible.
