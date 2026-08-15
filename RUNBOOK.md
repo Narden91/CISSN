@@ -14,7 +14,7 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 - Primary interval geometry: `--multivariate_strategy per_feature`; report `coverage_primary` (marginal). `max` is a separate simultaneous-coverage analysis.
 - Publication safeguards: `--require_gpu --require_clean_git`.
 
-The state partition is learned only from train states, then calibration uses the later calibration split. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
+The cluster state partition (`StateConditionalConformal.fit_partition`) is learned only from train states, then calibration uses the later calibration split. The state-scaled sigma regression (`StateScaledConformal.fit_scale`) is fit on the first half of the calibration split instead, not on train states — see `docs/methodology.md` for the resulting asymmetry between the two conditioning mechanisms. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
 
 All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
@@ -58,15 +58,20 @@ flat CP regardless of the flag, so this step only decides which one drives the h
 **The original evidence for promoting `scale` was withdrawn and then partly replaced.**
 The first diagnostic calibrated flat CP on a window twice the size of state-scaled CP's,
 so it was not paired. The corrected diagnostic established two things
-(`docs/methodology.md`): a **scalar** sigma has essentially no headroom (a scalar oracle
-using test labels gains under 1%), and the conditioning signal is a state x cell
-interaction that only a **per-cell** sigma or the cluster predictor can express.
+(`docs/methodology.md`): a **scalar** sigma has essentially no headroom (a scalar
+label-informed per-sample reference using test labels gains under 1%), and the
+conditioning signal is a state x cell interaction that only a **per-cell** sigma or the
+cluster predictor can express.
 
-Development measurements on ETTh1-h336, three RevIN seeds x four cuts, all methods
-sharing the calibration window — mean Winkler delta vs flat CP: cluster `-0.124` (12/12),
-scalar sigma `+0.011` (5/12), per-cell sigma `-0.237` (12/12). Under the real protocol on
-seed 42 the ordering is cluster `3.5962` < per-cell `3.6916` < flat `3.7869` ~ scalar
-`3.7877`.
+Development measurements on ETTh1-h336, three RevIN seeds x four nested cuts (cut 0.3's
+window strictly contains cut 0.6's, so this is not 12 independent trials — effective n is
+closer to 3, and the seeds share one dataset/split, so a population-level claim has an
+effective n closer to 1) — mean Winkler delta vs flat CP: cluster `-0.124` (better on all
+3 seeds x 4 cuts), scalar sigma `+0.011` (better on 5 of 12), per-cell sigma `-0.237`
+(better on all 12). Under the real protocol on seed 42 the ordering is cluster `3.5962` <
+per-cell `3.6916` < flat `3.7869` ~ scalar `3.7877` — but this ordering is confounded by a
+~9x conditioning-fit sample-size asymmetry between cluster and state-scaled CP (see
+`docs/methodology.md`) and is not yet a fair comparison.
 
 ### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU)
 
@@ -135,8 +140,10 @@ one dataset/horizon. Record the outcome and per-seed numbers here either way.
 ## Step 5: hybrid variant selection (validation only)
 
 The legacy architecture routes the forecast through a five-dimensional latent bottleneck.
-With nonlinear refinement and RevIN side statistics, this does not impose a rank-5 bound
-on the full forecast matrix. The
+Without RevIN this caps forecast rank at 5. With RevIN's side statistics the cap loosens
+to roughly `5 + 2C`, and measured effective rank on RevIN runs is 7-8 (see
+`docs/methodology.md`, "Rank and the DLinear gap under RevIN") — a real but smaller
+deficit than the hard-5 case, not the absence of one. The
 hybrid keeps DLinear as the base and gives the state an additive correction:
 
 ```text

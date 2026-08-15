@@ -58,12 +58,15 @@ all three seeds settles it — with RevIN held fixed, both agree:
 
 | geometry | mean Winkler delta vs flat CP | better on |
 | --- | --- | --- |
-| cluster SCCP | −0.124 | 12/12 seed-cut cells |
-| state-scaled CP, scalar sigma | +0.011 | 5/12 |
-| state-scaled CP, per-cell sigma | −0.237 | 12/12 |
+| cluster SCCP | −0.124 | all 3 seeds x 4 cuts |
+| state-scaled CP, scalar sigma | +0.011 | 5 of 12 seed-cut cells |
+| state-scaled CP, per-cell sigma | −0.237 | all 3 seeds x 4 cuts |
 
 (ETTh1-h336, seeds `42,123,456` x cuts `0.3,0.4,0.5,0.6`, every method calibrated on the
-same `[cut/2:cut]` window.) The pre-RevIN run remains a genuine negative for all three
+same `[cut/2:cut]` window.) The cuts are nested — `[cut*n:]` means cut 0.3's window
+strictly contains cut 0.6's — so "3 seeds x 4 cuts" is not 12 independent trials; effective
+n is closer to 3, and since all three seeds share one dataset, split, and test-row set, a
+population-level claim has an effective n closer to 1 dataset-horizon cell. The pre-RevIN run remains a genuine negative for all three
 mechanisms — under amplitude collapse the residual structure that conditioning exploits
 is not present. State conditioning is therefore **regime-dependent**: it helps in the
 RevIN regime and does not help without it. Report it that way rather than as an
@@ -103,7 +106,7 @@ conditioning mechanism with calibration sample size.
 Re-run with every method calibrated on the same `[cut/2:cut]` window
 (`scripts/diagnose_conditioning_headroom.py`, same saved run, `n_clusters=5`):
 
-| cut | flat Winkler | cluster SCCP | state-scaled | oracle per-sample sigma |
+| cut | flat Winkler | cluster SCCP | state-scaled | label-informed per-sample reference |
 | --- | --- | --- | --- | --- |
 | 0.3 | 5.154 | 5.572 | 5.213 | 5.110 |
 | 0.4 | 5.031 | 5.155 | 5.071 | 4.993 |
@@ -118,9 +121,11 @@ only to the cluster mechanism.
 
 ### A scalar sigma is the wrong geometry: the signal is in the cell, not the sample
 
-The `oracle per-sample sigma` column above is an upper bound on any learned *scalar*
-`sigma(s)`: it sets sigma to the true per-sample test residual scale, using test labels,
-which no deployable method can do. It gains at most `0.85%` Winkler and loses at two of
+The `label-informed per-sample reference` column above is a diagnostic, not an oracle and
+not an upper bound: it sets sigma to the true per-sample test residual scale, using test
+labels, so it is not achievable by any deployable method — but it is also not the
+supremum of achievable performance, since a differently-shaped deployable method could in
+principle exceed it. It gains at most `0.85%` Winkler and loses at two of
 the four cuts. The reason is structural — decomposing test residual variance:
 
 | axis | share of residual variance (pre-RevIN / RevIN) |
@@ -136,7 +141,7 @@ correlates `r ~ 0.78` with the true per-sample scale. Inflating its dynamic rang
 Winkler *worse* at every cut, so the small spread is not an attenuation artefact.
 
 **This bounds the scalar geometry, not state conditioning.** On the RevIN runs cluster
-SCCP wins 12/12 despite the per-sample share falling to `0.73%`, which is only possible
+SCCP wins on all 3 seeds x 4 cuts despite the per-sample share falling to `0.73%`, which is only possible
 if its gain comes from somewhere other than the per-sample axis. It does: decomposing the
 fitted per-cluster quantile arrays, the per-cluster *level* varies by a coefficient of
 variation of only `0.029`, while the normalised per-cluster *shape* deviates by
@@ -147,8 +152,9 @@ structurally cannot represent that; a per-cell sigma can.
 `StateScaledConformal(scale_geometry='per_cell')` fits one log-linear regression per
 horizon-feature cell against the same design matrix (one shared Gram factorisation, so
 the cost over the scalar geometry is a single extra matrix multiply). Over three RevIN
-seeds x four cuts it is `-0.237` Winkler against flat CP, better on 12/12, at matched
-coverage — roughly double cluster SCCP's `-0.124`, and better than the scalar *oracle*.
+seeds x four cuts it is `-0.237` Winkler against flat CP, better on all 3 seeds x 4 cuts, at matched
+coverage — roughly double cluster SCCP's `-0.124`, and better than the scalar
+label-informed reference.
 
 Controls (RevIN, cut 0.5): the result is insensitive to ridge over `[1e-4, 1e2]`
 (3.489 → 3.426); coverage matches flat CP (0.82 both), so the Winkler win is not bought
@@ -159,10 +165,9 @@ regime-dependence as every other conditioning mechanism here.
 
 ### Protocol result and its remaining gap
 
-Under the real protocol — where sigma is fit on **train** states/residuals, not a
-held-out chronological window — the per-cell geometry improves on flat CP but recovers
-only part of the diagnostic's margin (ETTh1-h336, seed 42, RevIN, all three calibrated on
-the same residuals from the same model):
+Under the real protocol the per-cell geometry improves on flat CP but recovers only part
+of the diagnostic's margin (ETTh1-h336, seed 42, RevIN, all three calibrated on the same
+residuals from the same model):
 
 | mechanism | Winkler | coverage | width |
 | --- | --- | --- | --- |
@@ -171,24 +176,43 @@ the same residuals from the same model):
 | state-scaled, per-cell sigma | 3.6916 | 0.9163 | 2.6233 |
 | cluster SCCP | 3.5962 | 0.9058 | 2.5625 |
 
-The cause of the gap is measurable: the protocol fits sigma on in-sample train residuals,
-which the model was trained to shrink. The per-cell coefficient spread across cells is
-`0.076` when fit on train residuals against `0.137` when fit on out-of-sample residuals —
-the in-sample fit sees roughly half the true state-to-cell coupling. (That the spread
-across cells, `0.076`, dwarfs the mean coefficient magnitude, `0.007`, independently
-confirms the effect is cell-specific rather than a shared level term.)
+**Where sigma is actually fitted.** `run_benchmark.py:738-753` splits the calibration
+window in half (`_split_calibration_indices`, `:800-805`). `fit_scale` receives the
+**first half** (`conditioning_states`, `conditioning_residuals`, ~696 windows on
+ETTh1-h336); the conformal quantiles for every mechanism are computed on the **second
+half**. Sigma is therefore already fit out-of-sample with respect to the forecaster's
+training data — it is not fit on train residuals the forecaster was trained to shrink.
 
-This is a limitation of fitting the difficulty estimator on data the forecaster has
-already fit, not of the per-cell geometry. Closing it would mean giving sigma its own
-held-out fitting window — a change to the split contract, which is protocol work, not a
-tuning change, and is not undertaken here.
+The cause of the gap between this protocol result and the diagnostic is not yet
+established. The likeliest explanation is the fitting-set size: the protocol fits sigma
+on roughly 696 windows, against the larger fitting window the diagnostic script uses. This
+is an untested hypothesis — no run has yet varied the fitting-window size while holding
+everything else fixed — so no coefficient-spread number is quoted here; state one when a
+run measures it.
+
+### Asymmetry between the two conditioning mechanisms
+
+The cluster partition is fit on **train** states (`run_benchmark.py:711-714`, ~6481
+windows on ETTh1-h336), while sigma is fit on the **first calibration half** (`:753`,
+~696 windows). The two conditioning mechanisms therefore see fitting sets that differ in
+both size (~9x) and in-sample status: the cluster partition is fit on states the model was
+trained on, sigma on held-out states. This is the same class of error
+`TestConditioningComparisonFairness` (`tests/test_utils.py`) was written to prevent for
+the *quantile* window, but it is not currently locked for the *conditioning-fit* window.
+
+Any ordering between cluster SCCP and state-scaled CP — including the table above — is
+confounded by this difference until it is equalised, and the confound runs in the
+direction of the stronger claim: cluster SCCP is the mechanism with the larger, in-sample
+fitting set.
 
 ### What this means for the claim
 
-State conditioning helps in the RevIN regime and does not help without it. Cluster SCCP
-is currently the strongest mechanism under the real protocol; per-cell state-scaled CP is
-second and beats both flat CP and the scalar geometry it replaces. `scale_geometry` is
-off by default (`scalar`), so existing runs and artifacts are unchanged.
+State conditioning helps in the RevIN regime and does not help without it. Per-cell
+state-scaled CP beats flat CP and the scalar geometry it replaces. It does not currently
+beat cluster SCCP under a fair comparison, because no fair comparison between the two
+mechanisms has been run yet. Do not call either mechanism the paper's established primary
+contribution on ETTh1 alone. `scale_geometry` is off by default (`scalar`), so existing
+runs and artifacts are unchanged.
 
 None of this is yet a protocol result across datasets: everything above is ETTh1-h336.
 Before any of it is published it needs the locked multi-dataset grid. Do not retune
@@ -196,11 +220,15 @@ Before any of it is published it needs the locked multi-dataset grid. Do not ret
 
 ## Why CISSN trails DLinear on point accuracy
 
-The gap is a rank constraint, not a tuning failure, and it is intrinsic to the architecture.
+**The hard rank-5 claim below applies only to the non-RevIN regime.** All headline
+results use `--revin`, so read this section together with "Rank and the DLinear gap" —
+the rank bound that actually applies to reported runs is `5 + 2C`, not 5, and the
+*measured* effective rank of RevIN test forecasts is 7-8 (SVD of saved `pred.npy`, three
+seeds, 99% energy threshold) — far below the `5 + 2*7 = 19` bound but well above 5.
 
-On ETTh1-h336 the target block spans `336 x 7 = 2352` cells. Measured on the test split, DLinear's own forecasts need **rank 96** to reach 99% of their energy and already hold 86.8% by rank 5. CISSN maps every window through a five-dimensional state, so its forecast can never exceed **rank 5** regardless of head capacity.
+On ETTh1-h336 the target block spans `336 x 7 = 2352` cells. Measured on the test split, DLinear's own forecasts need **rank 96** to reach 99% of their energy and already hold 86.8% by rank 5. Without RevIN, CISSN maps every window through a five-dimensional state with no additional sample-varying factor, so its forecast cannot exceed rank 5 regardless of head capacity.
 
-Three interventions were tested and none closed the gap, which is what a hard rank constraint predicts:
+Three interventions were tested on a non-RevIN run and none closed the gap, which is what a hard rank constraint predicts in that regime:
 
 | variant | test MSE |
 | --- | --- |
@@ -210,9 +238,46 @@ Three interventions were tested and none closed the gap, which is what a hard ra
 | \+ `--no_refinement` (linear head only) | 0.818 |
 | DLinear reference | 0.619 |
 
-Removing the refinement MLP makes accuracy *worse*, so the MLP is compensating for the bottleneck rather than merely memorising. Note that an oracle rank-5 linear projection of the target reaches MSE `0.422`; CISSN does not approach that because it must *learn* its basis through a recurrent encoder rather than being handed the optimal one.
+Removing the refinement MLP makes accuracy *worse*, so the MLP is compensating for something rather than merely memorising. Note that a label-fit rank-5 linear projection of the target reaches MSE `0.422`; CISSN does not approach that because it must *learn* its basis through a recurrent encoder rather than being handed the optimal one.
+
+For the RevIN runs that all headline results use, the rank-5 explanation for the gap does
+not apply as stated (see below): the recorded signature there is overfitting (train loss
+`1.17 → 0.55`, validation flat near `1.73` from epoch 1), which co-exists with — and, given
+the measured 7-8 effective rank against DLinear's 688, is at least as parsimonious an
+explanation as — a rank deficit that is real but far from the 19-dimensional ceiling the
+architecture technically permits.
 
 The consequence for reporting: CISSN's five-state constraint should be presented as an interpretability/calibration design choice with a measured accuracy cost, not as a competitive point forecaster. The hybrid architecture exists precisely to keep full-rank accuracy in the base while the state supplies a structured correction.
+
+### Rank and the DLinear gap under RevIN
+
+`CLAUDE.md` and the section above assert a hard rank-5 cap; `RUNBOOK.md` Step 5 asserts
+the opposite for the regime all headline runs actually use. The code settles it. Under
+`--revin` the forecast is `head(state) * std_window + mean_window`
+(`revin.py:100`, `run_benchmark.py:371-376`). `head(state)` is rank <= 5 across samples,
+but the per-window `std` and `mean` are two additional sample-varying factors per channel,
+so the effective rank is bounded near `5 + 2C` (`= 19` for `C=7`), not 5. The rank-5
+explanation for the DLinear gap does not apply, as stated, to the RevIN runs being
+reported.
+
+This was checked directly rather than argued from the algebra: an SVD of the saved test
+forecast matrix (`pred.npy`, reshaped to `(n_samples, horizon*features)`) from three
+RevIN runs on ETTh1-h336 gives the rank needed to reach 99% of forecast energy:
+
+| seed | rank@99% (CISSN pred) | rank@99% (true target) | variance ratio |
+| --- | --- | --- | --- |
+| 42 | 8 | 688 | 0.592 |
+| 123 | 8 | 688 | 0.582 |
+| 456 | 7 | 688 | 0.531 |
+
+So the realised rank is 7-8, not 5 — the hard-5 claim is refuted directly — but it is
+also far below the 19-dimensional ceiling the `5 + 2C` bound permits: RevIN's side
+statistics add only ~2-3 effective directions in practice, not 14. The rank deficit
+against DLinear (7-8 vs 688) remains real and large; it is not eliminated by RevIN, only
+loosened from a hard 5 to a measured 7-8. Treat this as a co-existing explanation
+alongside the overfitting signature above, not a replacement for it — the two are
+independent failure modes (see "Forecast collapse under MSE") and nothing here
+establishes which one, if either, is binding.
 
 ### Open: capacity against sample count
 
@@ -253,3 +318,37 @@ The current mitigation is procedural, not structural: `RUNBOOK.md` Step 5 requir
 `max` produces genuine simultaneous coverage but reaches only `0.49` against a nominal `0.90`, at roughly `3.2x` the interval width. The shortfall is not a finite-sample artefact — the calibration split holds 1393 origins and the exact-rank index `k = 1255` is attainable. It reflects test-time dependence across cells: under independence, per-cell coverage of `0.9953` would give a joint rate near `1.5e-05`, so the observed `0.49` indicates strong positive dependence, and residual distribution shift between calibration and test then costs the remainder.
 
 Do not report `max` as a validated simultaneous-coverage guarantee. Either report it as an honest negative result with the numbers above, or restrict simultaneous claims to a smaller, prespecified cell block where the target is attainable.
+
+## Known disclosures
+
+Properties a reviewer will find; none of these are defects, but the paper should state
+them rather than leave them implicit.
+
+- Roughly `seq_len` calibration windows (96 of ~1393 on ETTh1-h336) draw their *input
+  context* from rows the model trained on (`dataset.py:189`). Standard LTSF convention,
+  and targets are strictly disjoint, but it perturbs exchangeability for ~7% of the
+  calibration scores.
+- Stride-1 windows mean each target row appears in up to `pred_len` calibration windows,
+  so the effective sample size behind each conformal quantile is far below the nominal
+  count. `dependence_diagnostics.json` records this; cite it here.
+- Val/test *row ranges* are byte-identical to the published benchmark, but the
+  *standardised values* are not: the scaler is fit on `[0, train_end)` rather than
+  `[0, n_train)` (`dataset.py:116`), because calibration is carved out first. The
+  `dataset.py` docstring's "byte-identical" claim is true of indices, not values.
+- MSIS is computed in StandardScaler space (`run_benchmark.py:988-993`), so it is not
+  directly comparable to published raw-unit M4-convention MSIS.
+- Flat CP in `run_benchmark.py` is deliberately fit on only the second calibration half to
+  match the conditional methods' quantile-fitting `n`. That is the right choice for
+  pairing, but it is not the strongest possible flat baseline, and it is a different
+  estimator from the flat CP reported in the baseline table (`run_baseline.py`, calibrated
+  on the full calibration split) and from the flat CP inside
+  `diagnose_conditioning_headroom.py` (calibrated on a cut window). These three are not
+  cross-referenceable; they should carry distinguishable labels in artifacts.
+- The hybrid uses the validation split for early stopping in *both* stages
+  (`run_benchmark.py:1321,1341`), so hybrid validation loss is optimistically biased as a
+  generalisation estimate. Test is untouched.
+- Test-split cluster occupancy on ETTh1-h336 is `[94, 482, 1958, 0, 11]`: two of five
+  clusters are at or below the sparse-cluster fallback threshold and use the pooled global
+  quantile instead of a cluster-conditional one (`state_conditional.py:273-276`, recorded
+  in `cluster_fallbacks_`). Cluster-conditional coverage must not be claimed for fallback
+  clusters.
