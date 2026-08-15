@@ -30,7 +30,16 @@ class DisentanglementLoss(nn.Module):
 
     def covariance_loss(self, states: torch.Tensor) -> torch.Tensor:
         """
-        Penalize off-diagonal covariance (encourage independence).
+        Penalize off-diagonal correlation (encourage independence).
+
+        Normalises covariance by per-dimension standard deviation before
+        penalising off-diagonals, matching get_metrics()'s reporting metric
+        (mean_abs_off_diag_corr). The unnormalised covariance is quadratic in
+        state magnitude, so it is minimised by shrinking all state
+        coordinates toward zero regardless of whether they are decorrelated
+        -- a pressure toward state collapse that fights the encoder's own
+        conditioning signal. Correlation is scale-invariant and only
+        penalises actual entanglement between coordinates.
 
         Args:
             states: (batch, seq_len, state_dim)
@@ -45,8 +54,10 @@ class DisentanglementLoss(nn.Module):
             return torch.tensor(0.0, device=states.device)
 
         cov = torch.mm(centered.t(), centered) / (n - 1)
+        std = torch.sqrt(torch.diagonal(cov).clamp_min(1e-12))
+        corr = cov / (std[:, None] * std[None, :])
         off_diag_mask = self.off_diag_mask
-        return torch.norm(cov * off_diag_mask, p="fro") ** 2
+        return torch.norm(corr * off_diag_mask, p="fro") ** 2
 
     def temporal_consistency_loss(self, states: torch.Tensor, dynamics: tuple = None) -> torch.Tensor:
         """

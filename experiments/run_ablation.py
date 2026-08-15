@@ -14,6 +14,7 @@ Usage:
     python experiments/run_ablation.py --data ETTh1 --all_horizons --seeds 42,123,456
 """
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ import torch
 import torch.nn as nn
 
 from cissn.baselines import FlatConformal
+from cissn.data.registry import get_dataset_spec
 from cissn.models.encoder import DisentangledStateEncoder
 from cissn.models.forecast_head import ForecastHead
 
@@ -97,7 +99,7 @@ class DisentangledStateEncoderCustom(nn.Module):
     """Flexible encoder supporting state_dim=4 and toggling structured A / correction MLP."""
 
     def __init__(self, input_dim, state_dim=4, hidden_dim=64, dropout=0.0,
-                 structured_A=True, correction_mlp=True):
+                 structured_A=True, correction_mlp=True, seasonal_period=None):
         super().__init__()
         self.input_dim = input_dim
         self.state_dim = state_dim
@@ -125,7 +127,12 @@ class DisentangledStateEncoderCustom(nn.Module):
             self.A_trend = nn.Parameter(torch.zeros(1))
             self.A_gamma = nn.Parameter(torch.zeros(1))
             self.A_resid = nn.Parameter(torch.zeros(1))
-            self.omega = nn.Parameter(torch.zeros(1))
+            # Same init as DisentangledStateEncoder / _dynamics.py: start the
+            # seasonal rotation at the dataset's actual frequency instead of
+            # 0, so this arm is comparable to the base model on the seasonal
+            # block's init rather than silently using a different one.
+            omega_init = 2.0 * math.pi / seasonal_period if seasonal_period is not None else 0.0
+            self.omega = nn.Parameter(torch.full((1,), float(omega_init)))
         else:
             self.A_dense = nn.Parameter(torch.eye(state_dim) * 0.9)
 
@@ -193,15 +200,18 @@ class AblationExperiment(Experiment):
 
     def _build_model(self):
         c = self.config
+        seasonal_period = get_dataset_spec(self.args.data)["seasonal_period"]
         if c["state_dim"] == 5 and c["structured_A"] and c["correction_mlp"]:
             return DisentangledStateEncoder(
                 input_dim=self.args.enc_in, state_dim=5,
                 hidden_dim=self.args.d_model, dropout=self.args.dropout,
+                seasonal_period=seasonal_period,
             )
         return DisentangledStateEncoderCustom(
             input_dim=self.args.enc_in, state_dim=c["state_dim"],
             hidden_dim=self.args.d_model, dropout=self.args.dropout,
             structured_A=c["structured_A"], correction_mlp=c["correction_mlp"],
+            seasonal_period=seasonal_period,
         )
 
     def _build_head(self):
@@ -220,15 +230,19 @@ class AblationExperiment(Experiment):
             return None
         return super()._select_disentangle_criterion()
 
-    def _uses_state_partition(self):
-        return self.config["sccp"]
-
     def _calibrate_conformal(self, cal_loader, artifact_dir=None):
         if self.config["sccp"]:
             return super()._calibrate_conformal(cal_loader, artifact_dir)
 
         # flat_cp arm: same residual collection as the base class, but a
         # single global quantile (FlatConformal) instead of state clustering.
+        # Calibrated on the SAME second-half window as the SCCP arms
+        # (_shared_calibration_indices / _split_calibration_indices), not the
+        # full calibration split -- otherwise this arm would be calibrated on
+        # roughly twice the residuals of the arm it is compared against,
+        # which is the exact "method calibrated on more data than its
+        # comparator" error TestConditioningComparisonFairness exists to
+        # prevent.
         self.conformal = FlatConformal(
             alpha=self.args.conformal_alpha,
             multivariate_strategy=self.args.multivariate_strategy,
@@ -241,8 +255,10 @@ class AblationExperiment(Experiment):
                 _, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
                 all_residuals.append((outputs - batch_y).abs().detach().cpu())
         all_residuals = torch.cat(all_residuals, dim=0)
-        self.conformal.fit(all_residuals)
-        print("Flat conformal predictor calibrated on held-out calibration split.")
+        selected_indices = self._shared_calibration_indices(all_residuals.shape[0])
+        _, calibration_indices = self._split_calibration_indices(selected_indices)
+        self.conformal.fit(all_residuals[calibration_indices])
+        print("Flat conformal predictor calibrated on held-out calibration split (second half, matching SCCP arms).")
         if artifact_dir is not None:
             Path(artifact_dir).mkdir(parents=True, exist_ok=True)
             (Path(artifact_dir) / "cluster_stats.json").write_text(

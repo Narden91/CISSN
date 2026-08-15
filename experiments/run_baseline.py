@@ -60,8 +60,10 @@ from cissn.baselines import (
     slice_forecast,
     train_baseline_epoch,
 )
+from cissn.baselines.training import denormalize_forecast
 from cissn.data.data_loader import get_data_loader
 from cissn.data.registry import get_dataset_spec, supported_datasets
+from cissn.models.revin import RevIN
 from cissn.evaluation.metrics import (
     compute_joint_picp,
     compute_mpiw,
@@ -92,6 +94,11 @@ SUPPORTED_MODELS = (
 )
 POINT_MODELS = {"dlinear", "patchtst", "deepstate"}
 BACKBONE_MODELS = {"mc_dropout", "deep_ensemble"}
+# DeepState is excluded: it outputs (mean, scale), and RevIN's denormalisation
+# is additive-and-multiplicative (x*std + mean), which is correct for a mean
+# but would corrupt a scale. Supporting it needs a multiplicative-only
+# denorm path RevIN does not currently have.
+REVIN_SUPPORTED_MODELS = {"dlinear", "patchtst", "mc_dropout", "deep_ensemble"}
 MODEL_DISPLAY_NAMES = {
     "patchtst": "patch_transformer_lite",
     "deepstate": "structured_gru_nll",
@@ -128,6 +135,8 @@ def build_setting_name(args) -> str:
     if args.model == "deep_ensemble":
         tokens.append(f"ens{args.ensemble_size}")
         tokens.append(f"sd{args.state_dim}")
+    if getattr(args, "revin", False):
+        tokens.append("fullrevin")
     return "_".join(tokens)
 
 
@@ -282,6 +291,28 @@ def save_result_artifacts(
     return folder_path
 
 
+def revin_checkpoint_path(path: Path) -> Path:
+    return path / "checkpoint_revin.pth"
+
+
+def save_revin_checkpoint(revin: Optional[RevIN], path: Path) -> None:
+    """Persist RevIN's affine parameters alongside the best model checkpoint.
+
+    EarlyStopping only knows about the model (and head, for the backbone
+    path), so without this the learned affine scale/shift would be silently
+    lost when the best checkpoint is restored -- mirrors
+    Experiment._save_revin in run_benchmark.py.
+    """
+    if revin is not None:
+        torch.save(revin.state_dict(), revin_checkpoint_path(path))
+
+
+def load_revin_checkpoint(revin: Optional[RevIN], path: Path, device: torch.device) -> None:
+    checkpoint_path = revin_checkpoint_path(path)
+    if revin is not None and checkpoint_path.exists():
+        revin.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+
+
 def load_single_checkpoint(path: Path, model: nn.Module, device: torch.device) -> None:
     model.load_state_dict(torch.load(path / "checkpoint.pth", map_location=device, weights_only=True))
 
@@ -298,8 +329,11 @@ def validate_single_model(
     device: torch.device,
     args,
     probabilistic: bool = False,
+    revin: Optional[RevIN] = None,
 ) -> float:
     model.eval()
+    if revin is not None:
+        revin.eval()
     total_loss = 0.0
     total_weight = 0
     with torch.no_grad():
@@ -308,13 +342,18 @@ def validate_single_model(
         ):
             batch_x = batch_x.float().to(device, non_blocking=True)
             batch_y = batch_y.float().to(device, non_blocking=True)
+            model_input = revin(batch_x, "norm") if revin is not None else batch_x
             if probabilistic:
-                mean, log_sigma = model.predict_distribution(batch_x)
+                mean, log_sigma = model.predict_distribution(model_input)
                 outputs, targets = slice_forecast(mean, batch_y, args.pred_len, args.features)
                 log_sigma, _ = slice_forecast(log_sigma, batch_y, args.pred_len, args.features)
+                if revin is not None:
+                    outputs = denormalize_forecast(outputs, revin, args.features)
                 loss = model.gaussian_nll(outputs, targets, log_sigma)
             else:
-                outputs, targets = slice_forecast(model(batch_x), batch_y, args.pred_len, args.features)
+                outputs, targets = slice_forecast(model(model_input), batch_y, args.pred_len, args.features)
+                if revin is not None:
+                    outputs = denormalize_forecast(outputs, revin, args.features)
                 loss = criterion(outputs, targets)
             batch_weight = outputs.numel()
             total_loss += loss.item() * batch_weight
@@ -322,6 +361,8 @@ def validate_single_model(
     if total_weight == 0:
         raise RuntimeError("Validation loader produced no prediction elements.")
     model.train()
+    if revin is not None:
+        revin.train()
     return total_loss / total_weight
 
 
@@ -387,6 +428,13 @@ def build_single_model(args) -> nn.Module:
 def run_point_baseline(args, setting: str):
     device = select_device(require_gpu=getattr(args, "require_gpu", False))
     model = build_single_model(args).to(device)
+    # RevIN owns learnable affine parameters, so it must exist before the
+    # optimizer collects parameters and be moved to the device with the
+    # model -- mirrors Experiment.__init__ in run_benchmark.py.
+    revin = (
+        RevIN(num_features=args.enc_in).to(device)
+        if getattr(args, "revin", False) else None
+    )
     train_data, train_loader = get_data_loader(args, "train")
     vali_data, vali_loader = get_data_loader(args, "val")
     cal_data, cal_loader = get_data_loader(args, "cal")
@@ -395,7 +443,8 @@ def run_point_baseline(args, setting: str):
     checkpoint_dir = Path(args.checkpoints) / setting
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    parameters = list(model.parameters()) + (list(revin.parameters()) if revin is not None else [])
+    optimizer = optim.Adam(parameters, lr=args.learning_rate)
     early_stopping = EarlyStopping(patience=args.patience, verbose=True)
     train_start = time.time()
     history = []
@@ -414,15 +463,19 @@ def run_point_baseline(args, setting: str):
             show_progress=not args.no_progress,
             progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
             probabilistic=args.model == "deepstate",
+            revin=revin,
         )
         vali_loss = validate_single_model(
-            model, vali_loader, criterion, device, args, probabilistic=args.model == "deepstate"
+            model, vali_loader, criterion, device, args, probabilistic=args.model == "deepstate",
+            revin=revin,
         )
         history.append({
             "epoch": epoch + 1, "train_loss": train_loss, "vali_loss": vali_loss,
             "lr": optimizer.param_groups[0]["lr"],
         })
         improved = early_stopping(vali_loss, model, path=str(checkpoint_dir))
+        if improved:
+            save_revin_checkpoint(revin, checkpoint_dir)
         print_epoch_summary(
             epoch=epoch + 1, total_epochs=args.train_epochs, train_loss=train_loss,
             validation_loss=vali_loss, learning_rate=optimizer.param_groups[0]["lr"],
@@ -435,6 +488,7 @@ def run_point_baseline(args, setting: str):
 
     save_history(checkpoint_dir, history)
     load_single_checkpoint(checkpoint_dir, model, device)
+    load_revin_checkpoint(revin, checkpoint_dir, device)
     test_start = time.time()
     lower = None
     upper = None
@@ -455,11 +509,11 @@ def run_point_baseline(args, setting: str):
             lower, upper = lower_t.numpy(), upper_t.numpy()
             interval_origin = "conformalized_uq"
     else:
-        eval_result = evaluate_baseline(model, test_loader, device, args.pred_len, args.features)
+        eval_result = evaluate_baseline(model, test_loader, device, args.pred_len, args.features, revin=revin)
         preds = eval_result.predictions
         trues = eval_result.targets
 
-        cal_result = evaluate_baseline(model, cal_loader, device, args.pred_len, args.features)
+        cal_result = evaluate_baseline(model, cal_loader, device, args.pred_len, args.features, revin=revin)
         cal_residuals = np.abs(cal_result.predictions - cal_result.targets)
         flat_cp = FlatConformal(
             alpha=args.conformal_alpha, multivariate_strategy=args.multivariate_strategy
@@ -467,7 +521,12 @@ def run_point_baseline(args, setting: str):
         flat_cp.fit(cal_residuals)
         lower_t, upper_t = flat_cp.predict(torch.from_numpy(preds).float())
         lower, upper = lower_t.numpy(), upper_t.numpy()
-        interval_origin = "conformalized"
+        # Calibrated on the FULL calibration split, unlike run_benchmark.py's
+        # internal flat CP comparator (second half only, to match the
+        # conditional methods' quantile n) -- these are different estimators
+        # and must not be cross-referenced against each other. See
+        # docs/methodology.md, "Known disclosures".
+        interval_origin = "conformalized_full_cal"
 
     point_metrics, interval_metrics = compute_metrics(
         args, preds, trues, lower=lower, upper=upper, y_train=train_data.data_y,
@@ -500,6 +559,7 @@ def build_backbone(args):
         state_dim=args.state_dim,
         hidden_dim=args.d_model,
         dropout=args.dropout,
+        seasonal_period=get_dataset_spec(args.data)["seasonal_period"],
     )
     head = ForecastHead(
         state_dim=args.state_dim,
@@ -511,26 +571,38 @@ def build_backbone(args):
     return encoder, head
 
 
-def forward_backbone(encoder: nn.Module, head: nn.Module, batch_x, batch_y, device: torch.device, args, return_all_states: bool = False):
+def forward_backbone(
+    encoder: nn.Module, head: nn.Module, batch_x, batch_y, device: torch.device, args,
+    return_all_states: bool = False, revin: Optional[RevIN] = None,
+):
     batch_x = batch_x.float().to(device, non_blocking=True)
     batch_y = batch_y.float().to(device, non_blocking=True)
+    model_input = revin(batch_x, "norm") if revin is not None else batch_x
     if return_all_states:
-        all_states = encoder(batch_x, return_all_states=True)
+        all_states = encoder(model_input, return_all_states=True)
         final_state = all_states[:, -1, :]
     else:
         all_states = None
-        final_state = encoder(batch_x)
+        final_state = encoder(model_input)
     outputs = head(final_state)
     outputs, targets = slice_forecast(outputs, batch_y, args.pred_len, args.features)
+    if revin is not None:
+        outputs = denormalize_forecast(outputs, revin, args.features)
     if return_all_states:
         return all_states, final_state, outputs, targets
     return final_state, outputs, targets
 
 
-def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer, criterion: nn.Module, disentangle_criterion: DisentanglementLoss, device: torch.device, args, progress_description: str) -> float:
+def train_backbone_epoch(
+    encoder: nn.Module, head: nn.Module, loader, optimizer, criterion: nn.Module,
+    disentangle_criterion: DisentanglementLoss, device: torch.device, args, progress_description: str,
+    revin: Optional[RevIN] = None,
+) -> float:
     encoder.train()
     head.train()
-    parameters = [*encoder.parameters(), *head.parameters()]
+    if revin is not None:
+        revin.train()
+    parameters = [*encoder.parameters(), *head.parameters()] + (list(revin.parameters()) if revin is not None else [])
     total_loss = torch.zeros((), device=device)
     total_weight = 0
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
@@ -538,7 +610,7 @@ def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer,
     ):
         optimizer.zero_grad(set_to_none=True)
         states, _final_state, outputs, targets = forward_backbone(
-            encoder, head, batch_x, batch_y, device, args, return_all_states=True
+            encoder, head, batch_x, batch_y, device, args, return_all_states=True, revin=revin,
         )
         loss = criterion(outputs, targets) + disentangle_criterion(states)
         if args.lambda_correction_scale > 0 and hasattr(encoder, "_correction_scale"):
@@ -558,16 +630,21 @@ def train_backbone_epoch(encoder: nn.Module, head: nn.Module, loader, optimizer,
     return float((total_loss / total_weight).item())
 
 
-def validate_backbone(encoder: nn.Module, head: nn.Module, loader, criterion: nn.Module, device: torch.device, args) -> float:
+def validate_backbone(
+    encoder: nn.Module, head: nn.Module, loader, criterion: nn.Module, device: torch.device, args,
+    revin: Optional[RevIN] = None,
+) -> float:
     encoder.eval()
     head.eval()
+    if revin is not None:
+        revin.eval()
     total_loss = 0.0
     total_weight = 0
     with torch.no_grad():
         for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
             loader, description="Validation", total=len(loader), enabled=not getattr(args, "no_progress", True)
         ):
-            _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args)
+            _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args, revin=revin)
             batch_weight = outputs.numel()
             total_loss += criterion(outputs, targets).item() * batch_weight
             total_weight += batch_weight
@@ -575,24 +652,28 @@ def validate_backbone(encoder: nn.Module, head: nn.Module, loader, criterion: nn
         raise RuntimeError("Validation loader produced no prediction elements.")
     encoder.train()
     head.train()
+    if revin is not None:
+        revin.train()
     return total_loss / total_weight
 
 
-def evaluate_backbone_point(encoder: nn.Module, head: nn.Module, loader, device: torch.device, args):
+def evaluate_backbone_point(encoder: nn.Module, head: nn.Module, loader, device: torch.device, args, revin: Optional[RevIN] = None):
     encoder.eval()
     head.eval()
+    if revin is not None:
+        revin.eval()
     preds, trues = [], []
     with torch.no_grad():
         for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
             loader, description="Testing", total=len(loader), enabled=not getattr(args, "no_progress", True)
         ):
-            _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args)
+            _final_state, outputs, targets = forward_backbone(encoder, head, batch_x, batch_y, device, args, revin=revin)
             preds.append(outputs.detach().cpu().numpy())
             trues.append(targets.detach().cpu().numpy())
     return concatenate_batches(preds, "prediction"), concatenate_batches(trues, "target")
 
 
-def evaluate_mc_dropout(encoder: nn.Module, head: nn.Module, loader, device: torch.device, args):
+def evaluate_mc_dropout(encoder: nn.Module, head: nn.Module, loader, device: torch.device, args, revin: Optional[RevIN] = None):
     wrapper = MCDropout(n_samples=args.mc_samples, alpha=args.conformal_alpha)
     preds, trues, lowers, uppers = [], [], [], []
     for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
@@ -600,10 +681,19 @@ def evaluate_mc_dropout(encoder: nn.Module, head: nn.Module, loader, device: tor
     ):
         batch_x = batch_x.float().to(device, non_blocking=True)
         batch_y = batch_y.float().to(device, non_blocking=True)
-        mean, lower, upper = wrapper.predict(encoder, head, batch_x)
+        model_input = revin(batch_x, "norm") if revin is not None else batch_x
+        mean, lower, upper = wrapper.predict(encoder, head, model_input)
         mean, targets = slice_forecast(mean, batch_y, args.pred_len, args.features)
         lower, _ = slice_forecast(lower, batch_y, args.pred_len, args.features)
         upper, _ = slice_forecast(upper, batch_y, args.pred_len, args.features)
+        if revin is not None:
+            # MC-Dropout's own interval endpoints are forecasts in the same
+            # units as the mean, so they denormalise the same way -- unlike
+            # DeepState's (mean, scale), where scale is not a location and
+            # would need a multiplicative-only denorm RevIN does not have.
+            mean = denormalize_forecast(mean, revin, args.features)
+            lower = denormalize_forecast(lower, revin, args.features)
+            upper = denormalize_forecast(upper, revin, args.features)
         preds.append(mean.detach().cpu().numpy())
         trues.append(targets.detach().cpu().numpy())
         lowers.append(lower.detach().cpu().numpy())
@@ -644,6 +734,10 @@ def train_backbone_member(args, setting: str, member_seed: int):
     encoder, head = build_backbone(args)
     encoder = encoder.to(device)
     head = head.to(device)
+    revin = (
+        RevIN(num_features=args.enc_in).to(device)
+        if getattr(args, "revin", False) else None
+    )
 
     train_data, train_loader = get_data_loader(args, "train")
     vali_data, vali_loader = get_data_loader(args, "val")
@@ -654,7 +748,8 @@ def train_backbone_member(args, setting: str, member_seed: int):
         lambda_cov=args.lambda_cov,
         lambda_temporal=args.lambda_temp,
     ).to(device)
-    optimizer = optim.Adam(list(encoder.parameters()) + list(head.parameters()), lr=args.learning_rate)
+    parameters = list(encoder.parameters()) + list(head.parameters()) + (list(revin.parameters()) if revin is not None else [])
+    optimizer = optim.Adam(parameters, lr=args.learning_rate)
     early_stopping = EarlyStopping(patience=args.patience, verbose=True)
     train_start = time.time()
     history = []
@@ -671,13 +766,16 @@ def train_backbone_member(args, setting: str, member_seed: int):
             device=device,
             args=args,
             progress_description=f"Epoch {epoch + 1}/{args.train_epochs}",
+            revin=revin,
         )
-        vali_loss = validate_backbone(encoder, head, vali_loader, criterion, device, args)
+        vali_loss = validate_backbone(encoder, head, vali_loader, criterion, device, args, revin=revin)
         history.append({
             "epoch": epoch + 1, "train_loss": train_loss, "vali_loss": vali_loss,
             "lr": optimizer.param_groups[0]["lr"],
         })
         improved = early_stopping(vali_loss, encoder, head, path=str(checkpoint_dir))
+        if improved:
+            save_revin_checkpoint(revin, checkpoint_dir)
         print_epoch_summary(
             epoch=epoch + 1, total_epochs=args.train_epochs, train_loss=train_loss,
             validation_loss=vali_loss, learning_rate=optimizer.param_groups[0]["lr"],
@@ -690,6 +788,7 @@ def train_backbone_member(args, setting: str, member_seed: int):
 
     save_history(checkpoint_dir, history)
     load_backbone_checkpoint(checkpoint_dir, encoder, head, device)
+    load_revin_checkpoint(revin, checkpoint_dir, device)
     runtime = {
         "train_seconds": time.time() - train_start,
         "train_samples": len(train_data),
@@ -700,7 +799,7 @@ def train_backbone_member(args, setting: str, member_seed: int):
         "early_stopped": early_stopping.early_stop,
         "best_val_loss": early_stopping.val_loss_min,
     }
-    return encoder, head, device, runtime
+    return encoder, head, device, revin, runtime
 
 
 def load_history(checkpoint_dir: Path) -> Optional[list[dict]]:
@@ -711,16 +810,16 @@ def load_history(checkpoint_dir: Path) -> Optional[list[dict]]:
 
 
 def run_mc_dropout(args, setting: str):
-    encoder, head, device, runtime = train_backbone_member(args, setting, args.seed)
+    encoder, head, device, revin, runtime = train_backbone_member(args, setting, args.seed)
     train_data, _ = get_data_loader(args, "train")
     cal_data, cal_loader = get_data_loader(args, "cal")
     test_data, test_loader = get_data_loader(args, "test")
     test_start = time.time()
-    preds, trues, lower, upper = evaluate_mc_dropout(encoder, head, test_loader, device, args)
+    preds, trues, lower, upper = evaluate_mc_dropout(encoder, head, test_loader, device, args, revin=revin)
     interval_origin = "raw_uq"
     if args.uq_interval_mode == "conformalized":
         cal_preds, cal_trues, cal_lower, cal_upper = evaluate_mc_dropout(
-            encoder, head, cal_loader, device, args
+            encoder, head, cal_loader, device, args, revin=revin
         )
         lower, upper = conformalize_uq_intervals(
             preds, cal_trues, cal_preds, cal_lower, cal_upper, lower, upper,
@@ -773,12 +872,12 @@ def run_deep_ensemble(args, setting: str):
     for index, member_seed in enumerate(member_seeds, start=1):
         member_setting = build_member_setting(setting, member_seed, index)
         print(f"\nMember {index}/{len(member_seeds)} | seed={member_seed}")
-        encoder, head, device, runtime = train_backbone_member(args, member_setting, member_seed)
+        encoder, head, device, revin, runtime = train_backbone_member(args, member_setting, member_seed)
         test_start = time.time()
-        preds, trues = evaluate_backbone_point(encoder, head, test_loader, device, args)
+        preds, trues = evaluate_backbone_point(encoder, head, test_loader, device, args, revin=revin)
         test_inference_seconds += time.time() - test_start
         calibration_start = time.time()
-        cal_preds, cal_trues = evaluate_backbone_point(encoder, head, cal_loader, device, args)
+        cal_preds, cal_trues = evaluate_backbone_point(encoder, head, cal_loader, device, args, revin=revin)
         calibration_inference_seconds += time.time() - calibration_start
         ensemble_forecasts.append(torch.from_numpy(preds))
         calibration_forecasts.append(torch.from_numpy(cal_preds))
@@ -926,6 +1025,9 @@ def parse_args():
     parser.add_argument("--mc_samples", type=int, default=50, help="MC-Dropout stochastic forward passes")
     parser.add_argument("--ensemble_size", type=int, default=3, help="Deep Ensemble member count when ensemble_seeds is not provided")
     parser.add_argument("--ensemble_seeds", type=str, default="", help="comma-separated Deep Ensemble member seeds")
+    parser.add_argument("--revin", action="store_true",
+                        help="apply reversible instance normalisation (dlinear, patchtst, mc_dropout, "
+                             "deep_ensemble only), normalisation-matching the baseline to CISSN's --revin")
 
     validate_config_defaults(parser, config_defaults)
     parser.set_defaults(**config_defaults)
@@ -939,6 +1041,9 @@ def parse_args():
         args.c_out = 1
     if args.model in BACKBONE_MODELS and args.state_dim != 5:
         raise ValueError(f"{args.model} requires state_dim=5; got {args.state_dim}.")
+    if args.revin and args.model not in REVIN_SUPPORTED_MODELS:
+        supported = ", ".join(sorted(REVIN_SUPPORTED_MODELS))
+        raise ValueError(f"--revin is not supported for {args.model}; supported models: {supported}.")
     if args.model == "deep_ensemble" and args.ensemble_seeds:
         args.ensemble_size = len(parse_ensemble_seeds(args))
     validate_runtime_args(args)

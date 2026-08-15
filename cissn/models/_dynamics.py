@@ -26,7 +26,9 @@ class StructuredDecayMixin(nn.Module):
     parameters (DeepState with output_dim > 1).
     """
 
-    def _register_decay_params(self, n_dims: int = 1, include_residual: bool = True) -> None:
+    def _register_decay_params(
+        self, n_dims: int = 1, include_residual: bool = True, omega_init: float = 0.0,
+    ) -> None:
         """Register raw (unconstrained) decay parameters.
 
         Args:
@@ -34,11 +36,20 @@ class StructuredDecayMixin(nn.Module):
                 ``output_dim`` for per-variate parameters (DeepState).
             include_residual: Whether to register raw_alpha_R.  The DeepState
                 baseline has no residual component, so it passes False.
+            omega_init: Starting value for the seasonal rotation frequency.
+                At 0.0 (the historical default), cos(omega)=1, sin(omega)=0,
+                so the seasonal block starts as a non-rotating decay
+                indistinguishable at init from the residual coordinate, and
+                must break symmetry through a gradient that is structurally
+                small at omega=0. Passing 2*pi/seasonal_period instead starts
+                the block already rotating at the dataset's actual seasonal
+                frequency; omega remains learnable from there (unlike
+                AnchoredStateEncoder, which additionally freezes it).
         """
         self.raw_alpha_L = nn.Parameter(torch.zeros(n_dims))
         self.raw_alpha_T = nn.Parameter(torch.zeros(n_dims))
         self.raw_gamma   = nn.Parameter(torch.zeros(n_dims))
-        self.omega       = nn.Parameter(torch.zeros(n_dims))
+        self.omega       = nn.Parameter(torch.full((n_dims,), float(omega_init)))
         if include_residual:
             self.raw_alpha_R = nn.Parameter(torch.zeros(n_dims))
 

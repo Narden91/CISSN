@@ -61,13 +61,23 @@ def get_data_loader(args: Union[SimpleNamespace, Dict[str, Any]], flag: str) -> 
         raise ValueError(f"flag must be one of 'train', 'val', 'cal', 'test', 'pred'; got {flag!r}.")
 
     if not os.environ.get('CISSN_SKIP_DATA_VERIFY'):
+        # Sealed confirmation runs require a byte-exact dataset match, not
+        # just a structurally plausible one -- a silently modified file with
+        # the same shape would otherwise pass verification.
+        require_exact = getattr(args, 'evidence_role', None) == 'confirmation'
         dataset_path = (Path(args.root_path) / args.data_path).resolve()
         if not dataset_path.exists():
-            verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
+            verify_dataset(
+                args.data, data_root=getattr(args, 'root_path', None), strict=True,
+                require_exact_checksum=require_exact,
+            )
         stat = dataset_path.stat()
         fingerprint = (stat.st_size, stat.st_mtime_ns)
         if _verified_datasets.get(dataset_path) != fingerprint:
-            verify_dataset(args.data, data_root=getattr(args, 'root_path', None), strict=True)
+            verify_dataset(
+                args.data, data_root=getattr(args, 'root_path', None), strict=True,
+                require_exact_checksum=require_exact,
+            )
             _verified_datasets[dataset_path] = fingerprint
 
     Data, default_freq = _DATA_REGISTRY[args.data]

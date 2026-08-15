@@ -28,8 +28,6 @@ unless synthetic recovery checks pass).
 """
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -53,22 +51,20 @@ class AnchoredStateEncoder(DisentangledStateEncoder):
         hidden_dim: int = 64,
         dropout: float = 0.0,
     ):
+        if seasonal_period <= 1:
+            raise ValueError(f"seasonal_period must exceed 1; got {seasonal_period}.")
         super().__init__(
             input_dim=input_dim,
             state_dim=state_dim,
             hidden_dim=hidden_dim,
             dropout=dropout,
+            seasonal_period=seasonal_period,
         )
-        if seasonal_period <= 1:
-            raise ValueError(f"seasonal_period must exceed 1; got {seasonal_period}.")
-        self.seasonal_period = seasonal_period
 
-        # omega is fixed, not learned: one full rotation per seasonal period.
-        # Registered as a buffer so it moves with .to(device) and is saved in
-        # the state dict, but never receives a gradient.
+        # omega is fixed, not learned: one full rotation per seasonal period,
+        # never updated. The parent's seasonal_period init already sets the
+        # starting value; freeze it here so it never receives a gradient.
         self.omega.requires_grad_(False)
-        with torch.no_grad():
-            self.omega.fill_(2.0 * math.pi / seasonal_period)
 
     def _structured_dynamics(self):
         """Coupled local-linear-trend + damped seasonal rotation + fast residual."""

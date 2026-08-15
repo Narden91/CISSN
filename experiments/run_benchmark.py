@@ -319,7 +319,8 @@ class Experiment:
             input_dim=self.args.enc_in,
             state_dim=self.args.state_dim,
             hidden_dim=self.args.d_model,
-            dropout=self.args.dropout
+            dropout=self.args.dropout,
+            seasonal_period=get_dataset_spec(self.args.data)["seasonal_period"],
         )
 
     def _build_head(self):
@@ -564,15 +565,11 @@ class Experiment:
 
         self._load_checkpoint(path)
         fit_seconds = time.time() - train_start
-        partition_start = time.time()
-        if self._uses_state_partition():
-            self._fit_state_partition(train_loader, path)
-        partition_seconds = time.time() - partition_start
+        self._build_conditioning_predictors()
         self._calibrate_conformal(cal_loader, path)
         self.train_runtime_ = {
             "train_seconds": fit_seconds,
             "fit_seconds": fit_seconds,
-            "partition_seconds": partition_seconds,
             "conditioning_fit_seconds": getattr(self, "conditioning_fit_seconds_", 0.0),
             "calibration_seconds": getattr(self, "quantile_calibration_seconds_", 0.0),
             "total_seconds": time.time() - train_start,
@@ -586,9 +583,6 @@ class Experiment:
         }
         save_json(Path(path) / "runtime.json", self.train_runtime_)
         return self.model
-
-    def _uses_state_partition(self):
-        return True
 
     def _revin_checkpoint_path(self, path) -> Path:
         return Path(path) / "checkpoint_revin.pth"
@@ -693,28 +687,20 @@ class Experiment:
             elif hasattr(predictor, "get_cluster_stats"):
                 save_json(folder_path / "cluster_stats.json", predictor.get_cluster_stats())
 
-    def _fit_state_partition(self, train_loader, artifact_dir=None):
-        """Freeze label-free cluster partitions before held-out calibration."""
+    def _build_conditioning_predictors(self):
+        """Construct the conditioning predictors. Fitting happens in _calibrate_conformal.
+
+        Both `StateConditionalConformal.fit_partition` and
+        `StateScaledConformal.fit_scale` are fit on the SAME conditioning-half
+        calibration window there, not here and not on train states: fitting
+        the cluster partition on train states (as an earlier version did)
+        gave it a ~9x larger, in-sample fitting set relative to the sigma
+        regression, which confounded any ordering between the two mechanisms.
+        See docs/methodology.md, "Asymmetry between the two conditioning
+        mechanisms".
+        """
         self.conformal = self._build_conformal()
         self.secondary_conformal = self._build_secondary_conformal()
-        states = []
-        self._set_train_mode(False)
-        with torch.no_grad():
-            for batch_x, batch_y, _batch_x_mark, _batch_y_mark in track(
-                train_loader,
-                description="Partitioning",
-                total=len(train_loader),
-                enabled=not getattr(self.args, "no_progress", True),
-            ):
-                final_state, outputs, batch_y = self._forward_and_slice(batch_x, batch_y)
-                states.append(final_state.detach().cpu())
-        training_states = torch.cat(states, dim=0)
-        for predictor in (self.conformal, self.secondary_conformal):
-            if not isinstance(predictor, StateScaledConformal):
-                predictor.fit_partition(training_states)
-        if artifact_dir is not None:
-            np.save(Path(artifact_dir) / "partition_states.npy", training_states.numpy())
-        self._set_train_mode(True)
 
     def _calibrate_conformal(self, cal_loader, artifact_dir=None):
         """Calibrate both conditioning predictors on the held-out calibration split."""
@@ -750,6 +736,13 @@ class Experiment:
         if scale_predictor is None:
             raise RuntimeError("CISSN calibration requires a state-scaled comparator.")
         conditioning_start = time.time()
+        # Both conditioning mechanisms fit on the SAME conditioning_states /
+        # conditioning_residuals -- the first half of the calibration split --
+        # so neither sees train residuals and neither has a sample-size
+        # advantage over the other.
+        for predictor in (self.conformal, self.secondary_conformal):
+            if not isinstance(predictor, StateScaledConformal):
+                predictor.fit_partition(conditioning_states)
         scale_predictor.fit_scale(conditioning_states, conditioning_residuals)
         self._coverage_bin_edges = fit_coverage_bin_edges(
             np.linalg.norm(conditioning_states.numpy(), axis=1), n_bins=5
@@ -821,7 +814,9 @@ class Experiment:
         """Label-free latent-state magnitude used by every interval method."""
         return np.linalg.norm(np.asarray(test_states), axis=1)
 
-    def _score_interval_comparator(self, lower_np, upper_np, trues, coverage_scope, test_states=None) -> dict:
+    def _score_interval_comparator(
+        self, lower_np, upper_np, trues, coverage_scope, test_states=None, interval_origin=None,
+    ) -> dict:
         """Shared scoring for any calibrated comparator's already-built bounds."""
         coverage = compute_picp(lower_np, upper_np, trues)
         coverage_joint = compute_joint_picp(lower_np, upper_np, trues)
@@ -835,6 +830,8 @@ class Experiment:
             "calibration_error": float(abs(primary - (1.0 - self.args.conformal_alpha))),
             "coverage_scope": coverage_scope,
         }
+        if interval_origin is not None:
+            result["interval_origin"] = interval_origin
         bin_edges = getattr(self, "_coverage_bin_edges", None)
         if test_states is not None and bin_edges is not None:
             scores = self._conditional_coverage_scores(test_states)
@@ -852,6 +849,15 @@ class Experiment:
         identical calibration residuals from the same model, so this
         comparison is paired: the only difference is the conditioning
         mechanism.
+
+        This flat CP is calibrated on the SECOND HALF of the calibration
+        split only, matching the conditional methods' quantile-fitting n for
+        a fair paired comparison. That makes it a DIFFERENT estimator from
+        run_baseline.py's flat CP (calibrated on the FULL calibration split)
+        and from diagnose_conditioning_headroom.py's (a cut window) -- do not
+        cross-reference a Winkler number from this dict against either. The
+        interval_origin below is deliberately distinct from
+        "conformalized" (run_baseline.py's label) for that reason.
         """
         flat = getattr(self, "flat_conformal", None)
         if flat is None or not flat.calibrated:
@@ -861,7 +867,8 @@ class Experiment:
             lower.numpy(), upper.numpy(), trues, self.args.conformal_alpha
         )
         return self._score_interval_comparator(
-            lower.numpy(), upper.numpy(), trues, flat.coverage_scope, test_states=test_states
+            lower.numpy(), upper.numpy(), trues, flat.coverage_scope, test_states=test_states,
+            interval_origin="conformalized_paired_half_cal",
         )
 
     def _compare_against_secondary_conformal(self, test_states, preds, trues) -> dict:
@@ -1419,8 +1426,7 @@ class HybridExperiment(Experiment):
 
         self._load_checkpoint(path)
         calibration_start = time.time()
-        if self._uses_state_partition():
-            self._fit_state_partition(train_loader, path)
+        self._build_conditioning_predictors()
         self._calibrate_conformal(cal_loader, path)
         self.train_runtime_ = {
             "train_seconds": time.time() - train_start,

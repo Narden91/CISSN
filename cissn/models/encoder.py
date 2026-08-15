@@ -3,7 +3,9 @@ Disentangled state encoder with structured transition (level, trend, rotation, r
 """
 from __future__ import annotations
 
+import math
 import sys
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -26,15 +28,29 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         state_dim: int = STRUCTURED_STATE_DIM,
         hidden_dim: int = 64,
         dropout: float = 0.0,
+        seasonal_period: Optional[int] = None,
     ):
+        """
+        Args:
+            seasonal_period: If given, initialises the seasonal rotation
+                frequency omega at 2*pi/seasonal_period instead of 0, so the
+                seasonal block starts rotating at the dataset's actual cycle
+                length rather than as a non-rotating decay indistinguishable
+                from the residual coordinate. omega remains learnable
+                (contrast AnchoredStateEncoder, which also freezes it). None
+                preserves the historical zero-init behaviour.
+        """
         super().__init__()
         if state_dim != self.STRUCTURED_STATE_DIM:
             raise ValueError(
                 f"DisentangledStateEncoder requires state_dim={self.STRUCTURED_STATE_DIM}; got {state_dim}."
             )
+        if seasonal_period is not None and seasonal_period <= 1:
+            raise ValueError(f"seasonal_period must exceed 1; got {seasonal_period}.")
         self.input_dim = input_dim
         self.state_dim = state_dim
         self.hidden_dim = hidden_dim
+        self.seasonal_period = seasonal_period
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -52,7 +68,8 @@ class DisentangledStateEncoder(StructuredDecayMixin):
             nn.utils.spectral_norm(nn.Linear(hidden_dim, state_dim)),
         )
         self.raw_correction_scale = nn.Parameter(torch.tensor(-4.6))  # softplus⁻¹(0.01)
-        self._register_decay_params(n_dims=1, include_residual=True)
+        omega_init = 2.0 * math.pi / seasonal_period if seasonal_period is not None else 0.0
+        self._register_decay_params(n_dims=1, include_residual=True, omega_init=omega_init)
 
         if sys.platform != 'win32' and hasattr(torch, 'compile'):
             self._run_sequence = torch.compile(self._run_sequence)

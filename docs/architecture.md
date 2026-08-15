@@ -17,6 +17,15 @@ Every run calibrates and reports both, plus flat CP, regardless of which is prim
 
 The flat conformal comparator uses the same score geometry without state conditioning. MC-Dropout and Deep Ensemble retain their raw predictive scale but are conformalized on the same calibration split by default; raw intervals are explicitly labelled secondary.
 
+MC-Dropout and Deep Ensemble are UQ-method ablations on the CISSN backbone, not
+independent baseline architectures: `run_baseline.py:build_backbone` constructs both from
+`DisentangledStateEncoder` + `ForecastHead` and hard-requires `state_dim=5`, so their
+point forecasts are CISSN's by construction. This is a legitimate, arguably
+better-controlled design for the UQ comparison, but a table listing "CISSN vs MC-Dropout
+vs Deep Ensemble vs DLinear vs PatchTST" implies five independent architectures where
+three exist. Deep Ensemble also receives roughly 3x the training budget of a single
+member (one full training run per ensemble member); report that alongside any comparison.
+
 Conditional-coverage claims are checked against `worst_slab_coverage` and `max_coverage_deviation` (`cissn/evaluation/metrics.py`), computed on prespecified, method-agnostic state-space bins fit on train data — not on each method's own partition, which would make the comparison unfair.
 
 The implementation is in `cissn/models/`, `cissn/conformal/state_conditional.py`, and `cissn/baselines/`. Launch commands are in `RUNBOOK.md`.

@@ -544,17 +544,29 @@ class StateScaledConformal(_StateConformalBase):
         scaled_states = self.scaler.fit_transform(states)
 
         flat = residuals.reshape(residuals.shape[0], -1)
+        # Data-derived floor rather than a fixed constant: a fixed 1e-8 would
+        # make any exactly-zero residual cell contribute log(1e-8) ~ -18.4, an
+        # outlier of arbitrary magnitude relative to the data's own scale that
+        # an unweighted least-squares fit would chase.
+        nonzero = flat[flat > 0]
+        log_floor = float(np.quantile(nonzero, 0.01)) if nonzero.size > 0 else 1e-8
         if geometry == "per_cell" and residuals.ndim > 1:
-            target = np.log(flat + 1e-8)
+            target = np.log(np.maximum(flat, log_floor))
             self.sigma_shape_ = tuple(residuals.shape[1:])
         else:
             # 'scalar', or a 1-D residual where per-cell and scalar coincide.
-            target = np.log(flat.mean(axis=1) + 1e-8)[:, None]
+            target = np.log(np.maximum(flat.mean(axis=1), log_floor))[:, None]
             self.sigma_shape_ = ()
 
         design = np.concatenate([scaled_states, np.ones((scaled_states.shape[0], 1))], axis=1)
         n_features = design.shape[1]
-        gram = design.T @ design + self.ridge * np.eye(n_features)
+        # Penalise only the slope coefficients, not the intercept column
+        # (the last column of `design`): a penalised intercept biases the
+        # fitted difficulty level toward zero, which is not what ridge
+        # regularisation of the slopes is meant to do.
+        ridge_diag = np.ones(n_features)
+        ridge_diag[-1] = 0.0
+        gram = design.T @ design + self.ridge * np.diag(ridge_diag)
         coefs = np.linalg.solve(gram, design.T @ target)
         if self.sigma_shape_:
             self.beta_ = coefs[:-1]

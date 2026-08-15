@@ -143,6 +143,7 @@ class HybridCISSN(nn.Module):
                 state_dim=state_dim,
                 hidden_dim=hidden_dim,
                 dropout=dropout,
+                seasonal_period=seasonal_period,
             )
         self.correction = LinearCorrectionHead(
             state_dim=state_dim, horizon=pred_len, output_dim=output_dim
@@ -189,7 +190,16 @@ class HybridCISSN(nn.Module):
         mean = x.mean(dim=1, keepdim=True)
         std = x.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-5)
         state = self.encoder((x - mean) / std)
-        return state, std[..., : self.output_dim]
+        # Match the runner's f_dim convention (run_benchmark.py): the target
+        # is the full channel set when output_dim == input_dim (--features M),
+        # and the LAST output_dim channels otherwise (--features MS), never
+        # the first -- selecting the first output_dim channels here would
+        # rescale the correction by the wrong channel's std under MS, which
+        # RevIN.select_channels() exists specifically to prevent on the base
+        # normalisation path.
+        if self.output_dim == x.shape[-1]:
+            return state, std
+        return state, std[..., -self.output_dim :]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (batch, seq_len, input_dim) -> (batch, pred_len, output_dim)"""
