@@ -329,6 +329,41 @@ class TestConditioningCalibrationDataSource(unittest.TestCase):
 
         np.testing.assert_array_equal(experiment._coverage_bin_edges, expected_edges)
 
+    def test_saved_artifacts_show_equal_sized_disjoint_conditioning_and_calibration_states(self):
+        """Artifact-level check, independent of internal call structure.
+
+        The two preceding tests spy on `fit_partition`/`fit_scale` and read
+        `experiment._coverage_bin_edges` directly -- both break (loudly, via
+        AttributeError, or silently, via an untriggered spy) if a refactor
+        moves conditioning-fit logic to a different method or object. This
+        test instead reads back the `.npy` artifacts `_calibrate_conformal`
+        is contracted (CLAUDE.md, "Each final result must contain...") to
+        write for every run, so it survives internal restructuring as long
+        as the on-disk artifact contract holds: conditioning_states.npy and
+        calibration_states.npy must be equal in length and index-disjoint,
+        which is what "both mechanisms share one fitting window, distinct
+        from the quantile-calibration window" requires on disk.
+        """
+        experiment, cal_loader, all_states, _fit_edges = self._build_experiment(
+            n_cal_batches=8, batch_size=4, state_dim=3, horizon=2, n_features=2,
+        )
+        experiment._build_conditioning_predictors()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            experiment._calibrate_conformal(cal_loader, artifact_dir=Path(tmpdir))
+
+            conditioning_states = np.load(Path(tmpdir) / "conditioning_states.npy")
+            calibration_states = np.load(Path(tmpdir) / "calibration_states.npy")
+            conditioning_indices = np.load(Path(tmpdir) / "conditioning_indices.npy")
+            calibration_indices = np.load(Path(tmpdir) / "calibration_indices.npy")
+
+        self.assertEqual(conditioning_states.shape[0], calibration_states.shape[0])
+        self.assertFalse(np.intersect1d(conditioning_indices, calibration_indices).size)
+        self.assertEqual(
+            set(conditioning_indices.tolist()) | set(calibration_indices.tolist()),
+            set(range(all_states.shape[0])),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
