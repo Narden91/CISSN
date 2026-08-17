@@ -105,6 +105,24 @@ class _StateConformalBase:
         """Smallest group size that can support an exact 1-alpha quantile."""
         return max(5, int(np.ceil(1.0 / self.alpha)))
 
+    def _init_calibration_stride(self, calibration_stride: int) -> None:
+        """Shared by both subclasses' __init__ so a caller that wires
+        --calibration_stride into one conditioning mechanism cannot silently
+        wire a different (or absent) stride into the other -- that was the
+        source of the historical fitting-set asymmetry between fit_partition
+        and fit_scale, and stride is exactly the same class of parameter."""
+        if calibration_stride <= 0:
+            raise ValueError(f"calibration_stride must be positive; got {calibration_stride}.")
+        self.calibration_stride = calibration_stride
+
+    def _stride_calibration_data(
+        self, states_np: np.ndarray, residuals_np: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Keep every kth chronological calibration origin, identically for
+        both conditioning mechanisms' calibrate()."""
+        indices = np.arange(0, states_np.shape[0], self.calibration_stride)
+        return states_np[indices], residuals_np[indices]
+
 
 class StateConditionalConformal(_StateConformalBase):
     """
@@ -138,12 +156,10 @@ class StateConditionalConformal(_StateConformalBase):
         self._validate_common_args(alpha, multivariate_strategy)
         if n_clusters <= 0:
             raise ValueError(f"n_clusters must be a positive integer; got {n_clusters}.")
-        if calibration_stride <= 0:
-            raise ValueError(f"calibration_stride must be positive; got {calibration_stride}.")
+        self._init_calibration_stride(calibration_stride)
 
         self.n_clusters = n_clusters
         self.random_state = random_state
-        self.calibration_stride = calibration_stride
         self._reset_fit_state()
 
     def _reset_fit_state(self) -> None:
@@ -255,9 +271,7 @@ class StateConditionalConformal(_StateConformalBase):
 
         states_np = self._validate_states(self._to_numpy(states, "states"))
         residuals_np = self._to_numpy(residuals, "residuals")
-        indices = np.arange(0, states_np.shape[0], self.calibration_stride)
-        states_np = states_np[indices]
-        residuals_np = residuals_np[indices]
+        states_np, residuals_np = self._stride_calibration_data(states_np, residuals_np)
         residuals_np, self.quantile_shape = self._prepare_residuals(residuals_np, states_np.shape[0])
         labels = self.assign_clusters(states_np)
         minimum = self._min_calibration_samples()
@@ -457,6 +471,7 @@ class StateScaledConformal(_StateConformalBase):
         ridge: float = 1e-3,
         sigma_floor: float = 1e-3,
         scale_geometry: str = "scalar",
+        calibration_stride: int = 1,
     ):
         """
         Args:
@@ -478,6 +493,10 @@ class StateScaledConformal(_StateConformalBase):
                 the geometry with measured headroom. Ignored when
                 multivariate_strategy='max', which reduces residuals to one
                 scalar per sample before any scale is applied.
+            calibration_stride: Keep every kth chronological calibration
+                origin. Shared with StateConditionalConformal so a caller that
+                sets this for one conditioning mechanism cannot leave the
+                other at a different effective sample size.
         """
         self._validate_common_args(alpha, multivariate_strategy)
         if scale_geometry not in self.VALID_SCALE_GEOMETRIES:
@@ -487,6 +506,7 @@ class StateScaledConformal(_StateConformalBase):
             raise ValueError(f"ridge must be non-negative; got {ridge}.")
         if sigma_floor <= 0:
             raise ValueError(f"sigma_floor must be positive; got {sigma_floor}.")
+        self._init_calibration_stride(calibration_stride)
 
         self.ridge = ridge
         self.sigma_floor = sigma_floor
@@ -643,6 +663,7 @@ class StateScaledConformal(_StateConformalBase):
 
         states_np = self._validate_states(self._to_numpy(states, "states"))
         residuals_np = self._to_numpy(residuals, "residuals")
+        states_np, residuals_np = self._stride_calibration_data(states_np, residuals_np)
         residuals_np, self.quantile_shape = self._prepare_residuals(residuals_np, states_np.shape[0])
 
         normalized = residuals_np / self._sigma_for(states_np, residuals_np.ndim)
@@ -652,8 +673,8 @@ class StateScaledConformal(_StateConformalBase):
         self.calibration_samples_ = int(states_np.shape[0])
         self.calibrated = True
         logger.info(
-            "State-scaled CP calibrated: samples=%d, strategy=%s, geometry=%s",
-            self.calibration_samples_, self.multivariate_strategy, self.scale_geometry,
+            "State-scaled CP calibrated: samples=%d, strategy=%s, geometry=%s, stride=%d",
+            self.calibration_samples_, self.multivariate_strategy, self.scale_geometry, self.calibration_stride,
         )
 
     def fit(self, states: Union[torch.Tensor, np.ndarray], residuals: Union[torch.Tensor, np.ndarray]) -> None:
@@ -672,6 +693,7 @@ class StateScaledConformal(_StateConformalBase):
             "coverage_scope": self.coverage_scope,
             "scale_geometry": self.scale_geometry,
             "calibration_samples": int(self.calibration_samples_),
+            "calibration_stride": int(self.calibration_stride),
             "ridge": float(self.ridge),
             "sigma_floor": float(self.sigma_floor),
             "quantile_shape": list(np.asarray(self.quantiles).shape),

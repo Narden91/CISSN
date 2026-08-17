@@ -202,6 +202,26 @@ class TestConformalContracts(unittest.TestCase):
         self.assertEqual(stats["calibration_stride"], 2)
         self.assertEqual(stats["calibration_samples"], 10)
 
+    def test_state_scaled_conformal_also_accepts_and_records_calibration_stride(self):
+        """StateScaledConformal must expose the identical calibration_stride
+        constructor argument and calibrate()-time behaviour as
+        StateConditionalConformal (see test_partition_is_frozen_before_
+        calibration_and_stride_is_recorded above) -- otherwise a caller that
+        wires --calibration_stride into one mechanism and not the other
+        reintroduces a fitting-set-size asymmetry between them."""
+        rng = np.random.default_rng(9)
+        reference_states = rng.normal(size=(40, 2))
+        calibration_states = rng.normal(size=(20, 2))
+        residuals = np.abs(rng.normal(size=(20, 3, 2)))
+        scaled = StateScaledConformal(alpha=0.1, multivariate_strategy="per_feature", calibration_stride=2)
+
+        scaled.fit_scale(reference_states, np.abs(rng.normal(size=(40, 3, 2))))
+        scaled.calibrate(calibration_states, residuals)
+
+        stats = scaled.get_scale_stats()
+        self.assertEqual(stats["calibration_stride"], 2)
+        self.assertEqual(stats["calibration_samples"], 10)
+
     def test_dependence_diagnostic_uses_real_adjacent_origins(self):
         conformal = StateConditionalConformal(alpha=0.1, n_clusters=2)
         conformal.calibrated = True

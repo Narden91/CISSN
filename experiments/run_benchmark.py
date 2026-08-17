@@ -635,6 +635,19 @@ class Experiment:
         self._set_train_mode(True)
         return total_loss / total_weight
 
+    # `--calibration_stride` is applied once, upstream, in
+    # `_shared_calibration_indices`: every conditioning predictor built here
+    # receives already-strided `conditioning_states`/`calibration_states`
+    # (see `_calibrate_conformal`). Both predictor classes accept their own
+    # `calibration_stride` constructor argument only for standalone/test use
+    # (e.g. their `fit()` convenience method); production callers here must
+    # pass 1 for both, identically, so neither mechanism re-strides data
+    # that is already strided -- passing the CLI value again here would
+    # silently apply the stride twice and, if the two predictors ever passed
+    # different values, reintroduce the class of fitting-set asymmetry that
+    # `TestConditioningComparisonFairness` exists to prevent.
+    _PREDICTOR_INTERNAL_CALIBRATION_STRIDE = 1
+
     def _build_conformal(self):
         """Construct the primary conditioning predictor for --conformal_conditioning."""
         mode = getattr(self.args, "conformal_conditioning", "cluster")
@@ -643,13 +656,14 @@ class Experiment:
                 alpha=self.args.conformal_alpha,
                 multivariate_strategy=self.args.multivariate_strategy,
                 scale_geometry=getattr(self.args, "scale_geometry", "scalar"),
+                calibration_stride=self._PREDICTOR_INTERNAL_CALIBRATION_STRIDE,
             )
         return StateConditionalConformal(
             alpha=self.args.conformal_alpha,
             n_clusters=self.args.n_clusters,
             multivariate_strategy=self.args.multivariate_strategy,
             random_state=self.args.seed,
-            calibration_stride=1,
+            calibration_stride=self._PREDICTOR_INTERNAL_CALIBRATION_STRIDE,
         )
 
     def _build_secondary_conformal(self):
@@ -666,12 +680,13 @@ class Experiment:
                 n_clusters=self.args.n_clusters,
                 multivariate_strategy=self.args.multivariate_strategy,
                 random_state=self.args.seed,
-                calibration_stride=1,
+                calibration_stride=self._PREDICTOR_INTERNAL_CALIBRATION_STRIDE,
             )
         return StateScaledConformal(
             alpha=self.args.conformal_alpha,
             multivariate_strategy=self.args.multivariate_strategy,
             scale_geometry=getattr(self.args, "scale_geometry", "scalar"),
+            calibration_stride=self._PREDICTOR_INTERNAL_CALIBRATION_STRIDE,
         )
 
     def _save_conditioning_stats(self, folder_path: Path) -> None:

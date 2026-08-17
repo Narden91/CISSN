@@ -237,6 +237,42 @@ class TestExperimentRunners(unittest.TestCase):
         reject_unsupported_evidence_role(SimpleNamespace(evidence_role="development"))
         reject_unsupported_evidence_role(SimpleNamespace())
 
+    def test_conditioning_predictors_always_receive_the_same_internal_calibration_stride(self):
+        """_build_conformal/_build_secondary_conformal construct one
+        StateConditionalConformal and one StateScaledConformal per run (roles
+        swap with --conformal_conditioning). Both must be built with the same
+        calibration_stride regardless of mode -- _shared_calibration_indices
+        already applies --calibration_stride once, upstream, so the two
+        predictors re-striding by different amounts would reintroduce the
+        fitting-set-size asymmetry between fit_partition and fit_scale."""
+        from cissn.conformal import StateConditionalConformal, StateScaledConformal
+
+        experiment = Experiment.__new__(Experiment)
+        for mode in ("cluster", "scale"):
+            experiment.args = SimpleNamespace(
+                conformal_alpha=0.1,
+                multivariate_strategy='per_feature',
+                conformal_conditioning=mode,
+                n_clusters=2,
+                seed=1,
+                scale_geometry='scalar',
+                calibration_stride=7,
+            )
+            primary = experiment._build_conformal()
+            secondary = experiment._build_secondary_conformal()
+
+            predictors = {type(primary): primary, type(secondary): secondary}
+            self.assertIn(StateConditionalConformal, predictors)
+            self.assertIn(StateScaledConformal, predictors)
+            self.assertEqual(
+                predictors[StateConditionalConformal].calibration_stride,
+                predictors[StateScaledConformal].calibration_stride,
+            )
+            self.assertEqual(
+                predictors[StateConditionalConformal].calibration_stride,
+                Experiment._PREDICTOR_INTERNAL_CALIBRATION_STRIDE,
+            )
+
     def test_multiseed_aggregation_rejects_duplicate_seed(self):
         rows = [
             {"seed": 7, "mse": 1.0},
