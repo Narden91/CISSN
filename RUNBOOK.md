@@ -14,7 +14,7 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 - Primary interval geometry: `--multivariate_strategy per_feature`; report `coverage_primary` (marginal). `max` is a separate simultaneous-coverage analysis.
 - Publication safeguards: `--require_gpu --require_clean_git`.
 
-The cluster state partition (`StateConditionalConformal.fit_partition`) is learned only from train states, then calibration uses the later calibration split. The state-scaled sigma regression (`StateScaledConformal.fit_scale`) is fit on the first half of the calibration split instead, not on train states — see `docs/methodology.md` for the resulting asymmetry between the two conditioning mechanisms. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
+The cluster state partition (`StateConditionalConformal.fit_partition`) and the state-scaled sigma regression (`StateScaledConformal.fit_scale`) are both learned from the same window — the first half of the calibration split — then quantile calibration uses the second half. This equalises the two mechanisms' fitting-set size and in-sample status; see `docs/methodology.md` for the earlier asymmetric version and why prior cluster-vs-scale orderings need re-measuring under the current code. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
 
 All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
@@ -68,10 +68,12 @@ window strictly contains cut 0.6's, so this is not 12 independent trials — eff
 closer to 3, and the seeds share one dataset/split, so a population-level claim has an
 effective n closer to 1) — mean Winkler delta vs flat CP: cluster `-0.124` (better on all
 3 seeds x 4 cuts), scalar sigma `+0.011` (better on 5 of 12), per-cell sigma `-0.237`
-(better on all 12). Under the real protocol on seed 42 the ordering is cluster `3.5962` <
-per-cell `3.6916` < flat `3.7869` ~ scalar `3.7877` — but this ordering is confounded by a
-~9x conditioning-fit sample-size asymmetry between cluster and state-scaled CP (see
-`docs/methodology.md`) and is not yet a fair comparison.
+(better on all 12). Under the real protocol on seed 42 the ordering was cluster `3.5962` <
+per-cell `3.6916` < flat `3.7869` ~ scalar `3.7877` — but that ordering was measured while
+cluster and state-scaled CP had a ~9x conditioning-fit sample-size asymmetry (see
+`docs/methodology.md`). `run_benchmark.py` now fits both mechanisms on the same
+calibration-half window, so this ordering must be re-measured under the current code
+before it can be used to select a mode.
 
 ### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU)
 

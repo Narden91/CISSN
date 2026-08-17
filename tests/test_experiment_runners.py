@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 from experiments.run_benchmark import (
     Experiment,
@@ -228,6 +229,105 @@ class TestExperimentRunners(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Duplicate seeds"):
             aggregate_results(rows, n_seeds_requested=2)
+
+
+class TestConditioningCalibrationDataSource(unittest.TestCase):
+    """Pins the actual data source `_calibrate_conformal` uses to fit each
+    conditioning mechanism and the coverage bin edges, so a refactor cannot
+    silently reintroduce the fitting-set asymmetry between `fit_partition`
+    and `fit_scale`, or move bin-edge fitting onto a different split than
+    documented, without a test failing.
+    """
+
+    @staticmethod
+    def _build_experiment(n_cal_batches, batch_size, state_dim, horizon, n_features):
+        from cissn.evaluation.metrics import fit_coverage_bin_edges
+
+        experiment = Experiment.__new__(Experiment)
+        experiment.args = SimpleNamespace(
+            conformal_alpha=0.1,
+            multivariate_strategy='per_feature',
+            conformal_conditioning='cluster',
+            n_clusters=2,
+            seed=1,
+            scale_geometry='scalar',
+            calibration_stride=1,
+            no_progress=True,
+        )
+        experiment._set_train_mode = lambda training: None
+
+        rng = np.random.default_rng(0)
+        raw_states = [
+            torch.from_numpy(rng.standard_normal((batch_size, state_dim)).astype(np.float32))
+            for _ in range(n_cal_batches)
+        ]
+        raw_outputs = [
+            torch.from_numpy(rng.standard_normal((batch_size, horizon, n_features)).astype(np.float32))
+            for _ in range(n_cal_batches)
+        ]
+        raw_targets = [
+            torch.from_numpy(rng.standard_normal((batch_size, horizon, n_features)).astype(np.float32))
+            for _ in range(n_cal_batches)
+        ]
+        calls = iter(zip(raw_states, raw_outputs, raw_targets))
+
+        def fake_forward_and_slice(batch_x, batch_y, return_all_states=False):
+            final_state, outputs, target = next(calls)
+            return final_state, outputs, target
+
+        experiment._forward_and_slice = fake_forward_and_slice
+        cal_loader = [
+            (object(), object(), object(), object()) for _ in range(n_cal_batches)
+        ]
+        return experiment, cal_loader, torch.cat(raw_states, dim=0), fit_coverage_bin_edges
+
+    def test_fit_partition_and_fit_scale_see_the_same_conditioning_states(self):
+        """The cluster partition and the sigma regression must be fit on
+        identical data -- if a future change reintroduces separate fitting
+        windows (e.g. reverting to train states for one mechanism), the
+        state tensors captured by each predictor will diverge and this
+        assertion will fail."""
+        experiment, cal_loader, _all_states, _fit_edges = self._build_experiment(
+            n_cal_batches=8, batch_size=4, state_dim=3, horizon=2, n_features=2,
+        )
+        experiment._build_conditioning_predictors()
+
+        captured = {}
+        original_fit_partition = experiment.conformal.fit_partition
+        original_fit_scale = experiment.secondary_conformal.fit_scale
+
+        def spy_fit_partition(states):
+            captured['partition_states'] = states.clone()
+            return original_fit_partition(states)
+
+        def spy_fit_scale(states, residuals):
+            captured['scale_states'] = states.clone()
+            return original_fit_scale(states, residuals)
+
+        experiment.conformal.fit_partition = spy_fit_partition
+        experiment.secondary_conformal.fit_scale = spy_fit_scale
+
+        experiment._calibrate_conformal(cal_loader, artifact_dir=None)
+
+        self.assertTrue(torch.equal(captured['partition_states'], captured['scale_states']))
+
+    def test_coverage_bin_edges_are_fit_on_the_conditioning_half_not_all_calibration_data(self):
+        """Locks the documented contract: bin edges come from the same
+        conditioning-half window used by fit_partition/fit_scale, not from
+        the full calibration split or the quantile-calibration half."""
+        experiment, cal_loader, all_states, fit_edges = self._build_experiment(
+            n_cal_batches=8, batch_size=4, state_dim=3, horizon=2, n_features=2,
+        )
+        experiment._build_conditioning_predictors()
+        experiment._calibrate_conformal(cal_loader, artifact_dir=None)
+
+        n_total = all_states.shape[0]
+        selected = experiment._shared_calibration_indices(n_total)
+        conditioning_indices, _calibration_indices = experiment._split_calibration_indices(selected)
+        expected_states = all_states[conditioning_indices]
+        expected_edges = fit_edges(np.linalg.norm(expected_states.numpy(), axis=1), n_bins=5)
+
+        np.testing.assert_array_equal(experiment._coverage_bin_edges, expected_edges)
 
 
 if __name__ == '__main__':

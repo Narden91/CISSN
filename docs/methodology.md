@@ -190,29 +190,31 @@ is an untested hypothesis — no run has yet varied the fitting-window size whil
 everything else fixed — so no coefficient-spread number is quoted here; state one when a
 run measures it.
 
-### Asymmetry between the two conditioning mechanisms
+### Asymmetry between the two conditioning mechanisms (resolved)
 
-The cluster partition is fit on **train** states (`run_benchmark.py:711-714`, ~6481
-windows on ETTh1-h336), while sigma is fit on the **first calibration half** (`:753`,
-~696 windows). The two conditioning mechanisms therefore see fitting sets that differ in
-both size (~9x) and in-sample status: the cluster partition is fit on states the model was
-trained on, sigma on held-out states. This is the same class of error
-`TestConditioningComparisonFairness` (`tests/test_utils.py`) was written to prevent for
-the *quantile* window, but it is not currently locked for the *conditioning-fit* window.
+The cluster partition was previously fit on **train** states (~6481 windows on
+ETTh1-h336), while sigma was fit on the **first calibration half** (~696 windows) — a ~9x,
+in-sample-vs-held-out asymmetry that confounded any ordering between the two mechanisms.
+This has been fixed: `_build_conditioning_predictors`/`_calibrate_conformal`
+(`run_benchmark.py:690-753`) now fit **both** `fit_partition` and `fit_scale` on the same
+`conditioning_states`/`conditioning_residuals` — the first half of the calibration split
+(`_split_calibration_indices`) — so neither mechanism sees train residuals and neither has
+a sample-size advantage over the other.
 
-Any ordering between cluster SCCP and state-scaled CP — including the table above — is
-confounded by this difference until it is equalised, and the confound runs in the
-direction of the stronger claim: cluster SCCP is the mechanism with the larger, in-sample
-fitting set.
+The table above (flat 3.7869 < ... < cluster 3.5962) was measured **before** this fix and
+is therefore still confounded; it has not been re-measured under the corrected, fair
+fitting scheme. Do not treat that ordering as resolved — re-run Step 3b.0/3b.2 under the
+current code before drawing a cluster-vs-per-cell conclusion.
 
 ### What this means for the claim
 
 State conditioning helps in the RevIN regime and does not help without it. Per-cell
-state-scaled CP beats flat CP and the scalar geometry it replaces. It does not currently
-beat cluster SCCP under a fair comparison, because no fair comparison between the two
-mechanisms has been run yet. Do not call either mechanism the paper's established primary
-contribution on ETTh1 alone. `scale_geometry` is off by default (`scalar`), so existing
-runs and artifacts are unchanged.
+state-scaled CP beats flat CP and the scalar geometry it replaces. Whether it beats
+cluster SCCP is unresolved: the fitting-set asymmetry that confounded the last measured
+ordering has been fixed in code (see above), but the comparison has not yet been re-run
+under it. Do not call either mechanism the paper's established primary contribution on
+ETTh1 alone. `scale_geometry` is off by default (`scalar`), so existing runs and artifacts
+are unchanged.
 
 None of this is yet a protocol result across datasets: everything above is ETTh1-h336.
 Before any of it is published it needs the locked multi-dataset grid. Do not retune
