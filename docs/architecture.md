@@ -26,6 +26,6 @@ vs Deep Ensemble vs DLinear vs PatchTST" implies five independent architectures 
 three exist. Deep Ensemble also receives roughly 3x the training budget of a single
 member (one full training run per ensemble member); report that alongside any comparison.
 
-Conditional-coverage claims are checked against `worst_slab_coverage` and `max_coverage_deviation` (`cissn/evaluation/metrics.py`), computed on prespecified, method-agnostic state-space bins — not on each method's own partition, which would make the comparison unfair. `run_benchmark.py` currently fits these bin edges (`fit_coverage_bin_edges`) on the same calibration-half `conditioning_states` used above, not on train states; no test pins this call site, so treat "fit on train data" as the target contract, not the current behaviour, until it is verified or the call site is changed.
+Conditional-coverage claims are checked against `worst_slab_coverage` and `max_coverage_deviation` (`cissn/evaluation/metrics.py`), computed on prespecified, method-agnostic state-space bins — not on each method's own partition, which would make the comparison unfair. `run_benchmark.py` fits these bin edges (`fit_coverage_bin_edges`) on the same calibration-half `conditioning_states` used above, not on train states; `tests/test_experiment_runners.py::TestConditioningCalibrationDataSource` pins this call site.
 
 The implementation is in `cissn/models/`, `cissn/conformal/state_conditional.py`, and `cissn/baselines/`. Launch commands are in `RUNBOOK.md`.

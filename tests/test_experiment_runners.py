@@ -16,6 +16,7 @@ from experiments.run_benchmark import (
 )
 from experiments.run_baseline import compute_metrics, parse_ensemble_seeds
 from experiments.run_multiseed import aggregate_results, build_benchmark_run_argv, parse_multiseed_args
+from experiments.run_ablation import reject_unsupported_evidence_role
 
 
 class TestArchitectureSelection(unittest.TestCase):
@@ -220,6 +221,21 @@ class TestExperimentRunners(unittest.TestCase):
 
         self.assertEqual(len(first), len(set(first)))
         self.assertNotEqual(first, second)
+
+    def test_ablation_runner_rejects_confirmation_and_selection_roles(self):
+        """run_ablation.py never routes through the immutable-artifacts
+        finalize pipeline (require_new_run/create_temporary_result_root/
+        finalize_result_directory), so it must not silently accept
+        --evidence_role confirmation or selection: a config.json claiming
+        confirmation-grade evidence without the guarantees behind it would
+        misrepresent how the run was produced."""
+        for role in ("confirmation", "selection"):
+            with self.assertRaises(ValueError):
+                reject_unsupported_evidence_role(SimpleNamespace(evidence_role=role))
+
+    def test_ablation_runner_accepts_development_role(self):
+        reject_unsupported_evidence_role(SimpleNamespace(evidence_role="development"))
+        reject_unsupported_evidence_role(SimpleNamespace())
 
     def test_multiseed_aggregation_rejects_duplicate_seed(self):
         rows = [

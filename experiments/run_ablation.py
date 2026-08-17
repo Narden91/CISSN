@@ -38,6 +38,23 @@ except ImportError:
         set_random_seed, parse_args as parse_benchmark_args,
     )
 
+
+def reject_unsupported_evidence_role(args) -> None:
+    """Ablation runs never go through run_benchmark.py's immutable-artifacts
+    temp-root/finalize/completion-manifest pipeline, so no --evidence_role
+    other than the "development" default can be made true here. Reject the
+    other roles outright rather than silently accepting flags this runner
+    cannot honor -- an ablation config.json that claimed evidence_role
+    "confirmation" without the immutability guarantees behind it would be a
+    false record of how the run was produced."""
+    role = getattr(args, "evidence_role", "development")
+    if role != "development":
+        raise ValueError(
+            f"run_ablation.py does not support --evidence_role {role}: it never routes "
+            "through the immutable-artifacts finalize pipeline, so confirmation- or "
+            "selection-grade guarantees cannot be made true for ablation runs."
+        )
+
 # ── Ablation configurations ────────────────────────────────────────────────
 
 ABLATION_CONFIGS = {
@@ -331,6 +348,7 @@ def parse_ablation_args(argv=None):
 
 def main(argv=None) -> None:
     wrapper_args, args = parse_ablation_args(argv)
+    reject_unsupported_evidence_role(args)
     require_clean_source(args)
 
     if wrapper_args.ablations == 'all':

@@ -177,7 +177,7 @@ residuals from the same model):
 | cluster SCCP | 3.5962 | 0.9058 | 2.5625 |
 
 **Where sigma is actually fitted.** `run_benchmark.py:738-753` splits the calibration
-window in half (`_split_calibration_indices`, `:800-805`). `fit_scale` receives the
+window in half (`_split_calibration_indices`, `:793-798`). `fit_scale` receives the
 **first half** (`conditioning_states`, `conditioning_residuals`, ~696 windows on
 ETTh1-h336); the conformal quantiles for every mechanism are computed on the **second
 half**. Sigma is therefore already fit out-of-sample with respect to the forecaster's
@@ -337,7 +337,7 @@ them rather than leave them implicit.
   *standardised values* are not: the scaler is fit on `[0, train_end)` rather than
   `[0, n_train)` (`dataset.py:116`), because calibration is carved out first. The
   `dataset.py` docstring's "byte-identical" claim is true of indices, not values.
-- MSIS is computed in StandardScaler space (`run_benchmark.py:988-993`), so it is not
+- MSIS is computed in StandardScaler space (`run_benchmark.py:998-1000`), so it is not
   directly comparable to published raw-unit M4-convention MSIS.
 - Flat CP in `run_benchmark.py` is deliberately fit on only the second calibration half to
   match the conditional methods' quantile-fitting `n`. That is the right choice for

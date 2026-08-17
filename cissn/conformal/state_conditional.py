@@ -223,7 +223,10 @@ class StateConditionalConformal(_StateConformalBase):
         )
 
     def fit_partition(self, reference_states: Union[torch.Tensor, np.ndarray]) -> None:
-        """Learn a state partition from training data before calibration."""
+        """Learn a state partition from the caller-supplied conditioning states
+        before calibration. The caller (run_benchmark.py) passes the calibration
+        split's conditioning-half states, not train states, so this mechanism and
+        StateScaledConformal.fit_scale see identical fitting sets."""
         states = self._validate_states(self._to_numpy(reference_states, "reference_states"))
         self._reset_fit_state()
         minimum = self._min_calibration_samples()
@@ -524,9 +527,12 @@ class StateScaledConformal(_StateConformalBase):
         rescale its level; all cells share one Gram factorisation, so the cost
         over 'scalar' is one extra matrix multiply, not one solve per cell.
 
-        Must be called before calibrate(), and must be fit on data disjoint
-        from the calibration split -- mirroring
-        StateConditionalConformal.fit_partition().
+        Must be called before calibrate(). The caller (run_benchmark.py) fits
+        this on the calibration split's conditioning-half states -- disjoint
+        from the later quantile-calibration half, but a subset of the overall
+        calibration split, not of train data -- mirroring
+        StateConditionalConformal.fit_partition() by fitting on the exact same
+        conditioning states, not merely a disjoint-from-calibration set.
         """
         states = self._validate_states(self._to_numpy(reference_states, "reference_states"))
         residuals = self._to_numpy(reference_residuals, "reference_residuals")
