@@ -29,6 +29,29 @@ import numpy as np
 # reference by this margin. Advisory only -- it never sets structural_passed.
 _QUALITY_IMPROVEMENT_MARGIN = 0.1
 
+# Closing window used to decide whether validation had gone flat before the LR
+# schedule reached its floor, and the relative improvement across that window
+# below which training counts as converged rather than cut short.
+_LR_PLATEAU_EPOCHS = 5
+_LR_PLATEAU_REL_IMPROVEMENT = 0.005
+
+
+def _validation_still_improving(history: Sequence[dict]) -> bool:
+    """Was validation loss still moving over the final `_LR_PLATEAU_EPOCHS` epochs?
+
+    Used to decide whether a decayed final learning rate cut training short or
+    merely annealed on schedule after the model had converged. Too short a
+    history to judge counts as still improving, so the flag keeps its previous
+    behaviour on runs that end almost immediately.
+    """
+    if len(history) <= _LR_PLATEAU_EPOCHS:
+        return True
+    start = history[-(_LR_PLATEAU_EPOCHS + 1)]["vali_loss"]
+    end = history[-1]["vali_loss"]
+    if start <= 0:
+        return True
+    return (start - end) / start > _LR_PLATEAU_REL_IMPROVEMENT
+
 
 def _reference_mses(
     trues: np.ndarray,
@@ -149,6 +172,7 @@ def check_forecast_quality(
     y_train: Optional[np.ndarray] = None,
     seasonal_period: Optional[int] = None,
     horizon: Optional[int] = None,
+    total_epochs: Optional[int] = None,
 ) -> dict:
     """Score a well-formed forecast against training-split references.
 
@@ -205,12 +229,21 @@ def check_forecast_quality(
             )
         if len(history) <= 1:
             flags.append(f"training ran for only {len(history)} epoch(s) before stopping.")
+        # A decayed final LR only matters if the model was still learning when the
+        # schedule ran out. Two signals falsify that, and either one suppresses the
+        # flag: early stopping fired (the run ended on patience, not on the epoch
+        # budget), or validation had already gone flat over the closing epochs.
+        # Without this, cosine annealing raises the flag on every completed run by
+        # construction, since it drives the LR to its floor at the end of any budget.
         final_lr = history[-1].get("lr")
         if final_lr is not None and final_lr <= 1e-5:
-            flags.append(
-                f"final learning rate {final_lr:.2e} <= 1e-5 -- the LR schedule may have "
-                "collapsed before the model finished learning."
-            )
+            stopped_early = total_epochs is not None and len(history) < total_epochs
+            if not stopped_early and _validation_still_improving(history):
+                flags.append(
+                    f"final learning rate {final_lr:.2e} <= 1e-5 while validation was "
+                    f"still improving over the last {_LR_PLATEAU_EPOCHS} epochs -- the LR "
+                    "schedule may have collapsed before the model finished learning."
+                )
 
     return {
         "mse": mse,
@@ -228,6 +261,7 @@ def check_forecast_sanity(
     y_train: Optional[np.ndarray] = None,
     seasonal_period: Optional[int] = None,
     horizon: Optional[int] = None,
+    total_epochs: Optional[int] = None,
 ) -> dict:
     """Produce the combined ``sanity.json`` payload for a completed run.
 
@@ -252,6 +286,7 @@ def check_forecast_sanity(
         y_train=y_train,
         seasonal_period=seasonal_period,
         horizon=horizon,
+        total_epochs=total_epochs,
     )
     return {
         "passed": True,

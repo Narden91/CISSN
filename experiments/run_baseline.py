@@ -238,6 +238,7 @@ def save_result_artifacts(
         y_train=y_train,
         seasonal_period=get_dataset_spec(args.data)["seasonal_period"],
         horizon=args.pred_len,
+        total_epochs=args.train_epochs,
     )
     for msg in sanity_report["failures"]:
         print(f"Result review | structural failure: {msg}")

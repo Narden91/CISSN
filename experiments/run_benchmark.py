@@ -1059,6 +1059,7 @@ class Experiment:
             y_train=train_data_for_ref.data_y,
             seasonal_period=get_dataset_spec(self.args.data)["seasonal_period"],
             horizon=self.args.pred_len,
+            total_epochs=self.args.train_epochs,
         )
         for msg in sanity_report["failures"]:
             print(f"Result review | structural failure: {msg}")

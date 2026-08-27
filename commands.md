@@ -8,7 +8,8 @@ artifacts.
 decision rule it feeds. If the two disagree, `RUNBOOK.md` wins.
 
 Audited 2026-08-27, branch `conformal-per-cell-geometry`. `results/` holds exactly one
-usable artifact (Step 2); everything else was moved to `results/superseded/`.
+usable artifacts (Step 2, and Step 3 seed 42); everything superseded was moved to
+`results/superseded/`.
 
 ## Status
 
@@ -16,7 +17,7 @@ usable artifact (Step 2); everything else was moved to `results/superseded/`.
 | --- | --- | --- |
 | 1. Environment, data, tests | **yes** | `[x]` |
 | 2. DLinear reference, ETTh1-h336/s42 | **yes** | `[x]` |
-| 3. CISSN end-to-end, RevIN, 3 seeds | no | `[ ]` |
+| 3. CISSN end-to-end, RevIN, 3 seeds | seed 42 only | `[~]` |
 | 3b.0. Headroom diagnostic, ETTh1 | no | `[ ]` |
 | 3b.2. Conditioning selection, 3 seeds | no | `[ ]` |
 | 4. RevIN selection, ETTh2 + weather, paired | no | `[ ]` |
@@ -33,7 +34,7 @@ usable artifact (Step 2); everything else was moved to `results/superseded/`.
 
 Verified 2026-08-27: torch `2.11.0+cu128`, NVIDIA GeForce RTX 5080 Laptop GPU;
 `verify_datasets.py` OK for all 10 registered datasets (solar carries no integrity
-fingerprint, which does not affect the four locked datasets); 163 tests pass.
+fingerprint, which does not affect the four locked datasets); 166 tests pass.
 
 Stop if any line fails.
 
@@ -68,6 +69,17 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 45
 Writes to `results/validation/CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed{42,123,456}`.
 Check `metrics.json` carries all four of `interval`, `interval_flat_cp`,
 `interval_cluster_cp`, `interval_state_scaled`.
+
+**Seed 42 done** (2026-08-27), `structural_passed: true`, all four interval keys present:
+cluster SCCP Winkler `3.8374` (coverage 0.8865, width 2.5167) against flat CP `3.9497`
+(0.8936, 2.5899) and state-scaled scalar `3.9584` — a `-0.112` delta with narrower
+intervals. First measurement under the symmetric fitting scheme. Seeds 123 and 456 outstanding.
+
+**20 epochs is enough — verified, not assumed.** The same config at
+`--train_epochs 60 --patience 10` early-stops at epoch 27 with its best validation at
+epoch 17; validation past epoch 20 rises (1.5022 to 1.5103). In the 20-epoch run the last
+five epochs buy 0.224%. Keep the locked `--train_epochs 20 --patience 5`: changing it now
+would break comparability with the Step 2 DLinear reference already on disk.
 
 ## 3b.0. Headroom diagnostic `[ ]`
 

@@ -313,6 +313,59 @@ class TestForecastReview(unittest.TestCase):
         self.assertTrue(any("did not improve" in w for w in report["warnings"]))
         self.assertTrue(any("learning rate" in w for w in report["warnings"]))
 
+    @staticmethod
+    def _decaying_history(vali_losses):
+        """History whose LR anneals to the 1e-5 floor, as cosine always does."""
+        n = len(vali_losses)
+        return [
+            {
+                "epoch": i + 1,
+                "train_loss": 1.0,
+                "vali_loss": loss,
+                "lr": 1e-3 if i < n - 1 else 1e-5,
+            }
+            for i, loss in enumerate(vali_losses)
+        ]
+
+    def _report_for(self, history, total_epochs):
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(500, 24, 7))
+        preds = trues + rng.normal(scale=0.1, size=trues.shape)
+        return check_forecast_sanity(
+            preds, trues, history=history, total_epochs=total_epochs
+        )
+
+    def test_decayed_lr_not_flagged_when_validation_has_plateaued(self):
+        """Cosine drives the LR to its floor on every completed run, so a decayed
+        final LR is only worth flagging if the model was still learning."""
+        # Closing five epochs improve by ~0.22%, matching a real converged
+        # ETTh1-h336 RevIN run (1.532161 -> 1.528723) and below the 0.5% threshold.
+        history = self._decaying_history(
+            [1.532161, 1.531, 1.530, 1.529, 1.5289, 1.528723]
+        )
+
+        report = self._report_for(history, total_epochs=len(history))
+
+        self.assertTrue(report["passed"])
+        self.assertFalse(any("learning rate" in w for w in report["warnings"]))
+
+    def test_decayed_lr_flagged_when_validation_still_improving(self):
+        history = self._decaying_history([3.0, 2.6, 2.2, 1.9, 1.6, 1.3, 1.0])
+
+        report = self._report_for(history, total_epochs=len(history))
+
+        self.assertTrue(report["passed"])  # advisory only
+        self.assertTrue(any("learning rate" in w for w in report["warnings"]))
+
+    def test_decayed_lr_not_flagged_when_early_stopping_fired(self):
+        """Ending on patience rather than the epoch budget means the schedule did
+        not cut training short, whatever the closing validation slope looks like."""
+        history = self._decaying_history([3.0, 2.6, 2.2, 1.9, 1.6, 1.3, 1.0])
+
+        report = self._report_for(history, total_epochs=len(history) + 10)
+
+        self.assertFalse(any("learning rate" in w for w in report["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

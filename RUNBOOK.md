@@ -12,14 +12,14 @@ moved to `results/superseded/` with a per-run reason in that directory's `README
 stay available as diagnostics and are never pooled into a publication table. Audited
 against `results/` on 2026-08-27, branch `conformal-per-cell-geometry`.
 
-`results/` now holds exactly one usable artifact (Step 2). Launch commands for everything
-outstanding are in `commands.md`.
+`results/` holds the Step 2 DLinear reference and the seed-42 Step 3 CISSN run, both under
+current code. Launch commands for everything outstanding are in `commands.md`.
 
 | Step | State | Evidence on disk |
 | --- | --- | --- |
-| 1 environment, data, tests | `[x]` | verified 2026-08-27: CUDA available (torch `2.11.0+cu128`, RTX 5080), `verify_datasets.py` OK on all 10 datasets, 163 tests pass |
+| 1 environment, data, tests | `[x]` | verified 2026-08-27: CUDA available (torch `2.11.0+cu128`, RTX 5080), `verify_datasets.py` OK on all 10 datasets, 166 tests pass |
 | 2 DLinear reference (ETTh1-h336/s42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` — clean git, `structural_passed`, no quality flags, test MSE `0.619` |
-| 3 CISSN end-to-end (ETTh1-h336/s42) | `[ ]` | superseded run moved to `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` — pre-RevIN, and its `metrics.json` holds only `interval` (no `interval_flat_cp`/`_cluster_cp`/`_state_scaled`), so it predates the three-mechanism contract |
+| 3 CISSN end-to-end (ETTh1-h336) | `[~]` | seed 42 re-run 2026-08-27 under `--revin` on current code: `structural_passed`, all four interval keys, cluster SCCP `3.8374` vs flat `3.9497`. Seeds 123/456 outstanding. The pre-RevIN run it replaces is in `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` |
 | 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[ ]` | superseded, moved to `results/superseded/headroom/` and `.../percell/` — `git_dirty: true` at commit `d749709`, i.e. before the fitting-set fix, so every cluster-vs-scale ordering from them is confounded |
 | 3b.0 headroom diagnostic, other datasets | `[ ]` | ETTh2 / weather / exchange-rate not run |
 | 3b.2 validation-only selection runs | `[ ]` | `results/selection/` does not exist; no `selection.json` anywhere |
@@ -40,9 +40,15 @@ Two findings constrain what can be launched next:
 - **Every existing run is ETTh1-h336.** The three sealed datasets have never been opened,
   which is the intended state — and it also means no step past 3b has any evidence.
 
-Recommended order: Step 1, then re-run Step 3 under `--revin` on current code, then Step
-3b.0 against those fresh artifacts, then the Step 3b.2 and Step 4 selection runs, then the
-decision lock, then the prespecification, then the main grid.
+Recommended order: finish Step 3 (seeds 123, 456), then Step 3b.0 against those fresh
+artifacts, then the Step 3b.2 and Step 4 selection runs, then the decision lock, then the
+prespecification, then the main grid.
+
+Epoch budget: `--train_epochs 20 --patience 5` was checked against a 60-epoch,
+patience-10 arm on ETTh1-h336/seed 42/RevIN. That arm early-stops at epoch 27 with its best
+validation at epoch 17, and validation past epoch 20 rises. Twenty epochs is not a
+truncation on this cell; keep the locked budget so the grid stays comparable with the
+Step 2 reference.
 
 ## Locked design
 
@@ -77,7 +83,7 @@ uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_le
 
 Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts. Exclude a run from publication tables only when `structural_passed` is false, which means the artifact is unreadable (empty, non-finite, shape-inconsistent, or inverted interval bounds). Forecast quality never removes a run: `quality.flags` is advisory, and a finite but poor forecast is a valid result that must stay visible. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
 
-## Step 3: CISSN end-to-end `[ ]`
+## Step 3: CISSN end-to-end `[~]` seed 42 done, 123/456 outstanding
 
 ```powershell
 uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
