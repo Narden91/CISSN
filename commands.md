@@ -14,7 +14,7 @@ usable artifact (Step 2); everything else was moved to `results/superseded/`.
 
 | Exp | Did | ☐ |
 | --- | --- | --- |
-| 1. Environment, data, tests | no | `[ ]` |
+| 1. Environment, data, tests | **yes** | `[x]` |
 | 2. DLinear reference, ETTh1-h336/s42 | **yes** | `[x]` |
 | 3. CISSN end-to-end, RevIN, 3 seeds | no | `[ ]` |
 | 3b.0. Headroom diagnostic, ETTh1 | no | `[ ]` |
@@ -29,7 +29,11 @@ usable artifact (Step 2); everything else was moved to `results/superseded/`.
 
 ---
 
-## 1. Environment, data, tests `[ ]`
+## 1. Environment, data, tests `[x]` done
+
+Verified 2026-08-27: torch `2.11.0+cu128`, NVIDIA GeForce RTX 5080 Laptop GPU;
+`verify_datasets.py` OK for all 10 registered datasets (solar carries no integrity
+fingerprint, which does not affect the four locked datasets); 163 tests pass.
 
 Stop if any line fails.
 

@@ -17,7 +17,7 @@ outstanding are in `commands.md`.
 
 | Step | State | Evidence on disk |
 | --- | --- | --- |
-| 1 environment, data, tests | `[ ]` | no captured output; re-run before any launch |
+| 1 environment, data, tests | `[x]` | verified 2026-08-27: CUDA available (torch `2.11.0+cu128`, RTX 5080), `verify_datasets.py` OK on all 10 datasets, 163 tests pass |
 | 2 DLinear reference (ETTh1-h336/s42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` — clean git, `structural_passed`, no quality flags, test MSE `0.619` |
 | 3 CISSN end-to-end (ETTh1-h336/s42) | `[ ]` | superseded run moved to `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` — pre-RevIN, and its `metrics.json` holds only `interval` (no `interval_flat_cp`/`_cluster_cp`/`_state_scaled`), so it predates the three-mechanism contract |
 | 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[ ]` | superseded, moved to `results/superseded/headroom/` and `.../percell/` — `git_dirty: true` at commit `d749709`, i.e. before the fitting-set fix, so every cluster-vs-scale ordering from them is confounded |
@@ -58,7 +58,7 @@ The cluster state partition (`StateConditionalConformal.fit_partition`) and the 
 
 All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
-## Step 1: environment, data, tests `[ ]`
+## Step 1: environment, data, tests `[x]`
 
 ```powershell
 uv sync
