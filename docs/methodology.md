@@ -76,7 +76,7 @@ unconditional property of the method.
 
 The K-Means partition in `StateConditionalConformal` was the original mechanism for
 conditioning intervals on the latent state. Measured on a saved ETTh1-h336 run
-(`results/validation/CISSN_ETTh1_..._seed42`, pre-RevIN, `n_clusters=5`):
+(`results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/`, pre-RevIN, `n_clusters=5`):
 
 | quantity | value |
 | --- | --- |

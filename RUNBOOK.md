@@ -4,6 +4,46 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 
 > Evidence note: ETTh1 test artifacts have already informed development. They remain diagnostics only. Selection must use chronological pre-test folds; ETTh2, weather, and exchange-rate tests stay sealed until a decision lock is written.
 
+## Execution status
+
+Checkbox meaning: `[x]` an artifact on disk satisfies the step under the *current* code;
+`[ ]` the step must be launched. Runs that exist but cannot satisfy their step have been
+moved to `results/superseded/` with a per-run reason in that directory's `README.md`; they
+stay available as diagnostics and are never pooled into a publication table. Audited
+against `results/` on 2026-08-27, branch `conformal-per-cell-geometry`.
+
+`results/` now holds exactly one usable artifact (Step 2). Launch commands for everything
+outstanding are in `commands.md`.
+
+| Step | State | Evidence on disk |
+| --- | --- | --- |
+| 1 environment, data, tests | `[ ]` | no captured output; re-run before any launch |
+| 2 DLinear reference (ETTh1-h336/s42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` — clean git, `structural_passed`, no quality flags, test MSE `0.619` |
+| 3 CISSN end-to-end (ETTh1-h336/s42) | `[ ]` | superseded run moved to `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` — pre-RevIN, and its `metrics.json` holds only `interval` (no `interval_flat_cp`/`_cluster_cp`/`_state_scaled`), so it predates the three-mechanism contract |
+| 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[ ]` | superseded, moved to `results/superseded/headroom/` and `.../percell/` — `git_dirty: true` at commit `d749709`, i.e. before the fitting-set fix, so every cluster-vs-scale ordering from them is confounded |
+| 3b.0 headroom diagnostic, other datasets | `[ ]` | ETTh2 / weather / exchange-rate not run |
+| 3b.2 validation-only selection runs | `[ ]` | `results/selection/` does not exist; no `selection.json` anywhere |
+| 4 RevIN selection (ETTh2, weather, 3 seeds, paired) | `[ ]` | RevIN evidence to date is ETTh1 **test**, which is diagnostic and cannot select |
+| 5 hybrid variant selection (3 variants x 3 seeds) | `[ ]` | no hybrid run directories |
+| Prespecified statistics recorded | `[ ]` | primary endpoint and primary horizon not written into `protocol.json` or an adjacent prespecification file |
+| Main grid — CISSN, 4 datasets | `[ ]` | `results/publication/` does not exist |
+| Main grid — baselines, 5 models x 4 datasets | `[ ]` | none |
+| Ablations | `[ ]` | none |
+| Publication review (tables/figures/appendix) | `[ ]` | none |
+
+Two findings constrain what can be launched next:
+
+- **No run on disk carries an evidence role.** Every `protocol.json` has keys
+  `config/dataset/protocol/protocol_hash/source` and no `evidence` block, so all six runs
+  are development artifacts. None is eligible for the confirmation grid regardless of its
+  numbers.
+- **Every existing run is ETTh1-h336.** The three sealed datasets have never been opened,
+  which is the intended state — and it also means no step past 3b has any evidence.
+
+Recommended order: Step 1, then re-run Step 3 under `--revin` on current code, then Step
+3b.0 against those fresh artifacts, then the Step 3b.2 and Step 4 selection runs, then the
+decision lock, then the prespecification, then the main grid.
+
 ## Locked design
 
 - Datasets: `ETTh1`, `ETTh2`, `weather`, `exchange_rate`.
@@ -18,7 +58,7 @@ The cluster state partition (`StateConditionalConformal.fit_partition`) and the 
 
 All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
 
-## Step 1: environment, data, tests
+## Step 1: environment, data, tests `[ ]`
 
 ```powershell
 uv sync
@@ -29,7 +69,7 @@ uv run python tests/run_tests.py
 
 Stop if any command fails. `verify_datasets.py` must pass for the four locked datasets.
 
-## Step 2: DLinear reference reproduction
+## Step 2: DLinear reference reproduction `[x]` ETTh1-h336/seed 42
 
 ```powershell
 uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
@@ -37,7 +77,7 @@ uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_le
 
 Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts. Exclude a run from publication tables only when `structural_passed` is false, which means the artifact is unreadable (empty, non-finite, shape-inconsistent, or inverted interval bounds). Forecast quality never removes a run: `quality.flags` is advisory, and a finite but poor forecast is a valid result that must stay visible. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
 
-## Step 3: CISSN end-to-end
+## Step 3: CISSN end-to-end `[ ]`
 
 ```powershell
 uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
@@ -45,7 +85,7 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42
 
 Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` and `scale_stats.json` for fallback clusters and fitted scale coefficients, and `dependence_diagnostics.json`, before interpreting coverage.
 
-## Step 3b: state conditioning mode confirmation
+## Step 3b: state conditioning mode confirmation `[ ]`
 
 > Selection override: this legacy section is development-only because its diagnostic and commands read test artifacts. Do not use any outcome here to choose conditioning. The choice belongs to `experiments/run_selection.py` (`--evidence_role selection`), which trains and calibrates identically but scores every mechanism on the validation split only -- the test loader is never constructed -- followed by a decision lock. See Step 3b.2 below.
 
@@ -75,7 +115,7 @@ cluster and state-scaled CP had a ~9x conditioning-fit sample-size asymmetry (se
 calibration-half window, so this ordering must be re-measured under the current code
 before it can be used to select a mode.
 
-### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU)
+### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU) `[ ]`
 
 The diagnostic needs a run directory containing `states.npy`, `residuals.npy`,
 `pred.npy`, and `true.npy` — any completed `run_benchmark.py` CISSN run writes all four
@@ -91,12 +131,14 @@ geometry, not conditioning as such) and the `summary_vs_flat` win counts. Run th
 each dataset before spending seeds on it — the conditioning result is regime-dependent
 and there is no reason to assume ETTh1's carries over.
 
-ETTh1-h336 is already done and recorded in `docs/methodology.md`; its development
-artifacts are under `results/headroom/` and `results/percell/`. Those are development
+ETTh1-h336 was measured and is recorded in `docs/methodology.md`, but under the earlier
+asymmetric fitting scheme; those artifacts now sit under `results/superseded/headroom/`
+and `results/superseded/percell/` (see that directory's `README.md`). They are development
 runs, not `--require_clean_git` publication evidence — reuse them for diagnostics, never
-pool them into publication tables.
+pool them into publication tables, and re-run this diagnostic against fresh Step 3
+artifacts before citing any cluster-vs-scale ordering.
 
-### Step 3b.2: validation-only selection runs
+### Step 3b.2: validation-only selection runs `[ ]`
 
 Run both geometries through `experiments/run_selection.py` (`--evidence_role selection`
 is forced automatically) so the comparison stays paired within one model, on validation
@@ -117,7 +159,7 @@ Record the observed per-seed deltas here either way, then run the confirmation c
 3b.1 above showed the ETTh1 test numbers for context only -- they are diagnostic and
 cannot be used to make this decision) before proceeding to Step 4.
 
-## Step 4: instance normalisation
+## Step 4: instance normalisation `[ ]`
 
 > Selection override: historical ETTh1 test values below are diagnostic context only, not
 > a default-selection procedure. Choose RevIN from `experiments/run_selection.py`
@@ -147,7 +189,7 @@ dataset relative to the non-RevIN arm; if it regresses anywhere, keep it opt-in 
 `--revin` explicitly per dataset in the main grid rather than defaulting a fix proven on
 one dataset/horizon. Record the outcome and per-seed numbers here either way.
 
-## Step 5: hybrid variant selection (validation only)
+## Step 5: hybrid variant selection (validation only) `[ ]`
 
 The legacy architecture routes the forecast through a five-dimensional latent bottleneck.
 Without RevIN this caps forecast rank at 5. With RevIN's side statistics the cap loosens
@@ -189,7 +231,7 @@ as a separate arm rather than a drop-in ablation.
 If no variant meets these criteria, stop: report the hybrid as a negative result
 and do not retune against test data.
 
-## Prespecified statistics (write before opening the sealed datasets)
+## Prespecified statistics (write before opening the sealed datasets) `[ ]`
 
 `RUNBOOK.md` locks 4 datasets x 4-5 horizons x 3 seeds, with per-cell comparisons of the
 primary mechanism against flat CP and against the secondary mechanism -- on the order of
@@ -204,7 +246,7 @@ result. Before ETTh2, weather, or exchange-rate test splits are opened, record h
   may state as confirmatory.
 - **Primary horizon**: h336 is the de facto candidate, simply because every development
   and selection measurement so far has used h336 (`docs/methodology.md`,
-  `results/headroom/`, `results/percell/`). That is a selected horizon, not a neutral
+  `results/superseded/`). That is a selected horizon, not a neutral
   default, unless prespecified here explicitly. Record the chosen primary horizon and
   the reason before running the grid at other horizons.
 - **Per-cell win-count rule is descriptive, not confirmatory**. `n=3` seeds per cell means
@@ -220,7 +262,7 @@ Record the filled-in choices above in `protocol.json` (or an adjacent prespecifi
 file) before Main grid runs begin, so the manifest carries the prespecification and a
 later reader can check the analysis was not chosen after seeing the sealed results.
 
-## Main grid
+## Main grid `[ ]`
 
 This is the sealed confirmation grid: every command below must pass
 `--evidence_role confirmation`, which `enforce_evidence_contract` requires be paired with
@@ -275,7 +317,7 @@ and need an added arm if the ablation table requires them: both scale geometries
 single run (a run fixes one `--scale_geometry`), and any conditioning mode crossed with
 an architecture ablation such as `no_structured_A` or `state_dim_4`.
 
-## Publication review
+## Publication review `[ ]`
 
 Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `structural_passed: false`, different splits, and raw-UQ results from the primary table. Do not exclude a run for poor forecast quality; report it with its advisory flags.
 

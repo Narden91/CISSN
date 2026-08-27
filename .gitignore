@@ -51,7 +51,7 @@ training_output/
 logs/
 runs/
 output/
-results/
+# results/
 data/*
 explanations/*
 .cursor/
