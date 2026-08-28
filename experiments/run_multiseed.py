@@ -73,7 +73,20 @@ def run_single_experiment(benchmark_argv: list[str], seed: int, horizon: int):
     if result.returncode != 0:
         raise ExperimentFailedError(f"{setting}: subprocess exited with code {result.returncode}")
 
-    rdir = Path(effective_args.results_dir) / setting
+    results_dir = Path(effective_args.results_dir)
+    rdir = results_dir / setting
+    if not (rdir / 'metrics.json').exists() and getattr(effective_args, 'immutable_artifacts', False):
+        # --immutable_artifacts suffixes the run directory with a protocol
+        # design hash (run_benchmark.py's build_run_setting) that is only
+        # known after the subprocess builds its protocol manifest, so look
+        # it up on disk instead of recomputing the hash here.
+        candidates = sorted(results_dir.glob(f"{setting}__*"))
+        if len(candidates) == 1:
+            rdir = candidates[0]
+        elif len(candidates) > 1:
+            raise ExperimentFailedError(
+                f"{setting}: multiple immutable result directories match, expected one: {candidates}"
+            )
     metrics_json = rdir / 'metrics.json'
     if not metrics_json.exists():
         raise ExperimentFailedError(f"{setting}: run exited 0 but {metrics_json} was not written")

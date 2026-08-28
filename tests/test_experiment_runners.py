@@ -15,7 +15,12 @@ from experiments.run_benchmark import (
     require_clean_source,
 )
 from experiments.run_baseline import compute_metrics, parse_ensemble_seeds
-from experiments.run_multiseed import aggregate_results, build_benchmark_run_argv, parse_multiseed_args
+from experiments.run_multiseed import (
+    aggregate_results,
+    build_benchmark_run_argv,
+    parse_multiseed_args,
+    run_single_experiment,
+)
 from experiments.run_ablation import reject_unsupported_evidence_role
 
 
@@ -281,6 +286,32 @@ class TestExperimentRunners(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Duplicate seeds"):
             aggregate_results(rows, n_seeds_requested=2)
+
+    def test_run_single_experiment_finds_immutable_hash_suffixed_directory(self):
+        """run_benchmark.py's --immutable_artifacts finalizes results into
+        '<setting>__<design_hash>', not '<setting>' (build_run_setting in
+        run_benchmark.py). run_multiseed.py must find that directory instead
+        of raising ExperimentFailedError on a metrics.json that was written,
+        just under a suffixed name."""
+        import json as json_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp) / "results"
+            benchmark_argv = [
+                '--data', 'ETTh1', '--results_dir', str(results_dir),
+                '--immutable_artifacts', '--strict_determinism', '--require_clean_git',
+            ]
+            effective_args = parse_benchmark_args(build_benchmark_run_argv(benchmark_argv, seed=42, horizon=24))
+            base_setting = build_setting_name(effective_args)
+            hashed_dir = results_dir / f"{base_setting}__f9571bebac8b"
+            hashed_dir.mkdir(parents=True)
+            (hashed_dir / "metrics.json").write_text(json_module.dumps({"point": {}, "interval": {}}), encoding='utf-8')
+
+            with patch('experiments.run_multiseed.subprocess.run') as mock_run:
+                mock_run.return_value = SimpleNamespace(returncode=0)
+                result = run_single_experiment(benchmark_argv, seed=42, horizon=24)
+
+            self.assertEqual(result["setting"], base_setting)
 
 
 class TestConditioningCalibrationDataSource(unittest.TestCase):
