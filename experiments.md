@@ -49,7 +49,7 @@ Move-Item ./results/publication/cissn_ETTh2.json,./results/publication/cissn_ETT
 Run the `Get-ChildItem` on its own first and read the list — that filter also matches
 anything else named `CISSN_*` added at the root since the audit.
 
-## 3. CISSN end-to-end, seeds 123 and 456 `[~]` 1 of 3 done
+## 3. CISSN end-to-end, seeds 123 and 456 `[x]` done
 
 Seed 42 is on disk. Needed before 3b.0, which reads these run directories.
 
@@ -68,7 +68,7 @@ foreach ($seed in $seeds) {
 Confirm each `metrics.json` carries all four of `interval`, `interval_flat_cp`,
 `interval_cluster_cp`, `interval_state_scaled`.
 
-## 3b.0. Headroom diagnostic `[ ]` 0 of 3 done
+## 3b.0. Headroom diagnostic `[x]` done
 
 No GPU. Reads the three Step 3 directories, so run it after Step 3 finishes.
 
@@ -88,7 +88,7 @@ foreach ($seed in $seeds) {
 Read `variance_decomposition.per_sample_fraction` — it bounds the *scalar* geometry only,
 not conditioning as such — and the `summary_vs_flat` win counts.
 
-## 3b.2. Conditioning selection, seeds 123 and 456 `[~]` 1 of 3 done
+## 3b.2. Conditioning selection, seeds 123 and 456 `[x]` done
 
 Validation only; `run_selection.py` never constructs the test loader.
 
