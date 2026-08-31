@@ -55,6 +55,9 @@ output/
 data/*
 explanations/*
 .cursor/
+# Immutable artifact temp directories (created during --immutable_artifacts runs)
+results/**/.*.tmp-*
+checkpoints/**/.*.tmp-*
 
 # Jupyter Notebook
 .ipynb_checkpoints

@@ -7,9 +7,14 @@ artifacts.
 `RUNBOOK.md` remains the protocol and the authority on *why* each step exists and what
 decision rule it feeds. If the two disagree, `RUNBOOK.md` wins.
 
-Audited 2026-08-27, branch `conformal-per-cell-geometry`. `results/` holds exactly one
-usable artifacts (Step 2, and Step 3 seed 42); everything superseded was moved to
-`results/superseded/`.
+`experiments.md` carries the outstanding subset of this file — only the steps with cells
+still to run, in dependency order, with the audit findings folded into each. Use it to
+launch; use this file for the full record.
+
+Audited 2026-08-31, branch `conformal-per-cell-geometry`, against `results/` on disk.
+Superseded runs live in `results/superseded/`. Three findings from that audit constrain
+what the artifacts on disk can support — read "Audit findings" below before reusing any
+of them.
 
 ## Resume mechanism
 
@@ -42,18 +47,64 @@ delete that cell's directory under `results/...` (and `checkpoints/...` for
 
 | Exp | Did | ☐ |
 | --- | --- | --- |
-| 1. Environment, data, tests | **yes** | `[x]` |
-| 2. DLinear reference, ETTh1-h336/s42 | **yes** | `[x]` |
-| 3. CISSN end-to-end, RevIN, 3 seeds | seed 42 only | `[~]` |
-| 3b.0. Headroom diagnostic, ETTh1 | no | `[ ]` |
-| 3b.2. Conditioning selection, 3 seeds | no | `[ ]` |
-| 4. RevIN selection, ETTh2 + weather, paired | no | `[ ]` |
-| 5. Hybrid variants, 3 arms x 3 seeds | no | `[ ]` |
+| 1. Environment, data, tests | yes | `[x]` |
+| 2. DLinear reference, ETTh1-h336/s42 | yes — `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` | `[x]` |
+| 3. CISSN end-to-end, RevIN, 3 seeds | 1 of 3 — seed 42 only | `[~]` |
+| 3b.0. Headroom diagnostic, ETTh1 | 0 of 3 — no `conditioning_headroom*.json` on disk | `[ ]` |
+| 3b.2. Conditioning selection, 3 seeds | 1 of 3 — seed 42 only | `[~]` |
+| 4. RevIN selection, ETTh2 + weather, paired | 2 of 12 — ETTh2 + weather RevIN seed 42; no non-RevIN arm, no seeds 123/456 | `[~]` |
+| 5. Hybrid variants, 3 arms x 3 seeds | 3 of 9 — all three arms at seed 42 only | `[~]` |
 | Prespecification (no command — write it down) | no | `[ ]` |
-| Main grid, CISSN, 4 datasets | no | `[ ]` |
-| Main grid, baselines, 5 models | no | `[ ]` |
+| Main grid, CISSN, 4 datasets | 41 runs, but **wrong regime** and ETTh1 missing — see finding 1 and 3 | `[~]` |
+| Main grid, baselines, 5 models | 245 dirs, 4 of 5 models — `deep_ensemble` absent, `dlinear` duplicated — see finding 4 | `[~]` |
 | Ablations | no | `[ ]` |
-| Publication review | no | `[ ]` |
+| Publication review | no — no `tables/`, `figures/`, or `reproducibility.md` | `[ ]` |
+
+### Audit findings
+
+**1. The whole CISSN main grid ran without RevIN, on the scalar geometry.** Every one of
+the 41 runs under `results/` carries `revin: false` and `scale_geometry: scalar` in its
+`config.json`. `CLAUDE.md` records both as the configuration with no measured effect: a
+scalar `sigma(s)` cannot express a state x cell signal, and outside the RevIN regime every
+mechanism loses to flat CP. The artifacts reproduce exactly that — mean Winkler of the
+primary (scale) mechanism against flat CP, paired on identical residuals:
+
+| dataset | cells | scale | flat CP | cluster | scale − flat | scale wins | coverage |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ETTh1 | 2 | 5.7214 | 5.3808 | 5.5145 | `+0.3406` | 0/2 | 0.724 |
+| ETTh2 | 15 | 12.3406 | 12.0122 | 12.6563 | `+0.3285` | 7/15 | 0.779 |
+| weather | 12 | 2.8811 | 2.6986 | 2.6884 | `+0.1826` | 1/12 | 0.829 |
+| exchange_rate | 12 | 14.4814 | 9.4872 | 10.0190 | `+4.9942` | 1/12 | 0.750 |
+
+Flat CP wins on every dataset and marginal coverage sits at 0.72-0.83 against a nominal
+0.90 — the amplitude-collapse signature, not a conditioning result. These runs are a
+negative result for the pre-RevIN scalar regime. They are not evidence about state
+conditioning and must not be reported as the main grid.
+
+**2. The sealed datasets were opened before the decisions that were supposed to precede
+them.** ETTh2, weather, and exchange-rate all have test-split evaluations on disk, while
+the prespecification is unwritten, Step 3b.2 stands at 1 of 3 seeds, and Step 4 at 2 of 12
+cells. `RUNBOOK.md` requires the prespecification and the decision lock first. Whatever is
+re-run under the correct regime, these three test splits are no longer untouched, and any
+final claim has to say so.
+
+**3. ETTh1's CISSN grid never completed.** Only `h24`/seed 42 exists, in two directories
+(`__a259c80824e6`, `__f9571bebac8b`) from two separate launches. `h96`, `h192`, `h336`,
+and `h720` are absent, and there is no `results/publication/cissn_ETTh1.json`. The
+launches aborted on the first cell against the `run_multiseed.py` result-directory lookup
+that assumed an unsuffixed run directory under `--immutable_artifacts`; that lookup is
+fixed, so a re-launch proceeds past `h24`.
+
+**4. The baseline grid is 4 models, not 5, and `dlinear` is doubled.** `deep_ensemble` has
+no run directory at all (54 cells). `dlinear` holds 83 directories against 54 expected:
+ETTh1 and ETTh2 were each run twice, at commits `b8edcc9` and `cd8cb6a`, with identical
+visible configuration and different `design_hash`, so the duplicates are indistinguishable
+by name. Pick one commit per cell before aggregating. Counts per model: `deepstate` 54,
+`dlinear` 83, `mc_dropout` 54, `patchtst` 54.
+
+All 41 CISSN runs and the baseline directories pass their structural validity check
+(`sanity.json`, `structural_passed: true`); finding 1 is about the configuration the grid
+was launched with, not about malformed artifacts.
 
 ---
 
@@ -81,7 +132,7 @@ Already on disk at `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed4
 uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-## 3. CISSN end-to-end, RevIN, current code `[ ]`
+## 3. CISSN end-to-end, RevIN, current code `[~]` seed 42 done
 
 Replaces the superseded pre-RevIN run. Needed before 3b.0.
 
@@ -153,7 +204,7 @@ foreach ($seed in $seeds) {
 }
 ```
 
-## 3b.2. Conditioning selection `[ ]`
+## 3b.2. Conditioning selection `[~]` seed 42 done, 123/456 outstanding
 
 Validation only; the test loader is never constructed.
 
@@ -184,7 +235,7 @@ foreach ($seed in $seeds) {
 }
 ```
 
-## 4. RevIN selection, ETTh2 + weather `[ ]`
+## 4. RevIN selection, ETTh2 + weather `[~]` 2 of 12 cells done
 
 Twelve runs: two datasets x three seeds x with/without `--revin`. The paired comparator is
 the same command minus `--revin`.
@@ -239,7 +290,7 @@ foreach ($data in $datasets) {
 }
 ```
 
-## 5. Hybrid variants `[ ]`
+## 5. Hybrid variants `[~]` 3 of 9 cells done (all three arms, seed 42)
 
 Three arms x three seeds. `--state_revin` changes the epoch-0 gradient scale, so treat that
 arm as separate rather than a drop-in ablation.
@@ -270,11 +321,9 @@ feature's mean MSE degraded by more than 5%. Ties within 0.5% go to anchored dyn
 without RevIN. If none qualifies, report the hybrid as a negative result and do not retune.
 
 **Resumable loop** (skips any of the 9 cells whose `selection.json` already exists). The
-setting names are derived from `build_setting_name` in `run_benchmark.py:44-68` — verified
-against real artifacts for the flat/cluster/scale cases above, but **no hybrid run exists
-on disk yet to check these three against**; if the first run's directory name doesn't
-match what `Test-Path` expects, the loop just re-runs it once and you'll see it in the
-listing — it will not silently duplicate work:
+setting names are derived from `build_setting_name` in `run_benchmark.py:44-68` and are now
+confirmed against real artifacts: all three seed-42 arms exist under `results/selection/`
+with exactly the names below, so the loop skips them and starts at seed 123:
 
 ```powershell
 $seeds = 42,123,456
@@ -302,11 +351,20 @@ horizon into `protocol.json` or an adjacent prespecification file, so the manife
 the prespecification and a later reader can check the analysis was not chosen after seeing
 the results. See `RUNBOOK.md`, "Prespecified statistics".
 
-## Main grid — CISSN `[ ]`
+## Main grid — CISSN `[~]` 41 runs on disk, wrong regime — see audit finding 1
 
 Sealed confirmation runs. `--conformal_conditioning` below is written as `cluster`, the
 current default — **change all four lines (or the `$conditioning` variable in the loop
 below) to whatever Step 3b.2 selected** before running.
+
+> The 41 runs currently under `results/` were launched with `--conformal_conditioning
+> scale` at the default `--scale_geometry scalar` and **without `--revin`**, before Step
+> 3b.2 had selected anything. Flat CP beats the primary mechanism on all four datasets and
+> marginal coverage lands at 0.72-0.83 against nominal 0.90 (audit finding 1). Treat them
+> as a pre-RevIN negative result, not the main grid. A real grid needs `--revin`, the
+> geometry Step 3b.2 selects, and `--results_dir ./results/publication` — note the commands
+> below inherit the default `./results/`, which is why those runs landed at the repository
+> root rather than beside the baselines.
 
 ```powershell
 uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --conformal_conditioning cluster --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
@@ -360,10 +418,17 @@ Note: the setting name above assumes `--revin`, matching every headline run in t
 If a dataset's grid cell is run without RevIN, drop `_fullrevin` from that dataset's
 `$setting` string.
 
-## Main grid — baselines `[ ]`
+## Main grid — baselines `[~]` 245 dirs on disk, 4 of 5 models — see audit finding 4
 
 270 runs. Horizons differ per dataset: ETT gets `24,96,192,336,720`, weather and
 exchange-rate get `96,192,336,720` (registry-enforced). This loop encodes that.
+
+> On disk: `deepstate` 54, `patchtst` 54, `mc_dropout` 54, `dlinear` 83, `deep_ensemble`
+> **0**. `deep_ensemble` never ran (54 cells outstanding). `dlinear`'s 83 is 54 real cells
+> plus 29 duplicates — ETTh1 and ETTh2 were each launched twice, at commits `b8edcc9` and
+> `cd8cb6a`, identical in visible configuration and distinguishable only by `design_hash`.
+> Choose one commit per cell before aggregating; the resumable loop below cannot tell them
+> apart and will report both as already done.
 
 ```powershell
 $seeds = 42,123,456
@@ -481,8 +546,13 @@ has roughly a 50% false-positive rate per cell under a null of no effect.
 - **Confirmation runs need all four flags**: `--evidence_role confirmation` requires
   `--immutable_artifacts --strict_determinism --require_clean_git` together. Without them a
   run defaults to `development` and is ineligible for the publication table regardless of
-  its numbers. No artifact currently on disk carries an evidence role.
-- **ETTh2, weather, exchange-rate stay sealed** until the prespecification is written and
-  the decision lock recorded. Steps 3b.2, 4, and 5 read validation only —
-  `run_selection.py` never constructs the test loader, which is what makes those decisions
-  legitimate. Do not substitute `run_benchmark.py`.
+  its numbers. The 41 CISSN runs and the 245 baseline runs on disk do carry
+  `evidence_role: confirmation` in their `config.json`; that flag records how they were
+  launched and does not make audit finding 1's regime problem go away.
+- **ETTh2, weather, exchange-rate were meant to stay sealed** until the prespecification is
+  written and the decision lock recorded. They no longer are — all three have test-split
+  evaluations on disk from the grid described in audit finding 1, launched before either
+  was in place. Steps 3b.2, 4, and 5 still read validation only (`run_selection.py` never
+  constructs the test loader), so those decisions remain legitimate; state the earlier test
+  exposure in any final claim rather than describing these splits as untouched. Do not
+  substitute `run_benchmark.py`.
