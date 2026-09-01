@@ -313,6 +313,25 @@ class TestForecastReview(unittest.TestCase):
         self.assertTrue(any("did not improve" in w for w in report["warnings"]))
         self.assertTrue(any("learning rate" in w for w in report["warnings"]))
 
+    def test_history_accepts_per_member_ensemble_shape(self):
+        """Deep ensemble saves one entry per member, not per epoch."""
+        rng = np.random.default_rng(0)
+        trues = rng.normal(size=(500, 24, 7))
+        preds = trues + rng.normal(scale=0.1, size=trues.shape)
+        member_history = [
+            {"epoch": 1, "train_loss": 1.0, "vali_loss": 1.0, "lr": 1e-3},
+            {"epoch": 2, "train_loss": 1.0, "vali_loss": 1.0, "lr": 1e-6},
+        ]
+        history = [
+            {"member_index": 0, "seed": 42, "history": None},
+            {"member_index": 1, "seed": 1051, "history": member_history},
+        ]
+
+        report = check_forecast_sanity(preds, trues, history=history)
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(any("did not improve" in w for w in report["warnings"]))
+
     @staticmethod
     def _decaying_history(vali_losses):
         """History whose LR anneals to the 1e-5 floor, as cosine always does."""

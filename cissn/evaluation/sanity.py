@@ -36,6 +36,24 @@ _LR_PLATEAU_EPOCHS = 5
 _LR_PLATEAU_REL_IMPROVEMENT = 0.005
 
 
+def _epoch_records(history: Sequence[dict]) -> list[dict]:
+    """Return per-epoch records from either a flat or a per-member history.
+
+    Single-model runners save a flat list of epoch records. The deep ensemble
+    saves one entry per member (``{"member_index", "seed", "history"}``), so its
+    top level holds no ``vali_loss``. The quality flags describe one training
+    curve, so the ensemble is represented by its first member -- the one trained
+    on the run's own seed. Members whose history file is missing are skipped.
+    """
+    if not history or "vali_loss" in history[0]:
+        return list(history)
+    for member in history:
+        inner = member.get("history") if isinstance(member, dict) else None
+        if inner:
+            return list(inner)
+    return []
+
+
 def _validation_still_improving(history: Sequence[dict]) -> bool:
     """Was validation loss still moving over the final `_LR_PLATEAU_EPOCHS` epochs?
 
@@ -221,6 +239,7 @@ def check_forecast_quality(
             f"by >= 0.5 * true.std()={true_std:.6f} -- possible systematic bias."
         )
 
+    history = _epoch_records(history) if history else []
     if history:
         if history[-1]["vali_loss"] >= history[0]["vali_loss"]:
             flags.append(
