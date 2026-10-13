@@ -5,15 +5,17 @@ publication table, and none may be pooled with artifacts produced under the curr
 Nothing here was deleted: `docs/methodology.md` and `RUNBOOK.md` cite these paths as the
 origin of published numbers, and those citations must keep resolving.
 
-Audited 2026-08-27 on branch `conformal-per-cell-geometry`.
+Audited 2026-08-27 (last updated 2026-10-13) on branch `conformal-per-cell-geometry`.
 
 | Directory | Was | Why it cannot be used |
 | --- | --- | --- |
 | `headroom/` (3 seeds) | ETTh1-h336 RevIN CISSN runs + `conditioning_headroom_revin.json` | `git_dirty: true` at commit `d749709`, i.e. produced **before** the conditioning fitting-set fix. Cluster SCCP's partition was fit on train states (~6481 windows) while `sigma` was fit on the calibration half (~696) — a ~9x asymmetry that confounds every cluster-vs-scale ordering measured from them. |
 | `percell/` (1 seed) | ETTh1-h336 RevIN, `--conformal_conditioning scale --scale_geometry per_cell` | Same commit, same `git_dirty: true`, same asymmetry. The per-cell number `3.6916` comes from here. |
 | `CISSN_ETTh1_h336_seed42_preRevIN/` | the original Step 3 end-to-end run, plus its `conditioning_headroom.json` | Two independent problems: it is pre-RevIN (amplitude collapse, variance ratio ~0.07, test MSE 1.374), and its `metrics.json` carries only `interval` — no `interval_flat_cp`, `interval_cluster_cp`, or `interval_state_scaled` — so it predates the three-mechanism reporting contract entirely. |
+| `pre_revin_scalar_grid/` (41 runs + 6 aggregate files) | exposed-dataset CISSN grid launched with `revin: false` and `scale_geometry: scalar` | Wrong regime: flat CP beats the primary mechanism on all four datasets, marginal coverage 0.72-0.83 against 0.90. Moved 2026-10-13 so no aggregation script reads it. Its results were read, so the ETTh2, weather, and exchange-rate test splits are exposed (see `docs/prespecification.md`). |
+| `dlinear_cd8cb6a_duplicate/` (29 runs) | second `dlinear` launch at commit `cd8cb6a`, ETTh1 and ETTh2 | Duplicate of the complete `b8edcc9` set, which matches the other single-model baselines. Rule fixed before any metric was read. `generate_publication_tables.py` cannot choose between two copies. |
 
-Common to all three: `protocol.json` has keys `config/dataset/protocol/protocol_hash/source`
+Common to the first three: `protocol.json` has keys `config/dataset/protocol/protocol_hash/source`
 and **no `evidence` block**, so every run here is a development artifact regardless of its
 numbers.
 
@@ -38,4 +40,4 @@ in `docs/methodology.md` only as retracted context. The fixed call site is
 ## Replacement
 
 `RUNBOOK.md` Step 3 re-run under `--revin` on current code, then Step 3b.0 against those
-fresh artifacts. See `commands.md` at the repository root.
+fresh artifacts. See `experiments.md` at the repository root.

@@ -675,6 +675,62 @@ class TestMovingBlockBootstrap(unittest.TestCase):
         )
 
 
+class TestPairedInferenceRunSelection(unittest.TestCase):
+    def test_hybrid_runs_stay_out_of_the_primary_cell_and_duplicate_seeds_fail(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from paired_interval_inference import _cell_delta, _load_cell_runs
+
+        def write_run(root, name, architecture, seed):
+            run = Path(root) / name
+            run.mkdir()
+            scores = np.ones((5, 3))
+            np.save(run / "per_origin_interval_metrics.npy", scores)
+            np.save(run / "per_origin_interval_flat_cp_metrics.npy", scores)
+            np.save(run / "test_origin_indices.npy", np.arange(5))
+            (run / "metrics.json").write_text(json.dumps({"structural_passed": True}))
+            (run / "config.json").write_text(json.dumps({
+                "data": "X", "pred_len": 4, "seed": seed, "evidence_role": "confirmation",
+                "conformal_conditioning": "cluster", "architecture": architecture, "revin": architecture == "legacy",
+            }))
+
+        with tempfile.TemporaryDirectory() as root:
+            write_run(root, "CISSN_X_legacy_s1__a", "legacy", 1)
+            write_run(root, "CISSN_X_hybrid_s1__b", "hybrid", 1)
+            cells = _load_cell_runs(Path(root), {"X"})
+            self.assertEqual([run["seed"] for run in cells[("X", 4)]], [1])
+
+            write_run(root, "CISSN_X_legacy_s1__c", "legacy", 1)
+            duplicated = _load_cell_runs(Path(root), {"X"})
+            with self.assertRaises(ValueError):
+                _cell_delta(duplicated[("X", 4)])
+
+
+class TestWindowPlacement(unittest.TestCase):
+    def test_gapped_placement_leaves_pred_len_between_windows(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from diagnose_window_placement import window_slices
+
+        n_fit, n_cal, gap = 100, 90, 30
+        region = 2 * gap + n_fit + n_cal
+
+        fit, cal = window_slices("adjacent_gap", n_fit, n_cal, gap, region)
+        self.assertEqual(cal.start - fit.stop, gap)
+        self.assertEqual(region - cal.stop, gap)
+        self.assertEqual((fit.stop - fit.start, cal.stop - cal.start), (n_fit, n_cal))
+
+        fit, cal = window_slices("adjacent_no_gap", n_fit, n_cal, gap, region)
+        self.assertEqual((cal.start - fit.stop, region - cal.stop), (0, 0))
+        with self.assertRaises(ValueError):
+            window_slices("adjacent_gap", n_fit, n_cal, gap, region - 1)
+
+
 if __name__ == '__main__':
     unittest.main()
  

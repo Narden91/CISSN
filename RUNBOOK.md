@@ -7,27 +7,27 @@ This is the sole launch protocol. Results from earlier protocols are not publica
 ## Execution status
 
 Checkbox meaning: `[x]` an artifact on disk satisfies the step under the *current* code;
-`[ ]` the step must be launched. Runs that exist but cannot satisfy their step have been
+`[~]` partly done; `[-]` dropped, with the reason in its row; `[ ]` the step must be launched. Runs that exist but cannot satisfy their step have been
 moved to `results/superseded/` with a per-run reason in that directory's `README.md`; they
-stay available as diagnostics and are never pooled into a publication table. Audited
-against `results/` on 2026-08-27, branch `conformal-per-cell-geometry`.
+stay available as diagnostics and are never pooled into a publication table. Updated
+against `results/` on 2026-10-13, branch `conformal-per-cell-geometry`.
 
 `results/` holds the Step 2 DLinear reference and the seed-42 Step 3 CISSN run, both under
-current code. Launch commands for everything outstanding are in `commands.md`.
+current code. Launch commands for everything outstanding are in `experiments.md`.
 
 | Step | State | Evidence on disk |
 | --- | --- | --- |
 | 1 environment, data, tests | `[x]` | verified 2026-08-27: CUDA available (torch `2.11.0+cu128`, RTX 5080), `verify_datasets.py` OK on all 10 datasets, 166 tests pass |
 | 2 DLinear reference (ETTh1-h336/s42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` — clean git, `structural_passed`, no quality flags, test MSE `0.619` |
-| 3 CISSN end-to-end (ETTh1-h336) | `[~]` | seed 42 re-run 2026-08-27 under `--revin` on current code: `structural_passed`, all four interval keys, cluster SCCP `3.8374` vs flat `3.9497`. Seeds 123/456 outstanding. The pre-RevIN run it replaces is in `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` |
-| 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[ ]` | superseded, moved to `results/superseded/headroom/` and `.../percell/` — `git_dirty: true` at commit `d749709`, i.e. before the fitting-set fix, so every cluster-vs-scale ordering from them is confounded |
-| 3b.0 headroom diagnostic, other datasets | `[ ]` | ETTh2 / weather / exchange-rate not run |
-| 3b.2 validation-only selection runs | `[ ]` | `results/selection/` does not exist; no `selection.json` anywhere |
+| 3 CISSN end-to-end (ETTh1-h336) | `[x]` | seeds 42, 123, 456 under `--revin` in `results/validation/`. The pre-RevIN run it replaces is in `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` |
+| 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[x]` | re-run under the fitting-set fix on 3 seeds: `results/validation/conditioning_headroom_revin_seed*.json`. The earlier runs stay in `results/superseded/` |
+| 3b.0 headroom diagnostic, other datasets | `[-]` | dropped: it would reuse an exposed test split, and the 3b.2 validation selection already decides the question. See `docs/prespecification.md` |
+| 3b.2 validation-only selection runs | `[x]` | 3 seeds; `scale` beats both mechanisms on 1 of 3, so `cluster` stays primary. Details in `experiments.md` |
 | 4 RevIN selection (ETTh2, weather, 3 seeds, paired) | `[ ]` | RevIN evidence to date is ETTh1 **test**, which is diagnostic and cannot select |
-| 5 hybrid variant selection (3 variants x 3 seeds) | `[ ]` | no hybrid run directories |
-| Prespecified statistics recorded | `[ ]` | primary endpoint and primary horizon not written into `protocol.json` or an adjacent prespecification file |
-| Main grid — CISSN, 4 datasets | `[ ]` | `results/publication/` does not exist |
-| Main grid — baselines, 5 models x 4 datasets | `[ ]` | none |
+| 5 hybrid variant selection (3 variants x 3 seeds) | `[x]` | `hybrid_anchored` meets all four criteria on validation (`results/selection/hybrid_feature_mse.json`) |
+| Prespecified statistics recorded | `[x]` | `docs/prespecification.md`, written 2026-10-13 after the exposed-dataset grid ran; adds ECL as the confirmatory dataset |
+| Main grid — CISSN, 4 datasets | `[~]` | 52 of 54 exposed-dataset cells; ECL confirmatory cells outstanding. See `experiments.md` |
+| Main grid — baselines, 5 models x 4 datasets | `[~]` | all but 14 `deep_ensemble` cells, without RevIN. See `experiments.md` |
 | Ablations | `[ ]` | none |
 | Publication review (tables/figures/appendix) | `[ ]` | none |
 
@@ -91,7 +91,7 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42
 
 Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` and `scale_stats.json` for fallback clusters and fitted scale coefficients, and `dependence_diagnostics.json`, before interpreting coverage.
 
-## Step 3b: state conditioning mode confirmation `[ ]`
+## Step 3b: state conditioning mode confirmation `[x]`
 
 > Selection override: this legacy section is development-only because its diagnostic and commands read test artifacts. Do not use any outcome here to choose conditioning. The choice belongs to `experiments/run_selection.py` (`--evidence_role selection`), which trains and calibrates identically but scores every mechanism on the validation split only -- the test loader is never constructed -- followed by a decision lock. See Step 3b.2 below.
 
@@ -121,7 +121,7 @@ cluster and state-scaled CP had a ~9x conditioning-fit sample-size asymmetry (se
 calibration-half window, so this ordering must be re-measured under the current code
 before it can be used to select a mode.
 
-### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU) `[ ]`
+### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU) `[x]`
 
 The diagnostic needs a run directory containing `states.npy`, `residuals.npy`,
 `pred.npy`, and `true.npy` — any completed `run_benchmark.py` CISSN run writes all four
@@ -144,7 +144,7 @@ runs, not `--require_clean_git` publication evidence — reuse them for diagnost
 pool them into publication tables, and re-run this diagnostic against fresh Step 3
 artifacts before citing any cluster-vs-scale ordering.
 
-### Step 3b.2: validation-only selection runs `[ ]`
+### Step 3b.2: validation-only selection runs `[x]`
 
 Run both geometries through `experiments/run_selection.py` (`--evidence_role selection`
 is forced automatically) so the comparison stays paired within one model, on validation
@@ -195,7 +195,7 @@ dataset relative to the non-RevIN arm; if it regresses anywhere, keep it opt-in 
 `--revin` explicitly per dataset in the main grid rather than defaulting a fix proven on
 one dataset/horizon. Record the outcome and per-seed numbers here either way.
 
-## Step 5: hybrid variant selection (validation only) `[ ]`
+## Step 5: hybrid variant selection (validation only) `[x]`
 
 The legacy architecture routes the forecast through a five-dimensional latent bottleneck.
 Without RevIN this caps forecast rank at 5. With RevIN's side statistics the cap loosens
@@ -237,7 +237,7 @@ as a separate arm rather than a drop-in ablation.
 If no variant meets these criteria, stop: report the hybrid as a negative result
 and do not retune against test data.
 
-## Prespecified statistics (write before opening the sealed datasets) `[ ]`
+## Prespecified statistics (write before opening the sealed datasets) `[x]`
 
 `RUNBOOK.md` locks 4 datasets x 4-5 horizons x 3 seeds, with per-cell comparisons of the
 primary mechanism against flat CP and against the secondary mechanism -- on the order of
@@ -278,60 +278,29 @@ non-overwritable confirmation artifact rather than a development run; without
 `--evidence_role confirmation` a run defaults to `development` and is not eligible for the
 publication table regardless of its numbers.
 
-Run CISSN with the multi-seed driver for each locked dataset, using whichever
-`--conformal_conditioning` mode Step 3b.2 selected on validation (every run still
-calibrates and reports both, so this only sets which one is primary):
+The exposed-dataset CISSN grid ran with `--revin --conformal_conditioning cluster
+--scale_geometry scalar` (Step 3b.2 outcome). Every run still calibrates and reports flat
+CP, cluster SCCP, and state-scaled CP, so this only sets which one is primary. Baselines
+run through `run_baseline.py` with the same shared options; RevIN applies only to
+`dlinear`, `patchtst`, `mc_dropout`, and `deep_ensemble` (DeepState is excluded, see
+`docs/methodology.md`) and only once Step 4 has selected it. UQ models are conformalized by
+default; raw output needs `--uq_interval_mode raw` and is secondary.
 
-```powershell
-uv run python experiments/run_multiseed.py --data ETTh1 --all_horizons --seeds 42,123,456 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --conformal_conditioning scale --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --output ./results/publication/cissn_ETTh1.json --raw_csv ./results/publication/cissn_ETTh1.csv
-```
+The confirmatory dataset (ECL), the analysis, and the claim-reading rules are in
+`docs/prespecification.md`. The exact commands, in run order, are in `experiments.md`.
 
-Repeat with `ETTh2`, `weather`, and `exchange_rate`. The driver must propagate all safeguards; verify this with `--help` before a long launch.
-
-For baselines, run each model/dataset/horizon/seed with the same shared options. RevIN
-applies only to `dlinear`, `patchtst`, `mc_dropout`, `deep_ensemble` (DeepState is
-excluded -- see `docs/methodology.md`), and only once Step 4 has selected it on
-validation; pass it explicitly per dataset rather than assuming a default:
-
-```powershell
-$models = 'dlinear','patchtst','deepstate','mc_dropout','deep_ensemble'
-$datasets = 'ETTh1','ETTh2','weather','exchange_rate'
-$seeds = 42,123,456
-foreach ($model in $models) {
-  foreach ($data in $datasets) {
-    foreach ($h in 96,192,336,720) {
-      foreach ($seed in $seeds) {
-        uv run python experiments/run_baseline.py --model $model --data $data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication
-      }
-    }
-  }
-}
-```
-
-For ETT, add the horizon `24`. For UQ models the default is conformalized intervals; raw output requires explicit `--uq_interval_mode raw` and is secondary.
-
-Run ablations only after the main comparison completes:
-
-```powershell
-uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/ablations_ETTh1_h336_s42.json
-```
-
-Every `run_benchmark.py` run already reports flat CP, cluster SCCP, and the *selected*
-scale geometry paired on the same forecasts, so the main grid covers most conditioning
-comparisons without a dedicated ablation arm. Two cells are **not** reachable from it,
-and need an added arm if the ablation table requires them: both scale geometries within a
-single run (a run fixes one `--scale_geometry`), and any conditioning mode crossed with
-an architecture ablation such as `no_structured_A` or `state_dim_4`.
+Ablations run after the main comparison. Every `run_benchmark.py` run already reports flat
+CP, cluster SCCP, and the selected scale geometry on the same forecasts, so the grid covers
+most conditioning comparisons. Two cells are not reachable from `run_ablation.py` (a run
+fixes one `--scale_geometry`): both scale geometries in one run, and a conditioning mode
+crossed with an architecture ablation. Neither is added; the validation selection and the
+window-placement diagnostic cover the geometry question.
 
 ## Publication review `[ ]`
 
 Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `structural_passed: false`, different splits, and raw-UQ results from the primary table. Do not exclude a run for poor forecast quality; report it with its advisory flags.
 
-```powershell
-uv run python scripts/generate_publication_tables.py --results_root ./results/publication --output_dir ./results/publication/tables
-uv run python scripts/generate_publication_figures.py --results_root ./results/publication --output_dir ./results/publication/figures
-uv run python scripts/generate_reproducibility_appendix.py --results_root ./results/publication --output ./results/publication/reproducibility.md
-```
+The commands are in `experiments.md`, block R7.
 
 `table_paired_comparison.csv` is the central evidence table: per dataset/horizon cell,
 the primary conditioning mechanism's mean Winkler delta against flat CP, cluster SCCP,

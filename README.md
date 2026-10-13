@@ -20,7 +20,7 @@ uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 24 --train_ep
 
 The encoder produces a five-dimensional latent state: level, trend, a seasonal pair, and residual. A forecast head maps the final state to the horizon. The best validation checkpoint is restored before interval construction.
 
-The state partition is fitted on train-split states, then frozen. Split-conformal quantiles are estimated on a later chronological calibration split. The default `per_feature` score produces marginal horizon-feature coverage; `max` is available for simultaneous block coverage. Temporal dependence is diagnosed and reported, never “corrected” by heuristic interval inflation.
+The state partition (or the state-scaled `sigma`) is fitted on the first half of the chronological calibration split, then frozen. Split-conformal quantiles are estimated on the second half. The default `per_feature` score produces marginal horizon-feature coverage; `max` is available for simultaneous block coverage. Temporal dependence is diagnosed and reported, never “corrected” by heuristic interval inflation.
 
 ## Implemented comparators
 
@@ -28,11 +28,13 @@ The state partition is fitted on train-split states, then frozen. Split-conforma
 
 ## Results contract
 
-Each completed run saves predictions, targets, interval bounds when applicable, metrics, sanity checks, history, runtime, configuration, environment, dataset verification, and a protocol hash. Use `scripts/generate_publication_tables.py`, `scripts/generate_publication_figures.py`, and `scripts/generate_reproducibility_appendix.py` only after the required grid is complete.
+Each completed run saves predictions, targets, interval bounds when applicable, metrics, artifact review (`sanity.json`), history, runtime, configuration, environment, dataset verification, and a protocol hash. Use `scripts/generate_publication_tables.py`, `scripts/generate_publication_figures.py`, and `scripts/generate_reproducibility_appendix.py` only after the required grid is complete.
 
 ## Documentation
 
 - [RUNBOOK.md](RUNBOOK.md): runnable publication protocol and acceptance criteria.
+- [docs/prespecification.md](docs/prespecification.md): confirmatory dataset, endpoint, and claim-reading rules.
+- [experiments.md](experiments.md): what to run, in order, with exact commands.
 - [docs/architecture.md](docs/architecture.md): implementation architecture.
 - [docs/datasets.md](docs/datasets.md): datasets and split protocol.
 - [docs/methodology.md](docs/methodology.md): scientific scope and reporting.

@@ -44,6 +44,11 @@ def _load_cell_runs(results_root: Path, datasets: set[str]) -> dict:
         config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
         if config["data"] not in datasets:
             continue
+        # The prespecified arm is legacy CISSN under RevIN. Hybrid runs share the
+        # `CISSN_` prefix and the confirmation role, so without this filter they
+        # would be averaged into the same cell.
+        if config.get("architecture") != "legacy" or not config.get("revin"):
+            continue
         if config.get("evidence_role") != "confirmation":
             raise ValueError(f"{run_dir.name}: evidence_role is not 'confirmation'.")
         if not metrics.get("structural_passed", False):
@@ -51,6 +56,7 @@ def _load_cell_runs(results_root: Path, datasets: set[str]) -> dict:
             continue
         cells[(config["data"], int(config["pred_len"]))].append({
             "seed": int(config["seed"]),
+            "stride": int(config.get("test_origin_stride", 1)),
             "conditioning": config["conformal_conditioning"],
             "primary": np.load(run_dir / "per_origin_interval_metrics.npy"),
             "flat": np.load(run_dir / "per_origin_interval_flat_cp_metrics.npy"),
@@ -64,11 +70,17 @@ def _cell_delta(runs: list[dict]) -> np.ndarray:
     # and averaging them would be meaningless, so stop instead of aligning.
     if len({run["conditioning"] for run in runs}) != 1:
         raise ValueError("A cell mixes conditioning modes.")
+    seeds = [run["seed"] for run in runs]
+    if len(seeds) != len(set(seeds)):
+        raise ValueError(f"A cell holds two runs for one seed: {sorted(seeds)}.")
     first = runs[0]["origins"]
     if any(not np.array_equal(first, run["origins"]) for run in runs[1:]):
         raise ValueError("Seeds of one cell have different test origins.")
-    deltas = [run["primary"][:, WINKLER_COLUMN] - run["flat"][:, WINKLER_COLUMN] for run in runs]
-    return np.mean(deltas, axis=0)
+    if len({run["stride"] for run in runs}) != 1:
+        raise ValueError("Seeds of one cell use different test-origin strides.")
+    flat = np.mean([run["flat"][:, WINKLER_COLUMN] for run in runs], axis=0)
+    primary = np.mean([run["primary"][:, WINKLER_COLUMN] for run in runs], axis=0)
+    return primary - flat, float(flat.mean())
 
 
 def main() -> None:
@@ -91,15 +103,21 @@ def main() -> None:
 
     rows = []
     for (data, horizon), runs in sorted(cells.items()):
-        block_len = int(np.ceil(args.block_multiplier * horizon))
-        result = moving_block_bootstrap_ci(
-            _cell_delta(runs), block_len, args.n_boot, args.seed, args.confidence
-        )
+        # Origins are `stride` steps apart, so a block must span horizon / stride of them.
+        stride = runs[0]["stride"]
+        block_len = int(np.ceil(args.block_multiplier * horizon / stride))
+        delta, flat_mean = _cell_delta(runs)
+        result = moving_block_bootstrap_ci(delta, block_len, args.n_boot, args.seed, args.confidence)
         rows.append({
             "data": data,
             "horizon": horizon,
+            "stride": stride,
             "seeds": sorted(run["seed"] for run in runs),
             "conditioning": runs[0]["conditioning"],
+            "flat_winkler_mean": flat_mean,
+            "relative_mean": result["mean"] / flat_mean,
+            "relative_ci_low": result["ci_low"] / flat_mean,
+            "relative_ci_high": result["ci_high"] / flat_mean,
             **result,
         })
 

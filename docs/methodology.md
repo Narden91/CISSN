@@ -183,12 +183,27 @@ ETTh1-h336); the conformal quantiles for every mechanism are computed on the **s
 half**. Sigma is therefore already fit out-of-sample with respect to the forecaster's
 training data — it is not fit on train residuals the forecaster was trained to shrink.
 
-The cause of the gap between this protocol result and the diagnostic is not yet
-established. The likeliest explanation is the fitting-set size: the protocol fits sigma
-on roughly 696 windows, against the larger fitting window the diagnostic script uses. This
-is an untested hypothesis — no run has yet varied the fitting-window size while holding
-everything else fixed — so no coefficient-spread number is quoted here; state one when a
-run measures it.
+The gap between the protocol result on validation and the diagnostic on test is not a
+fitting-set-size effect. `scripts/diagnose_window_placement.py` scores the protocol
+windows (696 conditioning and 697 calibration windows, older than the test period) on four
+consecutive test quarters of ETTh1-h336 under RevIN, mean over 3 seeds:
+
+| test quarter (windows) | flat Winkler | cluster - flat | per-cell - flat |
+| --- | --- | --- | --- |
+| 0-636 | 3.428 | -0.118 | -0.121 |
+| 636-1272 | 3.660 | -0.126 | -0.272 |
+| 1272-1908 | 4.327 | -0.214 | -0.522 |
+| 1908-2545 | 4.455 | -0.116 | -0.192 |
+
+Every quarter is negative, and the quarter mean (cluster -0.143, per-cell -0.277)
+reproduces the diagnostic (cluster -0.10 to -0.16, per-cell -0.21 to -0.27). On a fixed
+480-window evaluation set, moving the fit and calibration windows next to the evaluated
+windows, with or without a `pred_len` gap, moves the per-cell gain by up to about
+0.05, against gains of 0.06 to 0.11 on that set. Placement is a minor factor next to the
+0.12 to 0.52 spread between quarters, so it does not account for the gap. The
+validation selection runs (Step 3b.2) show the three mechanisms within 1% Winkler of each
+other, so the gain depends on the split being scored. Why ETTh1 validation shows no gain
+is not tested. All numbers here reuse ETTh1 test artifacts and are diagnostic only.
 
 ### Asymmetry between the two conditioning mechanisms (resolved)
 
@@ -202,19 +217,20 @@ This has been fixed: `_build_conditioning_predictors`/`_calibrate_conformal`
 a sample-size advantage over the other.
 
 The table above (flat 3.7869 < ... < cluster 3.5962) was measured **before** this fix and
-is therefore still confounded; it has not been re-measured under the corrected, fair
-fitting scheme. Do not treat that ordering as resolved — re-run Step 3b.0/3b.2 under the
-current code before drawing a cluster-vs-per-cell conclusion.
+is retained as retracted context. Under the fixed scheme (3 seeds x 4 nested cuts,
+ETTh1-h336, RevIN) the diagnostic gives: per-cell -0.242 Winkler vs flat CP (-6.4%, 12/12),
+cluster -0.135 (-3.6%, 12/12), scalar state-scaled +0.021 (+0.55%, 2/12). The ordering is
+therefore per-cell, then cluster, then flat, then scalar, in the diagnostic. The validation
+selection runs do not separate them.
 
 ### What this means for the claim
 
-State conditioning helps in the RevIN regime and does not help without it. Per-cell
-state-scaled CP beats flat CP and the scalar geometry it replaces. Whether it beats
-cluster SCCP is unresolved: the fitting-set asymmetry that confounded the last measured
-ordering has been fixed in code (see above), but the comparison has not yet been re-run
-under it. Do not call either mechanism the paper's established primary contribution on
-ETTh1 alone. `scale_geometry` is off by default (`scalar`), so existing runs and artifacts
-are unchanged.
+State conditioning helps in the RevIN regime and does not help without it. On ETTh1 test
+(diagnostic) per-cell state-scaled CP beats cluster SCCP, which beats flat CP, which beats
+the scalar geometry. On ETTh1 validation the three mechanisms are within 1%, so by the
+RUNBOOK Step 3b.2 rule `cluster` stays the primary mechanism. Do not call either mechanism
+the paper's established primary contribution on ETTh1 alone. `scale_geometry` is off by
+default (`scalar`), so existing runs and artifacts are unchanged.
 
 None of this is yet a protocol result across datasets: everything above is ETTh1-h336.
 Before any of it is published it needs the locked multi-dataset grid. Do not retune
