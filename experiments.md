@@ -1,119 +1,220 @@
-# CISSN — experiments left to launch
+# CISSN — experiments: status and what is left
 
-Written 2026-08-31 from an audit of `results/` on branch `conformal-per-cell-geometry`.
-Companion to `commands.md` (every command, including the finished ones) and `RUNBOOK.md`
-(the protocol and the authority on *why*). If this file and `RUNBOOK.md` disagree,
-`RUNBOOK.md` wins.
+Updated 2026-10-13 from a check of `results/` and `checkpoints/` on branch
+`conformal-per-cell-geometry` at `efadb63`. Companion to `commands.md` (every command,
+including the finished ones) and `RUNBOOK.md` (the protocol and the authority on *why*).
+If this file and `RUNBOOK.md` disagree, `RUNBOOK.md` wins.
 
-Everything below is PowerShell, literal, from the repository root. Every block is safe to
-Ctrl+C and re-paste: each one checks for the artifact its runner writes last and skips the
-cells already on disk.
+Everything below is PowerShell, literal, from the repository root. Every run block is safe
+to Ctrl+C and re-paste: each one checks for the artifact its runner writes last and skips
+the cells already on disk.
 
-## Order
+## Status
 
-The chain is blocking up to the prespecification — B needs A's artifacts:
+| Step | State | On disk |
+| --- | --- | --- |
+| Pre-RevIN grid moved out of the root | `[x]` | `results/superseded/pre_revin_scalar_grid/` (41 runs + 6 aggregate files). `results/superseded/README.md` has no row for it yet |
+| 3. CISSN end-to-end, ETTh1-h336, 3 seeds | `[x]` | `results/validation/CISSN_ETTh1_..._fullrevin_..._seed{42,123,456}` |
+| 3b.0. Headroom diagnostic, 3 seeds | `[x]` | `results/validation/conditioning_headroom_revin_seed*.json` |
+| 3b.2. Conditioning selection, 3 seeds | `[x]` | outcome computed below: keep `cluster` |
+| 4. RevIN selection, ETTh2 + weather | `[~]` 2 of 12 | RevIN seed 42 of both datasets only |
+| 5. Hybrid variants, 3 arms x 3 seeds | `[~]` 9 of 9 runs, decision incomplete | criterion 4 (per-feature MSE) cannot be computed from saved artifacts |
+| Prespecification | `[ ]` | no file. **The main grid already ran without it** |
+| Main grid — CISSN | `[~]` 52 of 54 | missing: weather h192 seeds 42 and 456 |
+| Main grid — baselines | `[~]` 256 of 270, plus 29 duplicates | `deep_ensemble` 40 of 54; `dlinear` has 83 dirs for 54 cells |
+| Ablations | `[ ]` | — |
+| Publication review | `[ ]` | — |
 
-```
-3 (seeds 123,456) -> 3b.0 -> 3b.2 -> [decision: cluster or scale]
-4 (10 cells) ------------------------> [decision: revin default]
-5 (6 cells) -------------------------> [decision: hybrid or negative result]
-                                              |
-                                    prespecification (write it down)
-                                              |
-                          main grid CISSN  +  main grid baselines
-                                              |
-                                   ablations -> publication review
-```
+## Decisions computed from validation
 
-Steps 4 and 5 do not depend on 3b.x and can run in any order relative to it. Nothing past
-the prespecification should start before it is written.
+Both outcomes use `selection.json` (validation split, test loader never built) and the
+checkpoint-side `runtime.json`. No test artifact was read to compute them.
 
-## Before anything: the 41 runs at the repository root
+### Step 3b.2 — keep `cluster` as the primary mechanism
 
-`results/CISSN_*` holds 41 grid runs launched with `revin: false` and
-`scale_geometry: scalar` — the configuration `CLAUDE.md` records as having no measured
-effect. Flat CP beats the primary mechanism on all four datasets and marginal coverage is
-0.72-0.83 against nominal 0.90. They are a pre-RevIN negative result, not the main grid,
-and they sit at the repository root rather than under `results/publication/` because the
-launch inherited the default `--results_dir ./results/`.
+Rule: promote `scale` only if `interval_state_scaled` beats **both** flat CP and cluster
+SCCP on validation Winkler on at least 2 of 3 seeds. Geometry `per_cell`, ETTh1-h336, RevIN.
 
-Move them out of the way before relaunching, so no aggregation script picks them up. Add a
-line to `results/superseded/README.md` recording why.
+| Seed | flat CP | cluster SCCP | state-scaled per-cell | beats both? |
+| --- | --- | --- | --- | --- |
+| 42 | 6.7219 | 6.7309 | 6.7727 | no |
+| 123 | 6.7183 | 6.7104 | 6.6638 | yes |
+| 456 | 6.7342 | 6.6947 | 6.7095 | no (beats flat, loses to cluster) |
+
+Result: 1 of 3. `cluster` stays primary, `--scale_geometry` stays `scalar`. This matches
+what the main grid ran. All three mechanisms lie within 1% of each other on every seed.
+The seed 123 and 456 `selection.json` files are dated 2026-08-31 15:42 and 15:46, before
+the first main-grid run (16:11 the same day), so the data for this decision existed before
+the grid started. Copy this table into `commands.md` as the rule requires.
+
+### Step 5 — `hybrid_anchored` passes criteria 1-3; criterion 4 is pending
+
+Paired DLinear = the frozen base inside each hybrid run (`base_val_loss` in
+`checkpoints/selection/<setting>/runtime.json`). The base value is identical across the
+three arms at each seed, so the pairing is exact. Delta = `validation_mse / base - 1`.
+
+| Arm | seed 42 | seed 123 | seed 456 | mean | better on | worst seed |
+| --- | --- | --- | --- | --- | --- | --- |
+| `hybrid_legacy` | -0.95% | -1.21% | -1.70% | -1.29% | 3/3 | -0.95% |
+| `hybrid_anchored` | -4.15% | -4.11% | -2.81% | -3.69% | 3/3 | -2.81% |
+| `hybrid_anchored_revin` | 0.00% (fell back) | 0.00% (fell back) | -0.51% | -0.17% | 1/3 | 0.00% |
+
+- Criteria 1-3 (mean at least 1% better, better on at least 2 of 3 seeds, no seed worse
+  than 2%): `hybrid_anchored` and `hybrid_legacy` pass. `hybrid_anchored` leads by 2.4
+  points, so the 0.5% tie rule does not apply.
+- Criterion 4 (no feature's mean MSE worse by more than 5%): **not computable**.
+  `run_selection.py` saves no per-feature validation MSE for the hybrid or its base. The
+  checkpoints (`checkpoint_base.pth`, `checkpoint.pth`, `checkpoint_head.pth`) are on disk,
+  so the check needs inference on the validation split only, not retraining.
+- Record the outcome as "anchored: criteria 1-3 pass, criterion 4 pending", not as
+  "promoted".
+- Context for the reader, not an override of the rule: `docs/methodology.md:303` records
+  an earlier hybrid run whose validation loss improved by 4.1% while its ETTh1 test MSE was
+  0.799 against the frozen base's 0.619. ETTh1 test is diagnostic only.
+- `RUNBOOK.md` gives no main-grid command for a promoted hybrid. If criterion 4 passes, a
+  decision is needed on which grid cells the hybrid runs on.
+
+## Facts that change how results can be stated
+
+1. **The main grid ran before the prespecification existed.** The RevIN CISSN grid ran on
+   2026-08-31 and 2026-09-01 at `fb5231d`. No prespecification file exists. The ETTh2,
+   weather, and exchange-rate test splits now carry two sets of evaluations: the
+   pre-RevIN grid (whose results were read: flat CP beat the primary mechanism on all four
+   datasets) and the RevIN grid. Write the prespecification before anyone reads a number
+   from `results/publication/CISSN_*`, and state in it that it was written after those runs
+   finished.
+2. **Validation coverage on ETTh1 is far below nominal for every mechanism, flat CP
+   included.** At nominal 0.90, ETTh1-h336 validation coverage is 0.74-0.76 for legacy
+   CISSN and 0.75-0.82 for the hybrids. ETTh2 and weather (seed 42) reach 0.91-0.94. The
+   calibration split is the tail of the train window, so this is consistent with a shift
+   between calibration and later data, not with a defect of one mechanism. On ETTh1, only
+   relative Winkler statements between mechanisms hold; a marginal coverage claim does not.
+3. **The diagnostic gain does not appear under the protocol.** Under the fixed fitting
+   scheme, `diagnose_conditioning_headroom.py` (ETTh1 test, diagnostic only) gives
+   per-cell state-scaled -0.21 to -0.27 Winkler vs flat CP and cluster -0.10 to -0.16, on
+   all 4 cuts for each seed. The protocol path on validation gives differences under 1%.
+   The "not yet re-measured" note in `CLAUDE.md` about the cluster vs per-cell ordering is
+   out of date for the diagnostic.
+4. **Point-forecast tables mix regimes.** CISSN ran with `--revin`; every baseline ran with
+   `revin=False`. Interval comparisons are not affected, because flat CP, cluster SCCP, and
+   state-scaled CP are paired inside each CISSN run. A CISSN-vs-DLinear point-accuracy row
+   is confounded until Step 4 finishes and the baselines run in the same regime.
+5. **The main-grid skip checks in the previous version of this file never matched.**
+   `--immutable_artifacts` appends `__<design hash>` to every run directory, and the design
+   hash includes the git commit. A path check without a wildcard always misses, and a
+   rerun at a new commit trains a second copy of every cell. The selection and validation
+   checks did match, because those runs are not immutable. Every immutable block below
+   uses a wildcard.
+6. **Mixed commits inside one dataset.** The two missing weather h192 cells will run at
+   the commit that carries this file; the other 52 CISSN cells ran at `fb5231d`. Between
+   `fb5231d` and `efadb63` the only code change is in `cissn/evaluation/sanity.py`
+   (per-member ensemble history for the deep-ensemble forecast quality review). Record the
+   commit next to the weather results.
+
+## Experiments left to run
+
+Order: L0 and L1 first (no GPU). L2 and L3 are independent of each other. L4 and L5 can
+start after the pre-launch steps below. L6 depends on L3. L7 depends on L2. L8 and L9 come
+last.
+
+**Before any GPU launch.** Every run block passes `--require_clean_git`, which refuses
+any output from `git status --short`. This file and `results/superseded/README.md` are
+tracked, so commit them (and any other pending change) first. Then confirm that no code
+changed since the grid commits:
 
 ```powershell
-New-Item -ItemType Directory -Force ./results/superseded/pre_revin_scalar_grid
-Get-ChildItem ./results -Directory -Filter 'CISSN_*' | Move-Item -Destination ./results/superseded/pre_revin_scalar_grid
-Move-Item ./results/publication/cissn_ETTh2.json,./results/publication/cissn_ETTh2.csv,./results/publication/cissn_weather.json,./results/publication/cissn_weather.csv,./results/publication/cissn_exchange_rate.json,./results/publication/cissn_exchange_rate.csv ./results/superseded/pre_revin_scalar_grid
+git status --short
+git diff --stat efadb63 HEAD -- cissn experiments scripts
 ```
 
-Run the `Get-ChildItem` on its own first and read the list — that filter also matches
-anything else named `CISSN_*` added at the root since the audit.
+The first command must print nothing. The second must print nothing. Land a code change
+only after L3, L4, and L5 finish, or those cells run on different code from the rest of
+the grid.
 
-## 3. CISSN end-to-end, seeds 123 and 456 `[x]` done
-
-Seed 42 is on disk. Needed before 3b.0, which reads these run directories.
-
-```powershell
-$seeds = 42,123,456
-foreach ($seed in $seeds) {
-  $setting = "CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed$seed"
-  if (Test-Path "./results/validation/$setting/metrics.json") {
-    Write-Host "skip seed $seed (already done)"
-    continue
-  }
-  uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed $seed --revin --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
-}
+```text
+L0 housekeeping ─┐
+L1 prespec ──────┼─> L4 CISSN weather h192 ─┐
+                 ├─> L5 deep_ensemble 14 ───┤
+L3 RevIN select ─┴─> L6 baselines + RevIN ──┼─> L8 ablations -> L9 publication review
+L2 hybrid crit.4 ──> L7 hybrid grid (if promoted) ┘
 ```
 
-Confirm each `metrics.json` carries all four of `interval`, `interval_flat_cp`,
-`interval_cluster_cp`, `interval_state_scaled`.
+### L0. Housekeeping `[ ]` no GPU
 
-## 3b.0. Headroom diagnostic `[x]` done
+1. **Empty temporary directories.** `results/` holds 93 `.publication.tmp-*` directories.
+   `finalize_result_directory` moves the run out of the temporary root but leaves the root
+   behind, so every immutable run adds one. None holds a file (one holds an empty
+   `BASELINE_deep_ensemble_ETTh1_..._pl24_seed42_...__a14269d4459f` directory from an
+   interrupted attempt; the cell is complete under a different hash). Read the count, then
+   delete:
 
-No GPU. Reads the three Step 3 directories, so run it after Step 3 finishes.
+   ```powershell
+   $tmp = Get-ChildItem ./results -Directory -Force -Filter '.publication.tmp-*' | Where-Object { -not (Get-ChildItem $_.FullName -Recurse -File -Force) }
+   $tmp.Count
+   $tmp | Remove-Item -Recurse
+   ```
 
-```powershell
-$seeds = 42,123,456
-foreach ($seed in $seeds) {
-  $out = "./results/validation/conditioning_headroom_revin_seed$seed.json"
-  if (Test-Path $out) {
-    Write-Host "skip seed $seed (already done)"
-    continue
-  }
-  $runDir = "./results/validation/CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed$seed"
-  uv run python scripts/diagnose_conditioning_headroom.py --run_dir $runDir --output $out
-}
-```
+2. **Checkpoint directories with no finished result.** These come from crashed runs. They
+   do not block a rerun (the hash differs at a new commit), but move them so nothing pairs
+   them with a result by name:
 
-Read `variance_decomposition.per_sample_fraction` — it bounds the *scalar* geometry only,
-not conditioning as such — and the `summary_vs_flat` win counts.
+   ```powershell
+   New-Item -ItemType Directory -Force ./checkpoints/superseded
+   Move-Item ./checkpoints/publication/CISSN_weather_M_sl96_pl192_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed42__61706acd3b1b ./checkpoints/superseded/
+   Move-Item ./checkpoints/publication/CISSN_weather_M_sl96_pl192_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed456__62b390c8b1c5 ./checkpoints/superseded/
+   Move-Item ./checkpoints/publication/BASELINE_dlinear_ETTh2_M_sl96_pl720_seed456__e895403d7fe9 ./checkpoints/superseded/
+   ```
 
-## 3b.2. Conditioning selection, seeds 123 and 456 `[x]` done
+   `deep_ensemble` member checkpoints (`..._memberN_seed...`) have no result directory by
+   design. Several cells carry two member sets under different hashes; only the hash that
+   matches the finalized result directory is current.
 
-Validation only; `run_selection.py` never constructs the test loader.
+3. **`dlinear` duplicates.** `scripts/generate_publication_tables.py` reads every
+   `metrics.json` under `results/publication` recursively, so both copies would enter the
+   table. Rule, fixed before any metric is read: keep the `b8edcc9` set, because it is
+   complete (54 of 54) and matches the commit of the other single-model baselines. Move
+   the 29 `cd8cb6a` directories:
 
-```powershell
-$seeds = 42,123,456
-foreach ($seed in $seeds) {
-  $setting = "CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_scalecond_lc1_lt0p5_a0p1_per_feature_seed$seed"
-  if (Test-Path "./results/selection/$setting/selection.json") {
-    Write-Host "skip seed $seed (already done)"
-    continue
-  }
-  uv run python experiments/run_selection.py --data ETTh1 --pred_len 336 --seed $seed --revin --conformal_conditioning scale --scale_geometry per_cell --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
-}
-```
+   ```powershell
+   $dest = './results/superseded/dlinear_cd8cb6a_duplicate'
+   New-Item -ItemType Directory -Force $dest
+   Get-ChildItem ./results/publication -Directory -Filter 'BASELINE_dlinear_*' | Where-Object {
+     (Get-Content (Join-Path $_.FullName 'environment.json') -Raw | ConvertFrom-Json).git_commit -like 'cd8cb6a*'
+   } | Move-Item -Destination $dest
+   ```
 
-**Decision**: promote `scale` to the primary mechanism only if `interval_state_scaled`
-beats **both** `interval_flat_cp` and `interval_cluster_cp` on Winkler on at least 2 of 3
-seeds, read from each run's `selection.json`. Read no test artifact while deciding. Record
-the per-seed deltas and the outcome in `commands.md` either way — the main grid's
-`--conformal_conditioning` and `--scale_geometry` come from here.
+4. **Stale aggregate files.** `results/publication/cissn_*.json`/`.csv` came from
+   `run_multiseed.py`. `cissn_weather.json` holds only h336 and h720. The table generator
+   does not read these files. Do not regenerate them by rerunning `run_multiseed.py`: at a
+   new commit it retrains every cell under a new hash, then fails on two matching
+   directories.
 
-## 4. RevIN selection, ETTh2 + weather `[~]` 2 of 12 done
+5. Add rows for `pre_revin_scalar_grid/` and `dlinear_cd8cb6a_duplicate/` to
+   `results/superseded/README.md`.
 
-On disk: ETTh2 RevIN seed 42, weather RevIN seed 42. Outstanding: both non-RevIN arms in
-full, and seeds 123/456 of both RevIN arms.
+### L1. Prespecification `[ ]` blocking, no command
+
+Write the primary endpoint and the primary horizon into a prespecification file next to
+the publication results before anyone reads a number from `results/publication/CISSN_*`.
+See `RUNBOOK.md`, "Prespecified statistics". The file must also state:
+
+- that it was written on its actual date, after the RevIN main grid finished;
+- that the ETTh2, weather, and exchange-rate test splits carry evaluations from the
+  pre-RevIN grid, whose results were read, and from the RevIN grid;
+- whether ETTh1 test (diagnostic only) is in the confirmatory endpoint. Without it, 13
+  dataset x horizon cells remain (ETTh2 5, weather 4, exchange-rate 4);
+- the Step 3b.2 and Step 5 outcomes above, with their dates.
+
+### L2. Step 5 criterion 4: per-feature validation MSE `[ ]` no GPU needed
+
+No command exists yet. It needs a validation-only script that loads each hybrid
+checkpoint and its frozen base and writes per-feature validation MSE for both. Until this
+runs, Step 5 has no outcome.
+
+### L3. Step 4: RevIN selection, ETTh2 + weather `[~]` 2 of 12
+
+Outstanding: both non-RevIN arms, and seeds 123/456 of both RevIN arms. Selection runs
+do not use `--immutable_artifacts`, so the path check needs no wildcard.
 
 ```powershell
 $seeds = 42,123,456
@@ -135,13 +236,174 @@ foreach ($data in $datasets) {
 ```
 
 **Decision**: flip `--revin` to default only if it regresses neither `validation_mse` nor
-validation coverage on either dataset. Otherwise keep it opt-in and pass it per dataset in
-the main grid. Either way the main grid runs with `--revin` explicitly — audit finding 1
-in `commands.md` is what a grid without it produces.
+validation coverage on either dataset. CISSN already ran with `--revin` explicitly, so
+this outcome now decides only whether the baselines rerun under RevIN (L6).
 
-## 5. Hybrid variants, seeds 123 and 456 `[~]` 3 of 9 done
+### L4. Main grid — CISSN, weather h192 seeds 42 and 456 `[ ]`
 
-All three arms exist at seed 42 with exactly the directory names this loop expects.
+Run the two cells directly with `run_benchmark.py`, with the same flags the grid used.
+Do not use `run_multiseed.py` (see L0 step 4).
+
+```powershell
+foreach ($seed in 42,456) {
+  $setting = "CISSN_weather_M_sl96_pl192_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed$seed"
+  if (Test-Path "./results/publication/${setting}__*/metrics.json") {
+    Write-Host "skip weather h192 seed $seed (already done)"
+    continue
+  }
+  uv run python experiments/run_benchmark.py --data weather --pred_len 192 --seed $seed --revin --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --conformal_conditioning cluster --scale_geometry scalar --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication
+}
+```
+
+Before launch, compare the printed configuration with `config.json` of
+`CISSN_weather_M_sl96_pl336_..._seed42__cc2b351d0bda`: only `pred_len` and `seed` may
+differ.
+
+### L5. Main grid — `deep_ensemble`, 14 cells `[~]` 40 of 54
+
+Missing: weather h720 seeds 123 and 456, and all 12 exchange-rate cells. The 40 finished
+cells ran at `efadb63`. These 14 run at the commit that carries this file, which differs
+only in documentation if the pre-launch `git diff` above prints nothing.
+
+```powershell
+$seeds = 42,123,456
+$grid = @(
+  @{ data = 'ETTh1';         horizons = 24,96,192,336,720 },
+  @{ data = 'ETTh2';         horizons = 24,96,192,336,720 },
+  @{ data = 'weather';       horizons = 96,192,336,720 },
+  @{ data = 'exchange_rate'; horizons = 96,192,336,720 }
+)
+foreach ($cell in $grid) {
+  foreach ($h in $cell.horizons) {
+    foreach ($seed in $seeds) {
+      if (Test-Path "./results/publication/BASELINE_deep_ensemble_$($cell.data)_M_sl96_pl${h}_seed${seed}_*/metrics.json") {
+        Write-Host "skip deep_ensemble $($cell.data) h$h seed $seed (already done)"
+        continue
+      }
+      uv run python experiments/run_baseline.py --model deep_ensemble --data $cell.data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication
+      if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: deep_ensemble $($cell.data) h$h seed $seed (exit $LASTEXITCODE)" }
+    }
+  }
+}
+```
+
+With the wildcard check, a nonzero exit now means a real failure, not "already done".
+
+### L6. Baselines under RevIN `[ ]` only if L3 selects RevIN
+
+Add `--revin` to `dlinear`, `patchtst`, `mc_dropout`, and `deep_ensemble` (never
+DeepState) and rerun those models over the full grid. `run_baseline.py` appends the token
+`fullrevin` after the seed token, so the RevIN runs never collide with the existing ones
+and the skip check below matches only RevIN runs.
+
+```powershell
+$models = 'dlinear','patchtst','mc_dropout','deep_ensemble'
+$seeds = 42,123,456
+$grid = @(
+  @{ data = 'ETTh1';         horizons = 24,96,192,336,720 },
+  @{ data = 'ETTh2';         horizons = 24,96,192,336,720 },
+  @{ data = 'weather';       horizons = 96,192,336,720 },
+  @{ data = 'exchange_rate'; horizons = 96,192,336,720 }
+)
+foreach ($model in $models) {
+  foreach ($cell in $grid) {
+    foreach ($h in $cell.horizons) {
+      foreach ($seed in $seeds) {
+        if (Test-Path "./results/publication/BASELINE_${model}_$($cell.data)_M_sl96_pl${h}_seed${seed}_*fullrevin__*/metrics.json") {
+          Write-Host "skip $model $($cell.data) h$h seed $seed (already done)"
+          continue
+        }
+        uv run python experiments/run_baseline.py --model $model --revin --data $cell.data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication
+        if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: $model $($cell.data) h$h seed $seed (exit $LASTEXITCODE)" }
+      }
+    }
+  }
+}
+```
+
+When the loop finishes, move the non-RevIN directories of these four models to
+`results/superseded/baselines_no_revin/`, so one table never mixes regimes. `dlinear` names
+carry no token between the seed and the hash, so `seed42_*fullrevin__*` matches only the
+RevIN copy for every model.
+
+### L7. Hybrid main grid `[ ]` only if L2 passes
+
+`RUNBOOK.md` has no command for this. Decide the cells first.
+
+### L8. Ablations `[ ]`
+
+Run only after the main comparison completes.
+
+```powershell
+uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/ablations_ETTh1_h336_s42.json
+```
+
+Two cells the main grid cannot reach, to add here only if the ablation table needs them:
+both scale geometries within a single run (a run fixes one `--scale_geometry`), and any
+conditioning mode crossed with an architecture ablation such as `no_structured_A` or
+`state_dim_4`.
+
+### L9. Publication review `[ ]`
+
+```powershell
+uv run python scripts/generate_publication_tables.py --results_root ./results/publication --output_dir ./results/publication/tables
+uv run python scripts/generate_publication_figures.py --results_root ./results/publication --output_dir ./results/publication/figures
+uv run python scripts/generate_reproducibility_appendix.py --results_root ./results/publication --output ./results/publication/reproducibility.md
+```
+
+Before aggregating, confirm L0 is done. Exclude runs with `structural_passed: false`,
+incomplete artifact sets, different splits, and raw-UQ results from the primary table.
+Do not exclude a run for poor forecast quality — report it with its advisory flags.
+
+## Completed — kept for reproduction
+
+### 3. CISSN end-to-end, ETTh1-h336, seeds 42/123/456 `[x]`
+
+```powershell
+$seeds = 42,123,456
+foreach ($seed in $seeds) {
+  $setting = "CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed$seed"
+  if (Test-Path "./results/validation/$setting/metrics.json") {
+    Write-Host "skip seed $seed (already done)"
+    continue
+  }
+  uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed $seed --revin --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
+}
+```
+
+### 3b.0. Headroom diagnostic `[x]`
+
+```powershell
+$seeds = 42,123,456
+foreach ($seed in $seeds) {
+  $out = "./results/validation/conditioning_headroom_revin_seed$seed.json"
+  if (Test-Path $out) {
+    Write-Host "skip seed $seed (already done)"
+    continue
+  }
+  $runDir = "./results/validation/CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed$seed"
+  uv run python scripts/diagnose_conditioning_headroom.py --run_dir $runDir --output $out
+}
+```
+
+`variance_decomposition.per_sample_fraction` is 0.0063-0.0068 on all three seeds; it
+bounds the *scalar* geometry only, not conditioning as such.
+
+### 3b.2. Conditioning selection `[x]`
+
+```powershell
+$seeds = 42,123,456
+foreach ($seed in $seeds) {
+  $setting = "CISSN_ETTh1_M_sl96_pl336_sd5_dm64_fullrevin_scalecond_lc1_lt0p5_a0p1_per_feature_seed$seed"
+  if (Test-Path "./results/selection/$setting/selection.json") {
+    Write-Host "skip seed $seed (already done)"
+    continue
+  }
+  uv run python experiments/run_selection.py --data ETTh1 --pred_len 336 --seed $seed --revin --conformal_conditioning scale --scale_geometry per_cell --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
+}
+```
+
+### 5. Hybrid variants `[x]` runs done, decision pending (L2)
 
 ```powershell
 $seeds = 42,123,456
@@ -162,140 +424,8 @@ foreach ($arm in $arms) {
 }
 ```
 
-**Decision**: promote a variant only on at least 1% mean validation-MSE improvement over
-paired DLinear, better on at least 2 of 3 seeds, no worse than 2% on any seed, and no
-feature's mean MSE degraded by more than 5%. Ties within 0.5% go to anchored dynamics
-without RevIN. If none qualifies, report the hybrid as a negative result and do not retune.
+### Main grid — CISSN, 52 of 54 cells `[x]`
 
-## Prespecification `[ ]` no command
-
-Write the primary endpoint and the primary horizon into `protocol.json` or an adjacent
-prespecification file **before** relaunching the main grid. See `RUNBOOK.md`, "Prespecified
-statistics".
-
-Note in the same file that the ETTh2, weather, and exchange-rate test splits already carry
-evaluations from the superseded pre-RevIN grid. They are no longer untouched, and a later
-reader needs that recorded next to the prespecification rather than discovered in the
-artifacts.
-
-## Main grid — CISSN `[ ]` full relaunch
-
-The 41 runs on disk do not count — wrong regime, and ETTh1 never got past `h24`. Three
-things differ from the launch that produced them: `--revin`, the conditioning and geometry
-Step 3b.2 selected, and `--results_dir ./results/publication` so the runs land beside the
-baselines instead of at the repository root.
-
-Set the two variables at the top from the Step 3b.2 decision before running.
-
-```powershell
-$conditioning = 'cluster'   # from Step 3b.2
-$geometry     = 'scalar'    # 'per_cell' if Step 3b.2 selected the per-cell scale geometry
-$datasets = @(
-  @{ data = 'ETTh1';         horizons = 24,96,192,336,720 },
-  @{ data = 'ETTh2';         horizons = 24,96,192,336,720 },
-  @{ data = 'weather';       horizons = 96,192,336,720 },
-  @{ data = 'exchange_rate'; horizons = 96,192,336,720 }
-)
-$seeds = 42,123,456
-$condTag = if ($conditioning -eq 'scale') { '_scalecond' } else { '' }
-foreach ($cell in $datasets) {
-  $allDone = $true
-  foreach ($h in $cell.horizons) {
-    foreach ($seed in $seeds) {
-      $setting = "CISSN_$($cell.data)_M_sl96_pl${h}_sd5_dm64_fullrevin${condTag}_lc1_lt0p5_a0p1_per_feature_seed$seed"
-      if (-not (Test-Path "./results/publication/$setting/metrics.json")) { $allDone = $false }
-    }
-  }
-  if ($allDone) {
-    Write-Host "skip $($cell.data) (all horizons x seeds already done)"
-    continue
-  }
-  uv run python experiments/run_multiseed.py --data $cell.data --all_horizons --seeds 42,123,456 --allow_partial --revin --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --conformal_conditioning $conditioning --scale_geometry $geometry --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication --output "./results/publication/cissn_$($cell.data).json" --raw_csv "./results/publication/cissn_$($cell.data).csv"
-}
-```
-
-`--allow_partial` is what keeps an already-finished cell from aborting a whole dataset, but
-it also lists those cells in `failed_seeds`. It cannot tell "this errored" from "this
-already exists", so check any name printed there against
-`results/publication/<setting>/metrics.json` afterward — present on disk means it was
-already done.
-
-Rough budget from the superseded grid's directory timestamps, so a lower bound at best:
-ETTh2 ~45 min, weather ~2 h 15, exchange-rate ~15 min, ETTh1 similar to ETTh2. Call it
-4-5 hours for all four datasets, and expect more with RevIN.
-
-## Main grid — baselines `[~]` 54 cells missing, 29 duplicated
-
-`deep_ensemble` never ran, and it is the only model outstanding — this loop covers that one
-model rather than re-walking all five.
-
-```powershell
-$seeds = 42,123,456
-$grid = @(
-  @{ data = 'ETTh1';         horizons = 24,96,192,336,720 },
-  @{ data = 'ETTh2';         horizons = 24,96,192,336,720 },
-  @{ data = 'weather';       horizons = 96,192,336,720 },
-  @{ data = 'exchange_rate'; horizons = 96,192,336,720 }
-)
-$total = 0; $skipped = 0; $ran = 0
-foreach ($cell in $grid) {
-  foreach ($h in $cell.horizons) {
-    foreach ($seed in $seeds) {
-      $total++
-      uv run python experiments/run_baseline.py --model deep_ensemble --data $cell.data --pred_len $h --seed $seed --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --immutable_artifacts --strict_determinism --evidence_role confirmation --checkpoints ./checkpoints/publication --results_dir ./results/publication
-      if ($LASTEXITCODE -ne 0) {
-        Write-Host "skip/fail: deep_ensemble $($cell.data) h$h seed$seed (exit $LASTEXITCODE)"
-        $skipped++
-      } else {
-        $ran++
-      }
-    }
-  }
-}
-Write-Host "`nDone. $ran ran, $skipped skipped-or-failed, $total total."
-```
-
-A nonzero exit is normally "already done" — `require_new_run` raises `FileExistsError`
-before training, and the final directory never exists until a run completes. A genuine
-crash exits nonzero too and is indistinguishable in that counter, so scan the output above
-any reported skip for a traceback.
-
-Deep Ensemble trains several members per cell, so budget well above the ~2-4 min/cell the
-single-model baselines took.
-
-**Also outstanding, and not a run**: `dlinear` has 83 directories against 54 real cells.
-ETTh1 and ETTh2 were each launched twice, at commits `b8edcc9` and `cd8cb6a`, identical in
-visible configuration and separable only by `design_hash`. Decide which commit's cells are
-the reported ones and move the other set to `results/superseded/` before aggregation —
-`generate_publication_tables.py` has no way to choose between them.
-
-If Step 4 selects RevIN, add `--revin` to `dlinear`, `patchtst`, `mc_dropout`, and
-`deep_ensemble` — never DeepState — and re-run those models rather than mixing regimes
-within one table.
-
-## Ablations `[ ]`
-
-Run only after the main comparison completes.
-
-```powershell
-uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed 42 --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output ./results/publication/ablations_ETTh1_h336_s42.json
-```
-
-Two cells the main grid cannot reach, to add here only if the ablation table needs them:
-both scale geometries within a single run (a run fixes one `--scale_geometry`), and any
-conditioning mode crossed with an architecture ablation such as `no_structured_A` or
-`state_dim_4`.
-
-## Publication review `[ ]`
-
-```powershell
-uv run python scripts/generate_publication_tables.py --results_root ./results/publication --output_dir ./results/publication/tables
-uv run python scripts/generate_publication_figures.py --results_root ./results/publication --output_dir ./results/publication/figures
-uv run python scripts/generate_reproducibility_appendix.py --results_root ./results/publication --output ./results/publication/reproducibility.md
-```
-
-Before aggregating, confirm the `dlinear` duplicates are resolved and the superseded
-pre-RevIN grid is out of `results/publication/`. Exclude runs with
-`structural_passed: false`, incomplete artifact sets, different splits, and raw-UQ results
-from the primary table. Do not exclude a run for poor forecast quality — report it with its
-advisory flags.
+Ran 2026-08-31 to 2026-09-01 at `fb5231d` through `run_multiseed.py` with `--revin
+--conformal_conditioning cluster --scale_geometry scalar --immutable_artifacts
+--strict_determinism --evidence_role confirmation`. The remaining two cells are L4.

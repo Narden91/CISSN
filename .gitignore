@@ -51,7 +51,7 @@ training_output/
 logs/
 runs/
 output/
-# results/
+results/
 data/*
 explanations/*
 .cursor/
@@ -113,3 +113,6 @@ manuscript/
 *.fdb_latexmk
 *.sty
 *.sty
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
