@@ -53,7 +53,7 @@ foreach ($data in 'ETTh2','weather') {
       $variant = if ($revin) { "_fullrevin" } else { "" }
       $setting = "CISSN_${data}_M_sl96_pl336_sd5_dm64${variant}_lc1_lt0p5_a0p1_per_feature_seed$seed"
       if (Test-Path "./results/selection/$setting/selection.json") { Write-Host "skip $setting"; continue }
-      $revinFlag = if ($revin) { @('--revin') } else { @() }
+      $revinFlag = @(); if ($revin) { $revinFlag = @('--revin') }
       uv run python experiments/run_selection.py --data $data --pred_len 336 --seed $seed @revinFlag --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
     }
   }
@@ -168,7 +168,7 @@ Add a row for `baselines_no_revin/` to `results/superseded/README.md`.
 foreach ($seed in 42,123,456) {
   $out = "./results/publication/ablations_ETTh1_h336_s$seed.json"
   if (Test-Path $out) { Write-Host "skip ablations seed $seed"; continue }
-  uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed $seed --ablations full,no_structured_A,no_disentanglement_loss,flat_cp,no_correction_mlp,state_dim_4 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output $out
+  uv run python experiments/run_ablation.py --data ETTh1 --pred_len 336 --seed $seed --ablations all --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --multivariate_strategy per_feature --require_gpu --require_clean_git --output $out
 }
 ```
 
