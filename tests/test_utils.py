@@ -8,6 +8,7 @@ import torch
 
 
 from cissn.conformal import StateConditionalConformal, StateScaledConformal
+from cissn.evaluation.inference import moving_block_bootstrap_ci
 
 
 class TestConformalContracts(unittest.TestCase):
@@ -645,6 +646,33 @@ class TestPerOriginIntervalScores(unittest.TestCase):
         self.assertTrue(np.allclose(scores[:, 0], [1.0, 0.0]))
         self.assertTrue(np.allclose(scores[:, 1], [2.0, 2.0]))
         self.assertLess(scores[0, 2], scores[1, 2])
+
+
+class TestMovingBlockBootstrap(unittest.TestCase):
+    def test_interval_brackets_the_mean_and_is_reproducible(self):
+        delta = np.random.default_rng(0).normal(-0.2, 1.0, size=600)
+
+        first = moving_block_bootstrap_ci(delta, block_len=24, n_boot=500, seed=3)
+        second = moving_block_bootstrap_ci(delta, block_len=24, n_boot=500, seed=3)
+
+        self.assertEqual(first, second)
+        self.assertLess(first["ci_low"], first["mean"])
+        self.assertGreater(first["ci_high"], first["mean"])
+        with self.assertRaises(ValueError):
+            moving_block_bootstrap_ci(delta, block_len=601, n_boot=10, seed=0)
+
+    def test_blocks_widen_the_interval_for_dependent_origins(self):
+        # A random walk stands in for overlapping windows: neighbouring origins
+        # share targets, so an i.i.d. resample (block_len=1) understates variance.
+        walk = np.cumsum(np.random.default_rng(1).normal(size=2000))
+        walk = walk - walk.mean()
+
+        iid = moving_block_bootstrap_ci(walk, block_len=1, n_boot=400, seed=0)
+        blocked = moving_block_bootstrap_ci(walk, block_len=200, n_boot=400, seed=0)
+
+        self.assertGreater(
+            blocked["ci_high"] - blocked["ci_low"], 3 * (iid["ci_high"] - iid["ci_low"])
+        )
 
 
 if __name__ == '__main__':

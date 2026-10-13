@@ -101,4 +101,10 @@ def finalize_result_directory(temp_root: str | Path, final_root: str | Path, set
         raise FileExistsError(f"Refusing to overwrite completed result directory: {final}")
     final.parent.mkdir(parents=True, exist_ok=True)
     os.replace(temporary, final)
+    # Each immutable run owns a fresh temporary root; leave no empty one behind.
+    # rmdir refuses a non-empty directory, so a root that holds other files stays.
+    try:
+        Path(temp_root).rmdir()
+    except OSError:
+        pass
     return final

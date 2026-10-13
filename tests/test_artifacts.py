@@ -65,6 +65,19 @@ class TestArtifactContracts(unittest.TestCase):
         self.assertEqual(finalized, final_root / "setting")
         self.assertTrue((finalized / "completion.json").is_file())
         self.assertFalse(temporary_run.exists())
+        self.assertFalse(temporary_root.exists())
+
+    def test_finalize_keeps_temporary_root_that_still_holds_files(self):
+        final_root = Path(self.tmpdir.name) / "results"
+        temporary_root = create_temporary_result_root(final_root)
+        temporary_run = temporary_root / "setting"
+        temporary_run.mkdir(parents=True)
+        (temporary_run / "completion.json").write_text("{}", encoding="utf-8")
+        (temporary_root / "other.txt").write_text("keep", encoding="utf-8")
+
+        finalize_result_directory(temporary_root, final_root, "setting")
+
+        self.assertTrue((temporary_root / "other.txt").is_file())
 
     def test_hash_changes_when_scientific_config_changes(self):
         first = canonical_hash({"dropout": 0.05, "n_clusters": 5})

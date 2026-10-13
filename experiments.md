@@ -18,7 +18,7 @@ the cells already on disk.
 | 3b.0. Headroom diagnostic, 3 seeds | `[x]` | `results/validation/conditioning_headroom_revin_seed*.json` |
 | 3b.2. Conditioning selection, 3 seeds | `[x]` | outcome computed below: keep `cluster` |
 | 4. RevIN selection, ETTh2 + weather | `[~]` 2 of 12 | RevIN seed 42 of both datasets only |
-| 5. Hybrid variants, 3 arms x 3 seeds | `[~]` 9 of 9 runs, decision incomplete | criterion 4 (per-feature MSE) cannot be computed from saved artifacts |
+| 5. Hybrid variants, 3 arms x 3 seeds | `[x]` | outcome computed below: `hybrid_anchored` meets all four criteria on validation |
 | Prespecification | `[ ]` | no file. **The main grid already ran without it** |
 | Main grid — CISSN | `[~]` 52 of 54 | missing: weather h192 seeds 42 and 456 |
 | Main grid — baselines | `[~]` 256 of 270, plus 29 duplicates | `deep_ensemble` 40 of 54; `dlinear` has 83 dirs for 54 cells |
@@ -47,7 +47,7 @@ The seed 123 and 456 `selection.json` files are dated 2026-08-31 15:42 and 15:46
 the first main-grid run (16:11 the same day), so the data for this decision existed before
 the grid started. Copy this table into `commands.md` as the rule requires.
 
-### Step 5 — `hybrid_anchored` passes criteria 1-3; criterion 4 is pending
+### Step 5 — `hybrid_anchored` meets all four criteria on validation
 
 Paired DLinear = the frozen base inside each hybrid run (`base_val_loss` in
 `checkpoints/selection/<setting>/runtime.json`). The base value is identical across the
@@ -62,17 +62,28 @@ three arms at each seed, so the pairing is exact. Delta = `validation_mse / base
 - Criteria 1-3 (mean at least 1% better, better on at least 2 of 3 seeds, no seed worse
   than 2%): `hybrid_anchored` and `hybrid_legacy` pass. `hybrid_anchored` leads by 2.4
   points, so the 0.5% tie rule does not apply.
-- Criterion 4 (no feature's mean MSE worse by more than 5%): **not computable**.
-  `run_selection.py` saves no per-feature validation MSE for the hybrid or its base. The
-  checkpoints (`checkpoint_base.pth`, `checkpoint.pth`, `checkpoint_head.pth`) are on disk,
-  so the check needs inference on the validation split only, not retraining.
-- Record the outcome as "anchored: criteria 1-3 pass, criterion 4 pending", not as
-  "promoted".
+- Criterion 4 (no feature's mean MSE worse by more than 5%): computed with
+  `scripts/hybrid_feature_mse.py`, which reloads each saved checkpoint and scores the
+  validation split only. Its pooled hybrid MSE equals `validation_mse` in each
+  `selection.json` to five digits on all 9 runs, so it read the right checkpoints. Result in
+  `results/selection/hybrid_feature_mse.json`. Change vs the frozen base, mean over 3
+  seeds, per feature in file column order:
+
+  | Arm | f0 | f1 | f2 | f3 | f4 | f5 | f6 | worst | criterion 4 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `hybrid_legacy` | +1.07% | -2.17% | +0.39% | +4.08% | -3.23% | -5.32% | +0.24% | +4.08% | passes |
+  | `hybrid_anchored` | +0.33% | -6.89% | +0.73% | -1.21% | -6.38% | -6.53% | -2.56% | +0.73% | passes |
+  | `hybrid_anchored_revin` | -0.33% | -0.27% | -0.57% | -0.46% | +0.07% | +0.25% | +0.27% | +0.27% | passes |
+
+- **Outcome by the rule: promote `hybrid_anchored`.** It is the only arm clearly ahead of
+  the others (-3.69% mean, 3 of 3 seeds, worst feature +0.73%). The 0.5% tie rule does not
+  apply. This is a validation result on ETTh1-h336 only.
 - Context for the reader, not an override of the rule: `docs/methodology.md:303` records
   an earlier hybrid run whose validation loss improved by 4.1% while its ETTh1 test MSE was
-  0.799 against the frozen base's 0.619. ETTh1 test is diagnostic only.
-- `RUNBOOK.md` gives no main-grid command for a promoted hybrid. If criterion 4 passes, a
-  decision is needed on which grid cells the hybrid runs on.
+  0.799 against the frozen base's 0.619. ETTh1 test is diagnostic only. The validation gain
+  has not been shown to transfer to a test split.
+- `RUNBOOK.md` gives no main-grid command for a promoted hybrid. L7 needs a decision on
+  which grid cells the hybrid runs on before it can launch.
 
 ## Facts that change how results can be stated
 
@@ -111,6 +122,37 @@ three arms at each seed, so the pairing is exact. Delta = `validation_mse / base
    (per-member ensemble history for the deep-ensemble forecast quality review). Record the
    commit next to the weather results.
 
+## Claims the evidence supports now
+
+Replace broader wording elsewhere (including the headline figures in `CLAUDE.md`) with
+these until new runs change them.
+
+| Topic | Supported wording | Evidence status |
+| --- | --- | --- |
+| Conditioning under the protocol | On ETTh1-h336 validation (RevIN, 3 seeds), flat CP, cluster SCCP, and per-cell state-scaled CP lie within 1% Winkler of each other. No mechanism is selected over flat CP. | selection, validation only |
+| Conditioning, other datasets | ETTh2 and weather, seed 42 only: cluster SCCP is 8% and 2.8% better than flat CP on validation Winkler. Descriptive; one seed. | selection, validation only |
+| Conditioning diagnostic | ETTh1 test, 4 nested cuts x 3 seeds, fixed fitting scheme: Winkler change vs flat CP is -0.21 to -0.27 for per-cell, -0.10 to -0.16 for cluster, +0.007 to +0.030 for scalar. The `CLAUDE.md` figures (-0.237, -0.124) reproduce here but the protocol path does not support them. | diagnostic, not selection-eligible |
+| Coverage | No marginal 0.90 claim on ETTh1. Validation coverage is 0.74-0.82 for every method, flat CP included. | selection, validation only |
+| Hybrid | `hybrid_anchored` has 3.69% lower validation MSE than its frozen DLinear base on ETTh1-h336, 3 of 3 seeds, worst feature +0.73%. An earlier hybrid run did not carry its validation gain to test. | selection, validation only |
+| Point accuracy vs baselines | Not comparable yet: CISSN ran with RevIN, baselines without. | confounded until L6 |
+
+Novel: state-conditional interval calibration (regime-dependent, RevIN only), the structured
+encoder, and the hybrid correction. Reused: split CP, normalized conformal scores, DLinear,
+and the interval metrics.
+
+## Not done, and why
+
+- **P3, a validation-only run that varies the conditioning-fit window size.** It would
+  test the open fitting-set-size explanation for the gap between the diagnostic and the
+  protocol. It needs a new option in `run_selection.py`, which changes run code, so it
+  waits until L3-L5 finish.
+- **P5, per-origin scores for the secondary mechanism.** The grid's secondary mechanism is
+  `scalar`, which `CLAUDE.md` says cannot express the signal, and it has no per-origin
+  scores on disk. Primary vs secondary is not testable from the current artifacts.
+- **A fresh sealed dataset.** ETTm1 and ETTm2 span the same dates as ETTh1 and ETTh2, so
+  they are a new resolution, not independent data. ECL (321 channels), traffic (862), and
+  ILI (7 channels, 966 weekly rows) have no runs. Choosing one changes `RUNBOOK.md`.
+
 ## Experiments left to run
 
 Order: L0 and L1 first (no GPU). L2 and L3 are independent of each other. L4 and L5 can
@@ -124,26 +166,36 @@ changed since the grid commits:
 
 ```powershell
 git status --short
-git diff --stat efadb63 HEAD -- cissn experiments scripts
+git diff --stat efadb63 HEAD -- cissn experiments
 ```
 
-The first command must print nothing. The second must print nothing. Land a code change
-only after L3, L4, and L5 finish, or those cells run on different code from the rest of
-the grid.
+The first command must print nothing. The second must list only these three files, and
+none of them changes what a run computes or writes into its artifacts:
+
+- `cissn/evaluation/sanity.py` (per-member ensemble history, already in the 40 `deep_ensemble` cells);
+- `cissn/evaluation/inference.py` (new, used only by the analysis script);
+- `cissn/utils/artifacts.py` (removes the empty temporary root after a run finishes).
+
+`scripts/` is left out of the diff on purpose: the new analysis scripts there read saved
+artifacts and are never called by a run.
+
+Land any other code change only after L3, L4, and L5 finish, or those cells run on
+different code from the rest of the grid.
 
 ```text
 L0 housekeeping ─┐
 L1 prespec ──────┼─> L4 CISSN weather h192 ─┐
                  ├─> L5 deep_ensemble 14 ───┤
 L3 RevIN select ─┴─> L6 baselines + RevIN ──┼─> L8 ablations -> L9 publication review
-L2 hybrid crit.4 ──> L7 hybrid grid (if promoted) ┘
+L2 hybrid crit.4 (done) ──> L7 hybrid grid ┘
 ```
 
 ### L0. Housekeeping `[ ]` no GPU
 
 1. **Empty temporary directories.** `results/` holds 93 `.publication.tmp-*` directories.
-   `finalize_result_directory` moves the run out of the temporary root but leaves the root
-   behind, so every immutable run adds one. None holds a file (one holds an empty
+   `finalize_result_directory` used to move the run out of the temporary root and leave the
+   root behind, so every immutable run added one. It now removes an empty root, so new runs
+   add none. None holds a file (one holds an empty
    `BASELINE_deep_ensemble_ETTh1_..._pl24_seed42_...__a14269d4459f` directory from an
    interrupted attempt; the cell is complete under a different hash). Read the count, then
    delete:
@@ -203,13 +255,25 @@ See `RUNBOOK.md`, "Prespecified statistics". The file must also state:
   pre-RevIN grid, whose results were read, and from the RevIN grid;
 - whether ETTh1 test (diagnostic only) is in the confirmatory endpoint. Without it, 13
   dataset x horizon cells remain (ETTh2 5, weather 4, exchange-rate 4);
-- the Step 3b.2 and Step 5 outcomes above, with their dates.
+- the Step 3b.2 and Step 5 outcomes above, with their dates;
+- the inference choices for `scripts/paired_interval_inference.py`, which takes each one as
+  a required argument with no default: `--datasets`, `--block_multiplier` (block length is
+  at least `pred_len`, because stride-1 origins closer than the horizon share targets),
+  `--n_boot`, and `--seed`. The script averages the per-origin Winkler difference over
+  seeds before it resamples; write that rule down too;
+- the unit of the cross-cell test. Horizons within one dataset share data, so the Wilcoxon
+  test over cells behaves like a test over roughly 3 datasets, not 13 cells. With 4 cells
+  the smallest possible two-sided p is 0.125, and with 13 cells it is about 0.0005, so state
+  which count the test is allowed to claim.
 
-### L2. Step 5 criterion 4: per-feature validation MSE `[ ]` no GPU needed
+### L2. Step 5 criterion 4: per-feature validation MSE `[x]` done
 
-No command exists yet. It needs a validation-only script that loads each hybrid
-checkpoint and its frozen base and writes per-feature validation MSE for both. Until this
-runs, Step 5 has no outcome.
+Ran on CPU, validation split only. Reproduce with:
+
+```powershell
+$dirs = foreach ($arm in 'hybrid_legacy','hybrid_anchored','hybrid_anchored_revin') { foreach ($seed in 42,123,456) { "checkpoints/selection/CISSN_ETTh1_M_sl96_pl336_sd5_dm64_${arm}_lc0_lt0_a0p1_per_feature_seed$seed" } }
+uv run python scripts/hybrid_feature_mse.py --checkpoint_dirs $dirs --output ./results/selection/hybrid_feature_mse.json
+```
 
 ### L3. Step 4: RevIN selection, ETTh2 + weather `[~]` 2 of 12
 
@@ -326,9 +390,12 @@ When the loop finishes, move the non-RevIN directories of these four models to
 carry no token between the seed and the hash, so `seed42_*fullrevin__*` matches only the
 RevIN copy for every model.
 
-### L7. Hybrid main grid `[ ]` only if L2 passes
+### L7. Hybrid main grid `[ ]` Step 5 promoted `hybrid_anchored`
 
-`RUNBOOK.md` has no command for this. Decide the cells first.
+`RUNBOOK.md` has no command for this. Decide the cells first. Options: the same 13
+confirmatory cells as CISSN, or ETTh1-h336 only. The hybrid needs `--architecture hybrid
+--state_dynamics anchored --lambda_cov 0 --lambda_temp 0`, and its point accuracy must be
+reported apart from the interval-calibration results (`CLAUDE.md`).
 
 ### L8. Ablations `[ ]`
 
@@ -350,6 +417,15 @@ uv run python scripts/generate_publication_tables.py --results_root ./results/pu
 uv run python scripts/generate_publication_figures.py --results_root ./results/publication --output_dir ./results/publication/figures
 uv run python scripts/generate_reproducibility_appendix.py --results_root ./results/publication --output ./results/publication/reproducibility.md
 ```
+
+After the prespecification file exists, run the paired inference on the confirmation
+artifacts, with the choices copied from that file:
+
+```powershell
+uv run python scripts/paired_interval_inference.py --results_root ./results/publication --datasets ETTh2 weather exchange_rate --block_multiplier 1 --n_boot 5000 --seed 0 --output ./results/publication/paired_interval_inference.json
+```
+
+The values above are placeholders for the syntax. Do not run it before L1 is written.
 
 Before aggregating, confirm L0 is done. Exclude runs with `structural_passed: false`,
 incomplete artifact sets, different splits, and raw-UQ results from the primary table.
