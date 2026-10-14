@@ -56,6 +56,19 @@ class TestEncoderSequence(unittest.TestCase):
             self.assertIsNotNone(p.grad, f"{name} has no gradient")
             self.assertTrue(torch.isfinite(p.grad).all(), f"{name} grad not finite")
 
+    def test_single_window_matches_batched_forward(self):
+        """A batch of one must give the same state as the same window in a batch.
+
+        The compiled sequence loop once returned a different state for batch
+        size 1, which corrupted every forecast made one window at a time
+        (the test-origin stride path).
+        """
+        self.enc.eval()
+        with torch.no_grad():
+            batched = self.enc(self.x)
+            single = self.enc(self.x[:1])
+        self.assertTrue(torch.allclose(single, batched[:1], atol=1e-4))
+
 
 if __name__ == "__main__":
     unittest.main()

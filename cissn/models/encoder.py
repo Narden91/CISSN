@@ -72,6 +72,11 @@ class DisentangledStateEncoder(StructuredDecayMixin):
         self._register_decay_params(n_dims=1, include_residual=True, omega_init=omega_init)
 
         if sys.platform != 'win32' and hasattr(torch, 'compile'):
+            # The compiled graph specialises on batch size 1 and returns a different
+            # state than eager execution (measured: max abs difference 16.7 on a 321-channel
+            # input, while every batch of 2 or more matches eager), so a single window
+            # must take the uncompiled path.
+            self._run_sequence_eager = self._run_sequence
             self._run_sequence = torch.compile(self._run_sequence)
 
         # CUDA-graph cache for inference. The recurrence is launch-bound, so
@@ -122,6 +127,8 @@ class DisentangledStateEncoder(StructuredDecayMixin):
     def _forward_eager(self, x: torch.Tensor, return_all_states: bool):
         projected = self.input_proj(x)
         dynamics = self._structured_dynamics()
+        if projected.shape[0] == 1 and hasattr(self, "_run_sequence_eager"):
+            return self._run_sequence_eager(projected, dynamics, return_all_states)
         return self._run_sequence(projected, dynamics, return_all_states)
 
     def _correction_scale(self) -> torch.Tensor:
