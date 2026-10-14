@@ -102,6 +102,8 @@ build/
 *.pdf
 manuscript/
 
+*.tar
+
 # Latex
 *.aux
 *.lof
