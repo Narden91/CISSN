@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Submits the cluster runs R1-R6 (experiments.md) after preflight passes. Re-run it to resume:
+# Submits the cluster runs R1-R6 and P1-P3 (RUNBOOK.md) after preflight passes. Re-run it to resume:
 # finished cells are skipped, and blocks with nothing left are not submitted.
 #
 #   bash slurm/launch.sh                  # preflight, smoke job, then all blocks
 #   bash slurm/launch.sh --dry-run        # preflight and print the sbatch commands
 #   bash slurm/launch.sh --smoke-only     # preflight and the 1-epoch GPU smoke job only
-#   bash slurm/launch.sh --blocks r4,r4b  # a subset
+#   bash slurm/launch.sh --blocks p1,p2   # a subset
 #
-# Order: smoke -> (r1, r2, r4) -> r3/r5 after r1 -> r4b after r4 -> r6 after r2-r5. The smoke job
-# gates everything with afterok; between blocks the order uses afterany, so one failed cell does not
-# strand the rest. R3 and R5 depend on the R1 outcome: only one of them has cells.
+# Order: smoke -> (r1, r2, r4, p1, p2, p3s) -> r3/r5 after r1 -> r4b after r4 -> r6 after r2-r5;
+# p3 after p3s and p3b after p3 both need success (afterok). The smoke job must succeed before any
+# block starts; other blocks use afterany, so one failed cell does not strand the rest. R3 and R5
+# depend on the R1 outcome: only one of them has cells.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
@@ -17,9 +18,9 @@ cd "$ROOT"
 
 DRY_RUN=0
 SMOKE_ONLY=0
-BLOCKS=(r1 r2 r3 r4 r4b r5 r6)
+BLOCKS=(r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b)
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,12 +34,14 @@ while [ $# -gt 0 ]; do
     shift
 done
 for b in "${BLOCKS[@]}"; do
-    case "$b" in r1|r2|r3|r4|r4b|r5|r6) ;; *) echo "ERROR: unknown block '$b' (r1 r2 r3 r4 r4b r5 r6)" >&2; exit 2 ;; esac
+    case "$b" in r1|r2|r3|r4|r4b|r5|r6|p1|p2|p3s|p3|p3b) ;; *) echo "ERROR: unknown block '$b' (r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b)" >&2; exit 2 ;; esac
 done
 
 PREFLIGHT_ARGS=()
 if [ "$DRY_RUN" -eq 1 ] && ! command -v sbatch >/dev/null 2>&1; then PREFLIGHT_ARGS=(--no-slurm); fi
-bash slurm/preflight.sh ${PREFLIGHT_ARGS[@]+"${PREFLIGHT_ARGS[@]}"} || { echo "ERROR: preflight failed; nothing submitted" >&2; exit 1; }
+# Preflight checks the P3 dataset and its prespecification only when a P3 block is launched.
+PREFLIGHT_BLOCKS="${BLOCKS[*]}" bash slurm/preflight.sh ${PREFLIGHT_ARGS[@]+"${PREFLIGHT_ARGS[@]}"} \
+    || { echo "ERROR: preflight failed; nothing submitted" >&2; exit 1; }
 echo
 
 mkdir -p "$LOGS"
@@ -90,6 +93,8 @@ for block in "${BLOCKS[@]}"; do
     case "$block" in
         r3|r5) [ -n "${IDS[r1]:-}" ] && dep="$GATE,afterany:${IDS[r1]}" ;;
         r4b)   [ -n "${IDS[r4]:-}" ] && dep="$GATE,afterany:${IDS[r4]}" ;;
+        p3)    [ -n "${IDS[p3s]:-}" ] && dep="$GATE,afterok:${IDS[p3s]}" ;;
+        p3b)   [ -n "${IDS[p3]:-}" ] && dep="$GATE,afterok:${IDS[p3]}" ;;
         r6)    after=""
                for b in r2 r3 r4 r5; do [ -n "${IDS[$b]:-}" ] && after="$after:${IDS[$b]}"; done
                [ -n "$after" ] && dep="$GATE,afterany$after" ;;

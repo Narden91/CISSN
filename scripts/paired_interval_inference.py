@@ -34,9 +34,14 @@ from scipy.stats import wilcoxon
 from cissn.evaluation.inference import moving_block_bootstrap_ci
 
 WINKLER_COLUMN = 2
+# Which calibrator is compared with flat CP: the run's primary one, or state-scaled CP.
+METHOD_FILES = {
+    "primary": "per_origin_interval_metrics.npy",
+    "state_scaled": "per_origin_interval_state_scaled_metrics.npy",
+}
 
 
-def _load_cell_runs(results_root: Path, datasets: set[str]) -> dict:
+def _load_cell_runs(results_root: Path, datasets: set[str], method: str = "primary") -> dict:
     cells: dict = defaultdict(list)
     for metrics_path in sorted(results_root.glob("CISSN_*/metrics.json")):
         run_dir = metrics_path.parent
@@ -58,7 +63,8 @@ def _load_cell_runs(results_root: Path, datasets: set[str]) -> dict:
             "seed": int(config["seed"]),
             "stride": int(config.get("test_origin_stride", 1)),
             "conditioning": config["conformal_conditioning"],
-            "primary": np.load(run_dir / "per_origin_interval_metrics.npy"),
+            "scale_geometry": config.get("scale_geometry", "scalar"),
+            "primary": np.load(run_dir / METHOD_FILES[method]),
             "flat": np.load(run_dir / "per_origin_interval_flat_cp_metrics.npy"),
             "origins": np.load(run_dir / "test_origin_indices.npy"),
         })
@@ -70,6 +76,8 @@ def _cell_delta(runs: list[dict]) -> np.ndarray:
     # and averaging them would be meaningless, so stop instead of aligning.
     if len({run["conditioning"] for run in runs}) != 1:
         raise ValueError("A cell mixes conditioning modes.")
+    if len({run["scale_geometry"] for run in runs}) != 1:
+        raise ValueError("A cell mixes scale geometries.")
     seeds = [run["seed"] for run in runs]
     if len(seeds) != len(set(seeds)):
         raise ValueError(f"A cell holds two runs for one seed: {sorted(seeds)}.")
@@ -92,12 +100,14 @@ def main() -> None:
     parser.add_argument("--n_boot", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--confidence", type=float, default=0.95)
+    parser.add_argument("--method", choices=sorted(METHOD_FILES), default="primary",
+                        help="calibrator compared with flat CP: the run's primary one, or state-scaled CP")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.block_multiplier < 1.0:
         raise ValueError("block_multiplier below 1 gives intervals that are too narrow.")
 
-    cells = _load_cell_runs(args.results_root, set(args.datasets))
+    cells = _load_cell_runs(args.results_root, set(args.datasets), args.method)
     if not cells:
         raise RuntimeError("No matching confirmation runs found.")
 
@@ -114,6 +124,8 @@ def main() -> None:
             "stride": stride,
             "seeds": sorted(run["seed"] for run in runs),
             "conditioning": runs[0]["conditioning"],
+            "method": args.method,
+            "scale_geometry": runs[0]["scale_geometry"],
             "flat_winkler_mean": flat_mean,
             "relative_mean": result["mean"] / flat_mean,
             "relative_ci_low": result["ci_low"] / flat_mean,

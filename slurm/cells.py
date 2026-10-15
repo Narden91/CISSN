@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Cell manifest for the cluster runs R1-R6 in experiments.md.
+"""Cell manifest for the cluster runs R1-R6 and P1-P3 (RUNBOOK.md; P1-P3 are Step 7).
 
 One place lists every cell (one runner call). Each cell is parsed with the runner's own
 argument parser, and its done-marker comes from the runner's own name builder, so a flag
@@ -12,8 +12,10 @@ typo or a naming change fails here and not hours into a job.
     python slurm/cells.py decide                # R1 outcome: does RevIN win?
     python slurm/cells.py run BLOCK --task K --ntasks N   # what one array task executes
 
-Blocks: smoke r1 r2 r3 r4 r4b r5 r6. r3 and r5 depend on the R1 outcome (experiments.md):
-R5 runs only if R1 selects RevIN, R3 runs only if it does not. Run with the project venv python.
+Blocks: smoke r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b. r3 and r5 depend on the R1 outcome:
+R5 runs only if R1 selects RevIN, R3 runs only if it does not. p1 (ECL baselines), p2 (ACI on
+ECL), p3s (one-epoch memory check on the P3 dataset), p3 (P3 confirmatory runs), and p3b (ACI on
+P3) are RUNBOOK Step 7. Run with the project venv python.
 """
 from __future__ import annotations
 
@@ -35,7 +37,9 @@ os.chdir(ROOT)  # every path below is relative to the repository root, as in exp
 PUB = "./results/publication"
 CKPT_PUB = "./checkpoints/publication"
 SEEDS = (42, 123, 456)
-EXPECTED = {"smoke": 5, "r1": 12, "r2": 2, "r3": 14, "r4": 9, "r4b": 1, "r5": 216, "r6": 3}
+EXPECTED = {"smoke": 5, "r1": 12, "r2": 2, "r3": 14, "r4": 9, "r4b": 1, "r5": 216, "r6": 3,
+            "p1": 24, "p2": 1, "p3s": 1, "p3": 6, "p3b": 1}
+P3_DATA = "traffic"  # the dataset of docs/prespecification_<P3_DATA>.md; preflight reads it from here
 LOG_DIR = ROOT / "logs" / "slurm"  # inside the gitignored logs/ so --require_clean_git stays satisfied
 
 TRAIN = ["--train_epochs", "20", "--patience", "5", "--lradj", "cosine"]
@@ -47,6 +51,8 @@ BASELINE_COMMON = [*TRAIN, "--batch_size", "128", "--conformal_alpha", "0.1",
                    "--multivariate_strategy", "per_feature", *SEALED]
 HORIZONS = {"ETTh1": (24, 96, 192, 336, 720), "ETTh2": (24, 96, 192, 336, 720),
             "weather": (96, 192, 336, 720), "exchange_rate": (96, 192, 336, 720)}
+DAILY_ORIGINS = ["--test_origin_stride", "24"]  # one test origin per day on hourly data (prespecification)
+ACI_ANALYSIS = ["--gamma", "0.005", "--block_multiplier", "1", "--n_boot", "5000", "--seed", "0"]
 
 
 @dataclass
@@ -181,8 +187,50 @@ def block_r6() -> list[Cell]:
     return cells
 
 
+def block_p1() -> list[Cell]:
+    # P1: point baselines on ECL, scored on the same daily origins as the R4 CISSN runs.
+    return [_baseline("p1", _argv("--model", model, "--revin", "--data", "ECL", "--pred_len", h, "--seed", seed,
+                                  DAILY_ORIGINS, BASELINE_COMMON))
+            for model in ("dlinear", "patchtst", "mc_dropout", "deep_ensemble") for h in (336, 96) for seed in SEEDS]
+
+
+def _aci(block: str, data: str) -> Cell:
+    # Reloads the CISSN checkpoints, so it runs here, on the GPU type that trained them.
+    out = f"{PUB}/aci_vs_flat_{data}.json"
+    argv = _argv("--results_root", PUB, "--checkpoints_root", CKPT_PUB, "--datasets", data, ACI_ANALYSIS,
+                 "--output", out)
+    return Cell(block, f"aci_vs_flat_{data}", "scripts/aci_paired_comparison.py", argv, out)
+
+
+def block_p2() -> list[Cell]:
+    return [_aci("p2", "ECL")]
+
+
+def block_p3s() -> list[Cell]:
+    # One epoch on the P3 dataset through the validation-only controller, before P3 starts: it
+    # checks memory with the per-cell scale regression and never builds the test loader.
+    out = ["--checkpoints", "./checkpoints/smoke_p3", "--results_dir", "./results/smoke_p3"]
+    return [_selection("p3s", _argv("--data", P3_DATA, "--pred_len", 336, "--seed", 0, "--revin",
+                                    "--scale_geometry", "per_cell", "--train_epochs", 1, "--patience", 5,
+                                    "--lradj", "cosine", "--batch_size", 128, "--require_gpu",
+                                    "--require_clean_git", out), root="./results/smoke_p3")]
+
+
+def block_p3() -> list[Cell]:
+    # P3: second prespecified confirmatory test (docs/prespecification_<P3_DATA>.md). Per-cell
+    # geometry makes the run's state-scaled CP the secondary endpoint's calibrator.
+    return [_benchmark("p3", _argv("--data", P3_DATA, "--pred_len", h, "--seed", seed, "--revin", CISSN_COMMON,
+                                   "--scale_geometry", "per_cell", DAILY_ORIGINS, SEALED))
+            for h in (336, 96) for seed in SEEDS]
+
+
+def block_p3b() -> list[Cell]:
+    return [_aci("p3b", P3_DATA)]
+
+
 BLOCKS = {"smoke": block_smoke, "r1": block_r1, "r2": block_r2, "r3": block_r3, "r4": block_r4,
-          "r4b": block_r4b, "r5": block_r5, "r6": block_r6}
+          "r4b": block_r4b, "r5": block_r5, "r6": block_r6,
+          "p1": block_p1, "p2": block_p2, "p3s": block_p3s, "p3": block_p3, "p3b": block_p3b}
 
 
 def decide() -> dict:

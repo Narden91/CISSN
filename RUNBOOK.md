@@ -10,10 +10,10 @@ Checkbox meaning: `[x]` an artifact on disk satisfies the step under the *curren
 `[~]` partly done; `[-]` dropped, with the reason in its row; `[ ]` the step must be launched. Runs that exist but cannot satisfy their step have been
 moved to `results/superseded/` with a per-run reason in that directory's `README.md`; they
 stay available as diagnostics and are never pooled into a publication table. Updated
-against `results/` on 2026-10-13, branch `conformal-per-cell-geometry`.
+against `results/` on 2026-10-15, branch `conformal-per-cell-geometry`.
 
-`results/` holds the Step 2 DLinear reference and the seed-42 Step 3 CISSN run, both under
-current code. Launch commands for everything outstanding are in `experiments.md`.
+Launch commands for everything outstanding are in `experiments.md`. The finished blocks R1
+to R7 and their commands are in `git show a1add62:experiments.md`.
 
 | Step | State | Evidence on disk |
 | --- | --- | --- |
@@ -23,26 +23,18 @@ current code. Launch commands for everything outstanding are in `experiments.md`
 | 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[x]` | re-run under the fitting-set fix on 3 seeds: `results/validation/conditioning_headroom_revin_seed*.json`. The earlier runs stay in `results/superseded/` |
 | 3b.0 headroom diagnostic, other datasets | `[-]` | dropped: it would reuse an exposed test split, and the 3b.2 validation selection already decides the question. See `docs/prespecification.md` |
 | 3b.2 validation-only selection runs | `[x]` | 3 seeds; `scale` beats both mechanisms on 1 of 3, so `cluster` stays primary. Details in `experiments.md` |
-| 4 RevIN selection (ETTh2, weather, 3 seeds, paired) | `[ ]` | RevIN evidence to date is ETTh1 **test**, which is diagnostic and cannot select |
+| 4 RevIN selection (ETTh2, weather, 3 seeds, paired) | `[x]` | RevIN selected on validation data: `results/selection/r1_decision.json` |
 | 5 hybrid variant selection (3 variants x 3 seeds) | `[x]` | `hybrid_anchored` meets all four criteria on validation (`results/selection/hybrid_feature_mse.json`) |
 | Prespecified statistics recorded | `[x]` | `docs/prespecification.md`, written 2026-10-13 after the exposed-dataset grid ran; adds ECL as the confirmatory dataset |
-| Main grid — CISSN, 4 datasets | `[~]` | 52 of 54 exposed-dataset cells; ECL confirmatory cells outstanding. See `experiments.md` |
-| Main grid — baselines, 5 models x 4 datasets | `[~]` | all but 14 `deep_ensemble` cells, without RevIN. See `experiments.md` |
-| Ablations | `[ ]` | none |
-| Publication review (tables/figures/appendix) | `[ ]` | none |
+| Main grid — CISSN, 4 datasets + ECL | `[x]` | 54 exposed-dataset runs, and 9 ECL confirmatory runs at `6adc24b` (legacy h96 and h336, hybrid h336) |
+| Main grid — baselines under RevIN | `[~]` | 204 of 216 R5 runs; 12 MC-Dropout and Deep Ensemble runs at h192 await the encoder-fix rerun (`experiments.md`, E1). DeepState: 54 runs without RevIN |
+| Ablations | `[x]` | `results/publication/ablations_ETTh1_h336_s*.json`, regime without RevIN |
+| Publication review (tables/figures) | `[~]` | draft `manuscript/main.tex`, numbers from `manuscript/analysis/build_numbers.py` |
+| 7 P1 ECL baselines | `[ ]` | needs E1 finished; see Step 7 |
+| 7 P2 ACI comparator | `[ ]` | needs E1 finished; see Step 7 |
+| 7 P3 traffic confirmatory test | `[ ]` | needs `docs/prespecification_traffic.md` committed; see Step 7 |
 
-Two findings constrain what can be launched next:
-
-- **No run on disk carries an evidence role.** Every `protocol.json` has keys
-  `config/dataset/protocol/protocol_hash/source` and no `evidence` block, so all six runs
-  are development artifacts. None is eligible for the confirmation grid regardless of its
-  numbers.
-- **Every existing run is ETTh1-h336.** The three sealed datasets have never been opened,
-  which is the intended state — and it also means no step past 3b has any evidence.
-
-Recommended order: finish Step 3 (seeds 123, 456), then Step 3b.0 against those fresh
-artifacts, then the Step 3b.2 and Step 4 selection runs, then the decision lock, then the
-prespecification, then the main grid.
+Open work, in order: E1 to E3 in `experiments.md`, then Step 7.
 
 Epoch budget: `--train_epochs 20 --patience 5` was checked against a 60-epoch,
 patience-10 arm on ETTh1-h336/seed 42/RevIN. That arm early-stops at epoch 27 with its best
@@ -295,6 +287,57 @@ most conditioning comparisons. Two cells are not reachable from `run_ablation.py
 fixes one `--scale_geometry`): both scale geometries in one run, and a conditioning mode
 crossed with an architecture ablation. Neither is added; the validation selection and the
 window-placement diagnostic cover the geometry question.
+
+## Step 7: additions for submission `[ ]`
+
+Three additions answer the gaps that `venue.md` lists. None changes the ECL endpoint, its
+analysis, or its reading rule, and each result is reported as added after the ECL
+confirmatory analysis.
+
+**Order.** Start Step 7 only after `experiments.md` E1 finishes. Then commit the Step 7
+code (and, for P3, `docs/prespecification_traffic.md`), push, and pull on the cluster. The
+E1 runs must not run on a commit that differs from the other 204 R5 runs by more than the
+encoder fix.
+
+**P1: point baselines on ECL.** DLinear, PatchTST-lite, MC-Dropout, and Deep Ensemble under
+RevIN, horizons 336 and 96, seeds 42, 123, 456 (24 runs, Slurm block `p1`).
+`--test_origin_stride 24` scores the same daily origins as the R4 CISSN runs; training and
+calibration use every window.
+
+- Evidence role: descriptive point accuracy within the RevIN regime
+  (`docs/prespecification.md`, section 6). Report the ratio to CISSN per cell and the count
+  of seeds; no test.
+- Baseline intervals are flat CP on the full calibration split
+  (`conformalized_full_cal`). Never compare them with the paired calibrators of a CISSN run.
+
+**P2: adaptive conformal inference (ACI) as a comparator.** ACI (Gibbs and Candès, 2021)
+on the same residuals of the same CISSN models, against flat CP
+(`scripts/aci_paired_comparison.py`; update rule in `cissn/conformal/aci.py`).
+
+- Step size `gamma = 0.005`, the value Gibbs and Candès used, fixed now. No other value is
+  run.
+- One level per horizon-feature cell. Origin i updates the levels only for origins at least
+  H steps later, because its target is fully observed only then.
+- A level that asks beyond the largest calibration score uses that score; the output
+  counts these pairs (`n_capped`).
+- Reload check: ACI with `gamma = 0` must reproduce the saved flat-CP per-origin scores
+  (relative tolerance 1e-4), or the script stops.
+- Datasets: ECL (cluster block `p2`), the exposed grid (workstation, where its checkpoints
+  are), and traffic (block `p3b`, after P3).
+- Evidence role: descriptive. ACI uses realised test errors as they arrive; report it as a
+  calibrator with more information than split CP, with the bootstrap settings of
+  `docs/prespecification.md`, section 8.
+
+**P3: second prespecified confirmatory test on traffic.** Six CISSN runs (horizons 336 and
+96, seeds 42, 123, 456, block `p3`) with the ECL settings plus `--scale_geometry per_cell`.
+`docs/prespecification_traffic.md` fixes the design, the two endpoints (E1 cluster SCCP and
+E2 per-cell state-scaled CP, each against flat CP at horizon 336), the Holm steps, and the
+reading rule. Commit that file before block `p3s` (a one-epoch, validation-only memory check
+on traffic) runs. P1 and P2 do not depend on P3 and can launch first.
+
+**After Step 7.** `manuscript/analysis/build_numbers.py` already places the P1 runs in the
+point table. The ACI and traffic results need new rows in that script before the manuscript
+can cite them; add them after the runs exist, from their output files only.
 
 ## Publication review `[ ]`
 

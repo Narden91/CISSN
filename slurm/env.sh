@@ -26,6 +26,14 @@ SHARDS_R4=9;    TIME_R4=03:00:00
 SHARDS_R4B=1;   TIME_R4B=01:00:00
 SHARDS_R5=12;   TIME_R5=06:00:00
 SHARDS_R6=3;    TIME_R6=04:00:00
+# Step 7 has no timed runs yet. Estimates: an ECL baseline at most 3x the 18-min R4 CISSN cell
+# (the ensemble trains 3 members), so 2 cells per P1 task; a traffic cell (862 channels, 2.7x
+# ECL) about 1 h; an ACI pass reloads 6 runs and recalibrates, minutes per run.
+SHARDS_P1=12;   TIME_P1=06:00:00
+SHARDS_P2=1;    TIME_P2=02:00:00
+SHARDS_P3S=1;   TIME_P3S=01:00:00
+SHARDS_P3=6;    TIME_P3=04:00:00
+SHARDS_P3B=1;   TIME_P3B=02:00:00
 
 # uv state lives next to the checkout, not in $HOME (small quota; the torch wheel is about 3 GB).
 UV_CACHE_DIR="${UV_CACHE_DIR:-$(dirname "$ROOT")/.uv-cache}"

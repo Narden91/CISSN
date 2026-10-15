@@ -675,6 +675,36 @@ class TestMovingBlockBootstrap(unittest.TestCase):
         )
 
 
+class TestAdaptiveConformal(unittest.TestCase):
+    def test_zero_step_reproduces_flat_cp(self):
+        from cissn.baselines import FlatConformal
+        from cissn.conformal.aci import adaptive_conformal_quantiles
+
+        rng = np.random.default_rng(0)
+        cal = np.abs(rng.normal(size=(37, 4, 3)))
+        test = np.abs(rng.normal(size=(10, 4, 3)))
+        flat = FlatConformal(alpha=0.1)
+        flat.fit(cal)
+
+        widths, n_capped = adaptive_conformal_quantiles(cal, test, np.arange(10), 4, alpha=0.1, gamma=0.0)
+
+        np.testing.assert_array_equal(widths, np.broadcast_to(flat.quantile_, widths.shape))
+        self.assertEqual(n_capped, 0)
+
+    def test_feedback_waits_until_the_target_is_observed(self):
+        from cissn.conformal.aci import adaptive_conformal_quantiles
+
+        # Scores 1..19: flat CP at alpha 0.1 takes 18. Every test origin misses, and origin i
+        # may update only origins j >= i + 3, so origins 0-2 keep the flat width.
+        cal = np.broadcast_to(np.arange(1.0, 20.0)[:, None, None], (19, 2, 2)).copy()
+        test = np.full((5, 2, 2), 100.0)
+
+        widths, n_capped = adaptive_conformal_quantiles(cal, test, np.arange(5), 3, alpha=0.1, gamma=0.05)
+
+        np.testing.assert_array_equal(widths[:, 0, 0], [18.0, 18.0, 18.0, 19.0, 19.0])
+        self.assertEqual(n_capped, 4)  # origin 4 asks beyond the largest score in all 4 cells
+
+
 class TestPairedInferenceRunSelection(unittest.TestCase):
     def test_hybrid_runs_stay_out_of_the_primary_cell_and_duplicate_seeds_fail(self):
         import sys

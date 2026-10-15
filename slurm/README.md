@@ -1,6 +1,7 @@
 # CISSN on the cluster
 
-Runs R1-R6 of `experiments.md` as Slurm GPU array jobs. R7 (analysis) runs on the workstation.
+Runs R1-R6 and the Step 7 blocks P1-P3 (`RUNBOOK.md`) as Slurm GPU array jobs. The open
+commands are in `experiments.md`. R7 (analysis) runs on the workstation.
 All commands run from the repository root, in bash. Never `chmod` the scripts and never edit a
 tracked file on the cluster: `--require_clean_git` rejects a dirty tree, and a mode change counts.
 
@@ -69,6 +70,11 @@ driver that CUDA 12.8 wheels need. The fix changes `uv.lock`, so it needs a new 
 | r4b ECL hybrid vs base | 1 | 1 | r4 |
 | r5 baselines with RevIN | 216 | 12 | r1, and only if RevIN wins |
 | r6 ablations ETTh1-h336 | 3 (x6 ablations) | 3 | r2-r5 |
+| p1 ECL baselines with RevIN, daily origins | 24 | 12 | smoke |
+| p2 ACI against flat CP, ECL | 1 | 1 | smoke |
+| p3s one-epoch memory check on traffic (validation only) | 1 | 1 | smoke |
+| p3 traffic confirmatory (needs `docs/prespecification_traffic.md` in HEAD and `data/traffic.csv`) | 6 | 6 | p3s succeeded |
+| p3b ACI against flat CP, traffic | 1 | 1 | every p3 task succeeded |
 
 ## 4. Watch, resume
 

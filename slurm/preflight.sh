@@ -31,6 +31,16 @@ SLURM_FILES=(cells.py env.sh launch.sh preflight.sh run_block.slurm setup_cluste
 echo "== Source ($(date -u +%FT%TZ))"
 info "checkout $ROOT, branch $(git rev-parse --abbrev-ref HEAD 2>/dev/null), commit $(git rev-parse --short HEAD 2>/dev/null)"
 check "HEAD contains docs/prespecification.md (R4 needs it in the run commit)" git cat-file -e HEAD:docs/prespecification.md
+# The P3 dataset and its prespecification are checked only when a P3 block is launched (launch.sh
+# sets PREFLIGHT_BLOCKS); a manual preflight run checks them too.
+NEED_P3=0
+case " ${PREFLIGHT_BLOCKS:-p3} " in *" p3s "*|*" p3 "*|*" p3b "*) NEED_P3=1 ;; esac
+P3_DATA=""
+if [ "$NEED_P3" -eq 1 ] && [ -x "$PY" ]; then
+    P3_DATA=$("$PY" -c 'import sys; sys.path.insert(0, "slurm"); from cells import P3_DATA; print(P3_DATA)' 2>/dev/null)
+    check "HEAD contains docs/prespecification_${P3_DATA}.md (P3 needs it in the run commit)" \
+        git cat-file -e "HEAD:docs/prespecification_${P3_DATA}.md"
+fi
 for f in "${SLURM_FILES[@]}"; do
     check "slurm/$f is committed in HEAD" git cat-file -e "HEAD:slurm/$f"
 done
@@ -59,10 +69,12 @@ fi
 
 echo "== Data (exact checksums: --immutable_artifacts requires byte-identical files)"
 if [ -x "$PY" ]; then
-    DATA_OUT=$("$PY" - <<'EOF' 2>&1
+    DATA_OUT=$(P3_DATA="$P3_DATA" "$PY" - <<'EOF' 2>&1
+import os
 from cissn.data.registry import verify_dataset
 failed = []
-for name in ("ETTh1", "ETTh2", "weather", "exchange_rate", "ECL"):
+names = ["ETTh1", "ETTh2", "weather", "exchange_rate", "ECL"] + ([os.environ["P3_DATA"]] if os.environ.get("P3_DATA") else [])
+for name in names:
     try:
         verify_dataset(name, strict=True, require_exact_checksum=True)
         print(f"OK {name}")

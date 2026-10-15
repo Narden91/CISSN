@@ -150,6 +150,24 @@ def concatenate_batches(batches: list[np.ndarray], name: str) -> np.ndarray:
     return np.concatenate(batches, axis=0)
 
 
+def strided_origin_indices(args, n_windows: int) -> np.ndarray:
+    # Same origins as run_benchmark.py's --test_origin_stride, so a baseline and CISSN
+    # score the same test windows.
+    return np.arange(0, n_windows, getattr(args, "test_origin_stride", 1), dtype=np.int64)
+
+
+def get_test_loader(args):
+    """Test split, thinned to every `test_origin_stride`-th window when the stride is above 1."""
+    test_data, test_loader = get_data_loader(args, "test")
+    if getattr(args, "test_origin_stride", 1) > 1:
+        test_loader = torch.utils.data.DataLoader(
+            torch.utils.data.Subset(test_data, strided_origin_indices(args, len(test_data)).tolist()),
+            batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, drop_last=False,
+            pin_memory=torch.cuda.is_available(),
+        )
+    return test_data, test_loader
+
+
 def compute_metrics(
     args,
     preds: np.ndarray,
@@ -259,6 +277,11 @@ def save_result_artifacts(
     else:
         per_origin = np.full((len(preds), 3), np.nan, dtype=np.float64)
     np.save(folder_path / "per_origin_interval_metrics.npy", per_origin)
+    origins = strided_origin_indices(args, runtime["test_samples"])
+    if len(origins) != len(preds):
+        raise RuntimeError(f"{len(preds)} test forecasts for {len(origins)} test origins.")
+    np.save(folder_path / "test_origin_indices.npy", origins)
+    runtime["test_origin_stride"] = int(getattr(args, "test_origin_stride", 1))
 
     save_json(
         folder_path / "metrics.json",
@@ -285,7 +308,7 @@ def save_result_artifacts(
             [
                 "metrics.json", "sanity.json", "config.json", "environment.json", "protocol.json",
                 "runtime.json", "history.json", "pred.npy", "true.npy", "lower.npy", "upper.npy",
-                "per_origin_interval_metrics.npy",
+                "per_origin_interval_metrics.npy", "test_origin_indices.npy",
             ],
             args.protocol,
         )
@@ -439,7 +462,7 @@ def run_point_baseline(args, setting: str):
     train_data, train_loader = get_data_loader(args, "train")
     vali_data, vali_loader = get_data_loader(args, "val")
     cal_data, cal_loader = get_data_loader(args, "cal")
-    test_data, test_loader = get_data_loader(args, "test")
+    test_data, test_loader = get_test_loader(args)
 
     checkpoint_dir = Path(args.checkpoints) / setting
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -814,7 +837,7 @@ def run_mc_dropout(args, setting: str):
     encoder, head, device, revin, runtime = train_backbone_member(args, setting, args.seed)
     train_data, _ = get_data_loader(args, "train")
     cal_data, cal_loader = get_data_loader(args, "cal")
-    test_data, test_loader = get_data_loader(args, "test")
+    test_data, test_loader = get_test_loader(args)
     test_start = time.time()
     preds, trues, lower, upper = evaluate_mc_dropout(encoder, head, test_loader, device, args, revin=revin)
     interval_origin = "raw_uq"
@@ -859,7 +882,7 @@ def run_deep_ensemble(args, setting: str):
     member_seeds = parse_ensemble_seeds(args)
     train_data, _ = get_data_loader(args, "train")
     cal_data, cal_loader = get_data_loader(args, "cal")
-    test_data, test_loader = get_data_loader(args, "test")
+    test_data, test_loader = get_test_loader(args)
     ensemble_forecasts = []
     calibration_forecasts = []
     reference_targets = None
@@ -1029,6 +1052,9 @@ def parse_args():
     parser.add_argument("--revin", action="store_true",
                         help="apply reversible instance normalisation (dlinear, patchtst, mc_dropout, "
                              "deep_ensemble only), normalisation-matching the baseline to CISSN's --revin")
+    parser.add_argument("--test_origin_stride", type=int, default=1,
+                        help="score every k-th test window, as run_benchmark.py does; training and "
+                             "calibration still use every window")
 
     validate_config_defaults(parser, config_defaults)
     parser.set_defaults(**config_defaults)
@@ -1047,6 +1073,8 @@ def parse_args():
         raise ValueError(f"--revin is not supported for {args.model}; supported models: {supported}.")
     if args.model == "deep_ensemble" and args.ensemble_seeds:
         args.ensemble_size = len(parse_ensemble_seeds(args))
+    if args.test_origin_stride <= 0:
+        raise ValueError("--test_origin_stride must be positive.")
     validate_runtime_args(args)
     return args
 
