@@ -153,4 +153,25 @@ Any change to this file after the first ECL test split is opened is recorded bel
 its date and reason. The primary endpoint, horizon, bootstrap parameters, and reading
 rule do not change.
 
-(no deviations recorded)
+1. 2026-10-14, ECL runs repeated. The first ECL runs (commit `6711026`, now in
+   `results/_superseded_bs1_bug/`) all passed `structural_passed`, so section 3 does not
+   cover a rerun. On Linux, `torch.compile` returned a wrong encoder state for a batch of
+   one window (max abs difference 16.7 on a 321-channel input; every batch of two or more
+   matched eager execution). `--test_origin_stride 24` forecasts one window at a time, so
+   every ECL test forecast of those runs was affected. The fix commit records the
+   measurement and adds
+   `tests/test_encoder_perf.py::test_single_window_matches_batched_forward`. What first
+   showed the problem: the reproduction check of `scripts/paired_point_comparison.py`
+   (block r4b, Slurm job 2680436, 2026-10-14 09:25 UTC) stopped with "seed 42: reload
+   does not reproduce the saved run (max drift 2.53e+00)". That check prints no interval
+   or point metric. Timeline from `logs/slurm/`: first ECL runs 09:09-09:17 UTC, fix
+   committed 13:09 UTC, reruns from 14:34 UTC; the rerun r4b check reproduced with drift
+   below 1.1e-06. Fixed in `6adc24b`. All 9 ECL runs were repeated
+   at `6adc24b` with unchanged settings. The superseded runs are not analysed. Endpoint,
+   horizon, bootstrap settings, and reading rule are unchanged.
+2. 2026-10-15, values seen before the section 4 analysis. During the artifact check,
+   these were printed: the full `metrics.json` of ECL h336 seed 42 (cluster SCCP Winkler
+   2.3631, flat CP 2.3831; one seed's components of the primary endpoint, no CI); the
+   summary of `hybrid_vs_base_ECL.json` (hybrid better on 0 of 3 seeds); and the primary
+   Winkler of both copies of weather h192 seeds 42 and 456 (see
+   `results/superseded/README.md`). No analysis setting changed after this.

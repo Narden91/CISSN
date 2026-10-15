@@ -2,6 +2,14 @@
 
 Each entry: the concrete failure, then the rule that prevents it.
 
+## Editing files with LaTeX or regex strings
+
+- **Failure:** three Python heredoc patches (`s.replace(old, new)`) to a script that writes
+  LaTeX failed or corrupted it: the shell and Python each consumed a backslash level, so
+  `"$^\\ast$"` became `"$^\ast$"` and `\a` turned into a bell character.
+  **Rule:** change strings that hold backslashes with the Edit tool, which takes the text
+  literally; do not route them through a heredoc into Python.
+
 ## PowerShell run blocks
 
 - **Failure:** `$flag = if ($x) { @('--revin') } else { @() }` followed by `@flag` passed
