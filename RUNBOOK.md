@@ -1,60 +1,67 @@
 # CISSN publication runbook
 
-This is the sole launch protocol. Results from earlier protocols are not publication evidence and must not be pooled with these artifacts.
+This is the sole launch protocol. Results from earlier protocols are not publication evidence
+and must not be pooled with these artifacts. Open run commands are in `experiments.md`. The
+finished blocks R1 to R7 are in `git show a1add62:experiments.md`. The confirmatory analysis
+and the reading rules are in `docs/prespecification.md` (ECL) and
+`docs/prespecification_traffic.md` (traffic, draft).
 
-> Evidence note: ETTh1 test artifacts have already informed development. They remain diagnostics only. Selection must use chronological pre-test folds; ETTh2, weather, and exchange-rate tests stay sealed until a decision lock is written.
+> Evidence note: ETTh1 test artifacts informed development and stay diagnostics only. The
+> ETTh2, weather, and exchange-rate test splits were read in a pre-RevIN grid, so their
+> results are secondary and descriptive. ECL is the confirmatory dataset. A second
+> confirmatory dataset is pending a decision (Step 7, P3). All selection uses validation data
+> only.
 
 ## Execution status
 
-Checkbox meaning: `[x]` an artifact on disk satisfies the step under the *current* code;
-`[~]` partly done; `[-]` dropped, with the reason in its row; `[ ]` the step must be launched. Runs that exist but cannot satisfy their step have been
-moved to `results/superseded/` with a per-run reason in that directory's `README.md`; they
-stay available as diagnostics and are never pooled into a publication table. Updated
-against `results/` on 2026-10-15, branch `conformal-per-cell-geometry`.
-
-Launch commands for everything outstanding are in `experiments.md`. The finished blocks R1
-to R7 and their commands are in `git show a1add62:experiments.md`.
+`[x]` an artifact on disk satisfies the step under the current code. `[~]` partly done.
+`[-]` dropped, with the reason in its row. `[ ]` the step must be launched. Runs that cannot
+satisfy their step moved to `results/superseded/` with a reason in that folder's `README.md`;
+they are diagnostics and never enter a publication table. Updated 2026-10-15.
 
 | Step | State | Evidence on disk |
 | --- | --- | --- |
-| 1 environment, data, tests | `[x]` | verified 2026-08-27: CUDA available (torch `2.11.0+cu128`, RTX 5080), `verify_datasets.py` OK on all 10 datasets, 166 tests pass |
-| 2 DLinear reference (ETTh1-h336/s42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42` — clean git, `structural_passed`, no quality flags, test MSE `0.619` |
-| 3 CISSN end-to-end (ETTh1-h336) | `[x]` | seeds 42, 123, 456 under `--revin` in `results/validation/`. The pre-RevIN run it replaces is in `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` |
-| 3b.0 headroom diagnostic, ETTh1-h336 RevIN | `[x]` | re-run under the fitting-set fix on 3 seeds: `results/validation/conditioning_headroom_revin_seed*.json`. The earlier runs stay in `results/superseded/` |
-| 3b.0 headroom diagnostic, other datasets | `[-]` | dropped: it would reuse an exposed test split, and the 3b.2 validation selection already decides the question. See `docs/prespecification.md` |
-| 3b.2 validation-only selection runs | `[x]` | 3 seeds; `scale` beats both mechanisms on 1 of 3, so `cluster` stays primary. Details in `experiments.md` |
-| 4 RevIN selection (ETTh2, weather, 3 seeds, paired) | `[x]` | RevIN selected on validation data: `results/selection/r1_decision.json` |
-| 5 hybrid variant selection (3 variants x 3 seeds) | `[x]` | `hybrid_anchored` meets all four criteria on validation (`results/selection/hybrid_feature_mse.json`) |
-| Prespecified statistics recorded | `[x]` | `docs/prespecification.md`, written 2026-10-13 after the exposed-dataset grid ran; adds ECL as the confirmatory dataset |
-| Main grid — CISSN, 4 datasets + ECL | `[x]` | 54 exposed-dataset runs, and 9 ECL confirmatory runs at `6adc24b` (legacy h96 and h336, hybrid h336) |
-| Main grid — baselines under RevIN | `[~]` | 204 of 216 R5 runs; 12 MC-Dropout and Deep Ensemble runs at h192 await the encoder-fix rerun (`experiments.md`, E1). DeepState: 54 runs without RevIN |
+| 1 environment, data, tests | `[x]` | 2026-08-27: CUDA available (torch `2.11.0+cu128`), `verify_datasets.py` OK on all 10 datasets, 166 tests passed |
+| 2 DLinear reference (ETTh1-h336, seed 42) | `[x]` | `results/validation/BASELINE_dlinear_ETTh1_M_sl96_pl336_seed42`: clean git, `structural_passed`, test MSE `0.619` |
+| 3 CISSN end-to-end (ETTh1-h336) | `[x]` | seeds 42, 123, 456 under `--revin` in `results/validation/`; the pre-RevIN run is in `results/superseded/CISSN_ETTh1_h336_seed42_preRevIN/` |
+| 3b.0 headroom diagnostic, ETTh1-h336 | `[x]` | `results/validation/conditioning_headroom_revin_seed*.json` |
+| 3b.0 headroom diagnostic, other datasets | `[-]` | dropped: it would reuse an exposed test split, and Step 3b.2 already decides the question |
+| 3b.2 validation-only selection | `[x]` | `scale` beats both calibrators on 1 of 3 seeds, so `cluster` stays primary (table in Step 3b.2) |
+| 4 RevIN selection (ETTh2, weather) | `[x]` | RevIN selected: `results/selection/r1_decision.json` |
+| 5 hybrid variant selection | `[x]` | `hybrid_anchored` meets all four criteria: `results/selection/hybrid_feature_mse.json` |
+| Prespecified statistics | `[x]` | `docs/prespecification.md`, written 2026-10-13 |
+| Main grid, CISSN | `[x]` | 54 exposed-dataset runs; 9 ECL runs at `6adc24b` (legacy h96 and h336, hybrid h336) |
+| Main grid, baselines under RevIN | `[~]` | 204 of 216 R5 runs; 12 MC-Dropout and Deep Ensemble runs at h192 await the encoder-fix rerun (`experiments.md` E1). DeepState: 54 runs without RevIN |
 | Ablations | `[x]` | `results/publication/ablations_ETTh1_h336_s*.json`, regime without RevIN |
-| Publication review (tables/figures) | `[~]` | draft `manuscript/main.tex`, numbers from `manuscript/analysis/build_numbers.py` |
-| 7 P1 ECL baselines | `[ ]` | needs E1 finished; see Step 7 |
-| 7 P2 ACI comparator | `[ ]` | needs E1 finished; see Step 7 |
-| 7 P3 traffic confirmatory test | `[ ]` | needs `docs/prespecification_traffic.md` committed; see Step 7 |
+| Publication review | `[~]` | draft `manuscript/main.tex`; numbers from `manuscript/analysis/build_numbers.py` |
+| 7 P1 ECL baselines, P2 ACI | `[ ]` | start after `experiments.md` E1; see Step 7 |
+| 7 P3 second confirmatory dataset | `[ ]` | blocked: dataset undecided; see Step 7 |
 
-Open work, in order: E1 to E3 in `experiments.md`, then Step 7.
-
-Epoch budget: `--train_epochs 20 --patience 5` was checked against a 60-epoch,
-patience-10 arm on ETTh1-h336/seed 42/RevIN. That arm early-stops at epoch 27 with its best
-validation at epoch 17, and validation past epoch 20 rises. Twenty epochs is not a
-truncation on this cell; keep the locked budget so the grid stays comparable with the
-Step 2 reference.
+Epoch budget: `--train_epochs 20 --patience 5` was checked against a 60-epoch, patience-10 arm
+on ETTh1-h336, seed 42, RevIN. That arm stopped at epoch 27 with its best validation at epoch
+17. Twenty epochs is not a truncation. Keep the budget so the grid stays comparable with Step 2.
 
 ## Locked design
 
-- Datasets: `ETTh1`, `ETTh2`, `weather`, `exchange_rate`.
+- Datasets: exposed grid `ETTh1` (development, excluded from every endpoint), `ETTh2`,
+  `weather`, `exchange_rate`. Confirmatory: `ECL`. Step 7 adds a second one (pending, P3).
 - Seeds: `42,123,456`.
-- Horizons: registry-supported horizons only; use `24,96,192,336,720` for ETT and `96,192,336,720` for weather and exchange-rate.
+- Horizons: `24,96,192,336,720` for ETT; `96,192,336,720` for weather and exchange-rate; `96,336`
+  for ECL and the P3 dataset.
 - Shared training: `--train_epochs 20 --patience 5 --lradj cosine --batch_size 128`.
-- Shared calibration: chronological train-tail calibration split, `--cal_fraction 0.2`, `--conformal_alpha 0.1`.
-- Primary interval geometry: `--multivariate_strategy per_feature`; report `coverage_primary` (marginal). `max` is a separate simultaneous-coverage analysis.
+- Shared calibration: chronological train-tail calibration split, `--cal_fraction 0.2`,
+  `--conformal_alpha 0.1`.
+- Primary interval geometry: `--multivariate_strategy per_feature`; report `coverage_primary`
+  (marginal). `max` is a separate simultaneous-coverage analysis.
 - Publication safeguards: `--require_gpu --require_clean_git`.
 
-The cluster state partition (`StateConditionalConformal.fit_partition`) and the state-scaled sigma regression (`StateScaledConformal.fit_scale`) are both learned from the same window — the first half of the calibration split — then quantile calibration uses the second half. This equalises the two mechanisms' fitting-set size and in-sample status; see `docs/methodology.md` for the earlier asymmetric version and why prior cluster-vs-scale orderings need re-measuring under the current code. Serial dependence is documented in artifacts; it is not converted into a coverage guarantee.
+The cluster partition (`StateConditionalConformal.fit_partition`) and the state-scaled sigma
+regression (`StateScaledConformal.fit_scale`) both learn from the first half of the calibration
+split. Quantile calibration uses the second half. This gives both calibrators the same fitting
+set; `docs/methodology.md` describes the earlier asymmetric version. Serial dependence is
+recorded in artifacts and is never converted into a coverage guarantee.
 
-All experiment runners show live batch progress for training, validation, partitioning, calibration, and testing. Use `--no_progress` only for CI or captured logs.
+All runners show live batch progress. Use `--no_progress` only for CI or captured logs.
 
 ## Step 1: environment, data, tests `[x]`
 
@@ -65,148 +72,121 @@ uv run python scripts/verify_datasets.py
 uv run python tests/run_tests.py
 ```
 
-Stop if any command fails. `verify_datasets.py` must pass for the four locked datasets.
+Stop if a command fails. `verify_datasets.py` must pass for every dataset in the locked design.
 
-## Step 2: DLinear reference reproduction `[x]` ETTh1-h336/seed 42
+## Step 2: DLinear reference reproduction `[x]`
 
 ```powershell
 uv run python experiments/run_baseline.py --model dlinear --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Review `results/validation/*/sanity.json`, `metrics.json`, `history.json`, and `protocol.json`. Every run writes these artifacts. Exclude a run from publication tables only when `structural_passed` is false, which means the artifact is unreadable (empty, non-finite, shape-inconsistent, or inverted interval bounds). Forecast quality never removes a run: `quality.flags` is advisory, and a finite but poor forecast is a valid result that must stay visible. Record the expected full-train reference and the observed fair split result separately; this protocol intentionally reserves train data for calibration.
+Apply the artifact review rule (Publication review). Record the expected full-train reference
+and the observed fair-split result separately; this protocol reserves train data for
+calibration.
 
-## Step 3: CISSN end-to-end `[~]` seed 42 done, 123/456 outstanding
+## Step 3: CISSN end-to-end `[x]`
 
 ```powershell
 uv run python experiments/run_benchmark.py --data ETTh1 --pred_len 336 --seed 42 --train_epochs 20 --patience 5 --lradj cosine --batch_size 128 --conformal_alpha 0.1 --n_clusters 5 --multivariate_strategy per_feature --require_gpu --require_clean_git --checkpoints ./checkpoints/validation --results_dir ./results/validation
 ```
 
-Include the result unless `structural_passed` is false. Quality flags in `sanity.json` are advisory and are reported alongside the result, never used to drop it. Check `cluster_stats.json` and `scale_stats.json` for fallback clusters and fitted scale coefficients, and `dependence_diagnostics.json`, before interpreting coverage.
+Before you read coverage, check `cluster_stats.json`, `scale_stats.json`, and
+`dependence_diagnostics.json` for fallback clusters, fitted scale coefficients, and serial
+dependence.
 
-## Step 3b: state conditioning mode confirmation `[x]`
+## Step 3b: state conditioning `[x]`
 
-> Selection override: this legacy section is development-only because its diagnostic and commands read test artifacts. Do not use any outcome here to choose conditioning. The choice belongs to `experiments/run_selection.py` (`--evidence_role selection`), which trains and calibrates identically but scores every mechanism on the validation split only -- the test loader is never constructed -- followed by a decision lock. See Step 3b.2 below.
+> Selection override: this step is development-only. Its diagnostic reads test artifacts, so no
+> outcome here may choose a calibrator. The choice belongs to `experiments/run_selection.py`,
+> which trains and calibrates identically but scores every calibrator on the validation split
+> only; it never builds the test loader. See Step 3b.2.
 
-`--conformal_conditioning cluster` (K-Means partition, the historical mechanism) is the
-default. `--conformal_conditioning scale` (continuous `sigma(state)`, normalized
-conformal score) is an alternative. Every run already calibrates and reports both plus
-flat CP regardless of the flag, so this step only decides which one drives the headline
-`interval` block and which becomes the CLI default.
+`--conformal_conditioning cluster` (K-Means partition) is the default; `scale` (continuous
+`sigma(state)`) is the alternative. Every run reports both and flat CP, so the flag only sets
+which one drives the headline `interval` block.
 
-**The original evidence for promoting `scale` was withdrawn and then partly replaced.**
-The first diagnostic calibrated flat CP on a window twice the size of state-scaled CP's,
-so it was not paired. The corrected diagnostic established two things
-(`docs/methodology.md`): a **scalar** sigma has essentially no headroom (a scalar
-label-informed per-sample reference using test labels gains under 1%), and the
-conditioning signal is a state x cell interaction that only a **per-cell** sigma or the
-cluster predictor can express.
+A scalar sigma has almost no headroom: the per-sample axis holds about 1% of residual variance,
+and a label-informed per-sample reference gains under 1%. The signal sits in a state x cell
+interaction that only a per-cell sigma or the cluster calibrator can express. Development
+measurements, ETTh1-h336, 3 RevIN seeds x 4 nested cuts (not independent; effective n is near 3
+seeds, near 1 dataset): mean Winkler difference against flat CP is cluster `-0.124`, scalar
+`+0.011`, per-cell `-0.237` (`docs/methodology.md`).
 
-Development measurements on ETTh1-h336, three RevIN seeds x four nested cuts (cut 0.3's
-window strictly contains cut 0.6's, so this is not 12 independent trials — effective n is
-closer to 3, and the seeds share one dataset/split, so a population-level claim has an
-effective n closer to 1) — mean Winkler delta vs flat CP: cluster `-0.124` (better on all
-3 seeds x 4 cuts), scalar sigma `+0.011` (better on 5 of 12), per-cell sigma `-0.237`
-(better on all 12). Under the real protocol on seed 42 the ordering was cluster `3.5962` <
-per-cell `3.6916` < flat `3.7869` ~ scalar `3.7877` — but that ordering was measured while
-cluster and state-scaled CP had a ~9x conditioning-fit sample-size asymmetry (see
-`docs/methodology.md`). `run_benchmark.py` now fits both mechanisms on the same
-calibration-half window, so this ordering must be re-measured under the current code
-before it can be used to select a mode.
+### Step 3b.0: headroom diagnostic on saved artifacts (no GPU) `[x]`
 
-### Step 3b.0: headroom diagnostic on saved artifacts (do this first, no GPU) `[x]`
-
-The diagnostic needs a run directory containing `states.npy`, `residuals.npy`,
-`pred.npy`, and `true.npy` — any completed `run_benchmark.py` CISSN run writes all four
-(baseline runs do not, since they have no latent state). Point it at a `--revin` run for
-the dataset under test:
+It needs a run folder with `states.npy`, `residuals.npy`, `pred.npy`, and `true.npy`, which any
+completed `run_benchmark.py` run writes. Use a `--revin` run.
 
 ```powershell
 uv run python scripts/diagnose_conditioning_headroom.py --run_dir ./results/validation/CISSN_<dataset>_..._fullrevin_..._seed42 --output ./results/validation/conditioning_headroom_revin.json
 ```
 
-Read `variance_decomposition.per_sample_fraction` (expect ~1%: that bounds the *scalar*
-geometry, not conditioning as such) and the `summary_vs_flat` win counts. Run this on
-each dataset before spending seeds on it — the conditioning result is regime-dependent
-and there is no reason to assume ETTh1's carries over.
-
-ETTh1-h336 was measured and is recorded in `docs/methodology.md`, but under the earlier
-asymmetric fitting scheme; those artifacts now sit under `results/superseded/headroom/`
-and `results/superseded/percell/` (see that directory's `README.md`). They are development
-runs, not `--require_clean_git` publication evidence — reuse them for diagnostics, never
-pool them into publication tables, and re-run this diagnostic against fresh Step 3
-artifacts before citing any cluster-vs-scale ordering.
+Read `variance_decomposition.per_sample_fraction` and the `summary_vs_flat` win counts. Older
+artifacts from the asymmetric fitting scheme are in `results/superseded/headroom/` and
+`results/superseded/percell/`; they are diagnostics, never publication evidence.
 
 ### Step 3b.2: validation-only selection runs `[x]`
-
-Run both geometries through `experiments/run_selection.py` (`--evidence_role selection`
-is forced automatically) so the comparison stays paired within one model, on validation
-only -- the test loader is structurally never constructed by this runner:
 
 ```powershell
 uv run python experiments/run_selection.py --data ETTh1 --pred_len 336 --seed 42 --revin --conformal_conditioning scale --scale_geometry per_cell --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
 ```
 
-Repeat for seeds `123,456`. Read `interval`, `interval_flat_cp`, and `interval_cluster_cp`
-from each run's `selection.json` (same field names as `metrics.json`, scored on
-`validation_mse`/validation Winkler instead of test). **Decision point**: promote `scale`
-to the default conditioning mode only if `interval_state_scaled` beats **both**
-`interval_flat_cp` and `interval_cluster_cp` on Winkler on at least 2 of 3 seeds. Do not
-retune against test data, and do not read any test artifact while making this decision.
+Repeat for seeds `123,456`. Read `interval`, `interval_flat_cp`, and `interval_cluster_cp` from
+each `selection.json`. **Decision rule**: promote `scale` only if `interval_state_scaled` beats
+both `interval_flat_cp` and `interval_cluster_cp` in Winkler score on at least 2 of 3 seeds. Do
+not read any test artifact for this decision.
 
-Record the observed per-seed deltas here either way, then run the confirmation cell (Step
-3b.1 above showed the ETTh1 test numbers for context only -- they are diagnostic and
-cannot be used to make this decision) before proceeding to Step 4.
+Outcome (validation Winkler score, ETTh1-h336, RevIN, per-cell geometry): `scale` beat both on
+1 of 3 seeds, so `cluster` stays primary with `--scale_geometry scalar`.
 
-## Step 4: instance normalisation `[ ]`
+| Seed | flat CP | cluster SCCP | state-scaled | beats both |
+| --- | --- | --- | --- | --- |
+| 42 | 6.7219 | 6.7309 | 6.7727 | no |
+| 123 | 6.7183 | 6.7104 | 6.6638 | yes |
+| 456 | 6.7342 | 6.6947 | 6.7095 | no |
 
-> Selection override: historical ETTh1 test values below are diagnostic context only, not
-> a default-selection procedure. Choose RevIN from `experiments/run_selection.py`
-> (validation only, test loader never constructed) before opening any final test.
+## Step 4: instance normalisation `[x]`
 
-Legacy CISSN collapses toward the training mean on ETTh1-h336: the forecast keeps only ~7% of the target's variance, which lowers MSE without tracking the signal. `--revin` removes the level-tracking burden that causes this. Measured over seeds `42,123,456` on the ETTh1 test split (see `docs/methodology.md`; diagnostic only, not the selection evidence), test MSE falls `1.280 → 0.771` and coverage moves `0.788 → 0.908` with narrower intervals, with no change to the latent state dimension.
+> Selection override: ETTh1 test values are diagnostic context only. RevIN is chosen from
+> `experiments/run_selection.py` (validation only).
 
-```powershell
-uv run python experiments/run_selection.py --data ETTh1 --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
-```
+Legacy CISSN collapses toward the training mean on ETTh1-h336: the forecast keeps about 7% of
+the target variance, which lowers MSE without tracking the signal. `--revin` removes the
+level-tracking burden. On the ETTh1 test split (diagnostic only), test MSE falls `1.280 -> 0.771`
+and coverage moves `0.788 -> 0.908` (`docs/methodology.md`).
 
-Check `vali_variance_ratio` in `history.json`. A ratio that falls while validation loss improves is amplitude collapse, not a hard dataset, and must be reported as such rather than attributed to the state bottleneck.
-
-`--revin`'s effect is proven only on ETTh1-h336 test artifacts and remains opt-in (off by
-default) until confirmed on validation elsewhere. Before making it the default for
-`--architecture legacy`, run it with and without on ETTh2 and weather at h336, 3 seeds
-each, through the selection controller:
+Run ETTh2 and weather at h336, seeds 42, 123, 456, with and without `--revin`. The exact cells
+are block `r1` in `slurm/cells.py`; one cell is:
 
 ```powershell
 uv run python experiments/run_selection.py --data ETTh2 --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
-uv run python experiments/run_selection.py --data weather --pred_len 336 --seed 42 --revin --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
 ```
 
-Repeat each without `--revin` for the paired comparator. Flip the default only if RevIN
-does not regress `validation_mse` or validation coverage (`selection.json`) on either
-dataset relative to the non-RevIN arm; if it regresses anywhere, keep it opt-in and pass
-`--revin` explicitly per dataset in the main grid rather than defaulting a fix proven on
-one dataset/horizon. Record the outcome and per-seed numbers here either way.
+**Decision rule**: RevIN becomes the regime only if, on both datasets, its mean `validation_mse`
+is not higher and its mean validation coverage is not lower than without it. Check
+`vali_variance_ratio` in `history.json`: a ratio that falls while validation loss improves is
+amplitude collapse, not a hard dataset.
+
+Outcome (`results/selection/r1_decision.json`): RevIN selected. Validation MSE `1.153` against
+`5.685` on ETTh2 and `0.637` against `0.684` on weather. Coverage `0.921` against `0.859` and
+`0.907` against `0.878`. CISSN and the four non-DeepState baselines run with `--revin`.
 
 ## Step 5: hybrid variant selection (validation only) `[x]`
 
-The legacy architecture routes the forecast through a five-dimensional latent bottleneck.
-Without RevIN this caps forecast rank at 5. With RevIN's side statistics the cap loosens
-to roughly `5 + 2C`, and measured effective rank on RevIN runs is 7-8 (see
-`docs/methodology.md`, "Rank and the DLinear gap under RevIN") — a real but smaller
-deficit than the hard-5 case, not the absence of one. The
-hybrid keeps DLinear as the base and gives the state an additive correction:
+The legacy architecture routes the forecast through a five-dimensional state. Without RevIN this
+caps forecast rank at 5. Under RevIN the cap is near `5 + 2C`, and the measured effective rank is
+7 to 8 (`docs/methodology.md`, "Rank and the DLinear gap under RevIN"). The hybrid keeps DLinear
+as the base and adds the state as a correction:
 
 ```text
 total = DLinear(history) + LinearCorrectionHead(StateEncoder(history))
 ```
 
-The correction head is zero-initialised and the base is frozen during
-correction training, so correction-stage epoch 0 reproduces the frozen DLinear
-exactly and a failed correction stage falls back to it. `runtime.json` records
-`base_val_loss` and `correction_improved_on_base` for every hybrid run.
+The head is zero-initialised and the base is frozen, so correction epoch 0 equals the base and a
+failed correction stage falls back to it. `runtime.json` records `base_val_loss` and
+`correction_improved_on_base`.
 
-Run the three prespecified variants on ETTh1-h336 with seeds `42,123,456` through the
-selection controller, which trains identically but never constructs the test loader:
+Run three variants on ETTh1-h336, seeds 42, 123, 456, through the selection controller:
 
 ```powershell
 uv run python experiments/run_selection.py --architecture hybrid --data ETTh1 --pred_len 336 --seed 42 --lambda_cov 0 --lambda_temp 0 --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
@@ -214,143 +194,138 @@ uv run python experiments/run_selection.py --architecture hybrid --state_dynamic
 uv run python experiments/run_selection.py --architecture hybrid --state_dynamics anchored --state_revin --data ETTh1 --pred_len 336 --seed 42 --lambda_cov 0 --lambda_temp 0 --train_epochs 20 --patience 5 --lradj cosine --require_gpu --require_clean_git --checkpoints ./checkpoints/selection --results_dir ./results/selection
 ```
 
-Select on **validation** MSE only (`validation_mse` in each run's `selection.json`, or
-`vali_loss` in `history.json`). Promote a hybrid variant only when it shows
-at least `1%` mean improvement over paired DLinear, improves on at least two of
-three seeds, is no worse than `2%` on any seed, and degrades no feature's mean
-MSE by more than `5%`. Ties within `0.5%` resolve to anchored dynamics without
-RevIN.
+Select on **validation** MSE only (`validation_mse` in `selection.json`). Promote a variant only
+if it:
 
-`--state_revin` rescales the correction by the input-window feature scale. This
-preserves epoch-0 exactness but changes the epoch-0 gradient scale, so the RevIN
-variant is not comparable to the other two at an equal learning rate; treat it
-as a separate arm rather than a drop-in ablation.
+- improves on paired DLinear by at least `1%` on average;
+- improves on at least two of three seeds;
+- is no worse than `2%` on any seed;
+- degrades no feature's mean MSE by more than `5%`.
 
-If no variant meets these criteria, stop: report the hybrid as a negative result
-and do not retune against test data.
+Ties within `0.5%` resolve to anchored dynamics without RevIN. `--state_revin` rescales the
+correction and changes the epoch-0 gradient scale, so treat it as a separate arm. If no variant
+meets the criteria, report the hybrid as a negative result and do not retune on test data.
 
-## Prespecified statistics (write before opening the sealed datasets) `[x]`
+Outcome: `hybrid_anchored` changed validation MSE by `-4.15%`, `-4.11%`, `-2.81%` (mean
+`-3.69%`, 3 of 3 seeds), worst feature `+0.73%` against the `5%` limit. `hybrid_legacy` reached
+`-1.29%` (worst feature `+4.08%`) and `hybrid_anchored_revin` `-0.17%`. A prior hybrid run gained
+4.1% on validation and lost on test (`docs/methodology.md`), so this supports no point-accuracy
+claim.
 
-`RUNBOOK.md` locks 4 datasets x 4-5 horizons x 3 seeds, with per-cell comparisons of the
-primary mechanism against flat CP and against the secondary mechanism -- on the order of
-17-19 cells per comparison. Reporting all of them as a grid of means with no correction
-and no prespecified primary endpoint invites a favourable-looking cell to be read as the
-result. Before ETTh2, weather, or exchange-rate test splits are opened, record here:
+## Prespecified statistics `[x]`
 
-- **Primary endpoint**: mean Winkler delta of the primary conditioning mechanism (as
-  selected in Step 3b.2) vs flat CP, aggregated across the full locked grid (all
-  datasets/horizons/seeds), with a paired test over cells (e.g. a sign test or Wilcoxon
-  signed-rank across the per-cell mean deltas). This is the one number a paper abstract
-  may state as confirmatory.
-- **Primary horizon**: h336 is the de facto candidate, simply because every development
-  and selection measurement so far has used h336 (`docs/methodology.md`,
-  `results/superseded/`). That is a selected horizon, not a neutral
-  default, unless prespecified here explicitly. Record the chosen primary horizon and
-  the reason before running the grid at other horizons.
-- **Per-cell win-count rule is descriptive, not confirmatory**. `n=3` seeds per cell means
-  a "wins on 2 of 3 seeds" reading (Step 3b.2, Step 5) has roughly a 50% false-positive
-  rate per cell under a null of no effect. Report per-cell win counts alongside means as
-  descriptive detail; do not present them as a per-cell significance claim. The same
-  applies to any "N/M nested cuts" figure quoted from `diagnose_conditioning_headroom.py`
-  (see `docs/methodology.md`) -- the cuts are nested, not independent trials.
-- **Every other cell/comparison in the grid is secondary/descriptive**, reported as means
-  with win counts, not as individually confirmatory results.
+**Rule.** Write and commit a prespecification before any confirmatory test split is opened:
+`docs/prespecification.md` for ECL, and `docs/prespecification_traffic.md` (draft) for the
+second dataset. A confirmatory run counts only if its `environment.json` records a commit that
+contains the file, with `git_dirty` false.
 
-Record the filled-in choices above in `protocol.json` (or an adjacent prespecification
-file) before Main grid runs begin, so the manifest carries the prespecification and a
-later reader can check the analysis was not chosen after seeing the sealed results.
+`docs/prespecification.md` holds the fixed values. The principles:
 
-## Main grid `[ ]`
+- One primary endpoint, the only result an abstract may call confirmatory: ECL, horizon 336,
+  cluster SCCP against flat CP, Winkler score. Change of 2026-10-13: an earlier version of this
+  section proposed an endpoint aggregated over the whole grid, tested with a paired test over
+  cells. `docs/prespecification.md` replaced it before any ECL test split was opened.
+- The primary horizon is a selected horizon, not a neutral one: every development and selection
+  measurement used h336. State that, and note that on ECL the horizon was untouched.
+- Per-cell "N of 3 seeds" win counts are descriptive. With 3 seeds they have a false-positive
+  rate near 50% per cell under no effect. The same holds for "N of M nested cuts" figures from
+  `diagnose_conditioning_headroom.py`; the cuts are nested, not independent.
+- Every other cell or comparison is secondary and descriptive.
 
-This is the sealed confirmation grid: every command below must pass
-`--evidence_role confirmation`, which `enforce_evidence_contract` requires be paired with
-`--immutable_artifacts --strict_determinism --require_clean_git` (all three, not just
-`--require_gpu --require_clean_git`). This is what makes a run a sealed, reproducible,
-non-overwritable confirmation artifact rather than a development run; without
-`--evidence_role confirmation` a run defaults to `development` and is not eligible for the
-publication table regardless of its numbers.
+## Main grid `[~]`
+
+Every command is a sealed confirmation run. It needs `--evidence_role confirmation` together
+with `--immutable_artifacts --strict_determinism --require_clean_git` (`enforce_evidence_contract`
+requires all three). Without them a run is `development` and cannot enter a publication table.
 
 The exposed-dataset CISSN grid ran with `--revin --conformal_conditioning cluster
---scale_geometry scalar` (Step 3b.2 outcome). Every run still calibrates and reports flat
-CP, cluster SCCP, and state-scaled CP, so this only sets which one is primary. Baselines
-run through `run_baseline.py` with the same shared options; RevIN applies only to
-`dlinear`, `patchtst`, `mc_dropout`, and `deep_ensemble` (DeepState is excluded, see
-`docs/methodology.md`) and only once Step 4 has selected it. UQ models are conformalized by
-default; raw output needs `--uq_interval_mode raw` and is secondary.
+--scale_geometry scalar`. Every run also reports flat CP and state-scaled CP, so the flag sets
+only which one is primary. Baselines run through `run_baseline.py` with the same options. RevIN
+applies to `dlinear`, `patchtst`, `mc_dropout`, and `deep_ensemble`, not to DeepState
+(`docs/methodology.md`). UQ baselines are conformalized by default; raw output needs
+`--uq_interval_mode raw` and is secondary. The slurm blocks in `slurm/cells.py` build every
+command.
 
-The confirmatory dataset (ECL), the analysis, and the claim-reading rules are in
-`docs/prespecification.md`. The exact commands, in run order, are in `experiments.md`.
-
-Ablations run after the main comparison. Every `run_benchmark.py` run already reports flat
-CP, cluster SCCP, and the selected scale geometry on the same forecasts, so the grid covers
-most conditioning comparisons. Two cells are not reachable from `run_ablation.py` (a run
-fixes one `--scale_geometry`): both scale geometries in one run, and a conditioning mode
-crossed with an architecture ablation. Neither is added; the validation selection and the
-window-placement diagnostic cover the geometry question.
+Ablations run after the main comparison. A run fixes one `--scale_geometry`, so two cells are
+not reachable from `run_ablation.py`: both geometries in one run, and a conditioning mode crossed
+with an architecture ablation. Neither is added; the validation selection and the window-placement
+diagnostic cover the geometry question.
 
 ## Step 7: additions for submission `[ ]`
 
-Three additions answer the gaps that `venue.md` lists. None changes the ECL endpoint, its
-analysis, or its reading rule, and each result is reported as added after the ECL
-confirmatory analysis.
+Three additions answer the gaps listed in `venue.md`. None changes the ECL endpoint, its
+analysis, or its reading rule. Each result is reported as added after the ECL confirmatory
+analysis.
 
-**Order.** Start Step 7 only after `experiments.md` E1 finishes. Then commit the Step 7
-code (and, for P3, `docs/prespecification_traffic.md`), push, and pull on the cluster. The
-E1 runs must not run on a commit that differs from the other 204 R5 runs by more than the
-encoder fix.
+**Order.** The Step 7 code and the traffic draft are already committed (`ef84e5e`). Do not pull
+them on the cluster until `experiments.md` E1 finishes, so the E1 runs share a commit with the
+other 204 R5 runs apart from the encoder fix. Then pull and start Step 7. P1 and P2 do not
+depend on P3 and can launch first.
+
+**Transfer.** Pull only the small files the analysis reads (`pack_small` in `experiments.md`,
+section 2.2). Never copy whole run folders.
 
 **P1: point baselines on ECL.** DLinear, PatchTST-lite, MC-Dropout, and Deep Ensemble under
-RevIN, horizons 336 and 96, seeds 42, 123, 456 (24 runs, Slurm block `p1`).
-`--test_origin_stride 24` scores the same daily origins as the R4 CISSN runs; training and
-calibration use every window.
+RevIN, horizons 336 and 96, seeds 42, 123, 456 (24 runs, block `p1`). `--test_origin_stride 24`
+scores the same daily origins as the ECL CISSN runs; training and calibration use every window.
 
-- Evidence role: descriptive point accuracy within the RevIN regime
-  (`docs/prespecification.md`, section 6). Report the ratio to CISSN per cell and the count
-  of seeds; no test.
-- Baseline intervals are flat CP on the full calibration split
-  (`conformalized_full_cal`). Never compare them with the paired calibrators of a CISSN run.
+- Evidence role: descriptive point accuracy within the RevIN regime (`docs/prespecification.md`,
+  section 6). Report the ratio to CISSN per cell and the count of seeds; no test.
+- Baseline intervals are flat CP on the full calibration split (`conformalized_full_cal`). Never
+  compare them with the paired calibrators of a CISSN run.
 
-**P2: adaptive conformal inference (ACI) as a comparator.** ACI (Gibbs and Candès, 2021)
-on the same residuals of the same CISSN models, against flat CP
-(`scripts/aci_paired_comparison.py`; update rule in `cissn/conformal/aci.py`).
+**P2: adaptive conformal inference (ACI).** ACI (Gibbs and Candès, 2021) on the same residuals of
+the same CISSN models, against flat CP (`scripts/aci_paired_comparison.py`; update rule in
+`cissn/conformal/aci.py`).
 
-- Step size `gamma = 0.005`, the value Gibbs and Candès used, fixed now. No other value is
-  run.
-- One level per horizon-feature cell. Origin i updates the levels only for origins at least
-  H steps later, because its target is fully observed only then.
-- A level that asks beyond the largest calibration score uses that score; the output
-  counts these pairs (`n_capped`).
+- Step size `gamma = 0.005`, the value Gibbs and Candès used, fixed now. No other value runs.
+- One level per horizon-feature cell. Origin i updates the levels only for origins at least H
+  steps later, because its target is fully observed only then.
+- A level that asks beyond the largest calibration score uses that score; the output counts
+  these pairs (`n_capped`).
 - Reload check: ACI with `gamma = 0` must reproduce the saved flat-CP per-origin scores
   (relative tolerance 1e-4), or the script stops.
-- Datasets: ECL (cluster block `p2`), the exposed grid (workstation, where its checkpoints
-  are), and traffic (block `p3b`, after P3).
+- Datasets: ECL (block `p2`), the exposed grid (workstation), and traffic (block `p3b`).
 - Evidence role: descriptive. ACI uses realised test errors as they arrive; report it as a
-  calibrator with more information than split CP, with the bootstrap settings of
+  calibrator with more information than split CP. Use the bootstrap settings of
   `docs/prespecification.md`, section 8.
 
-**P3: second prespecified confirmatory test on traffic.** Six CISSN runs (horizons 336 and
-96, seeds 42, 123, 456, block `p3`) with the ECL settings plus `--scale_geometry per_cell`.
-`docs/prespecification_traffic.md` fixes the design, the two endpoints (E1 cluster SCCP and
-E2 per-cell state-scaled CP, each against flat CP at horizon 336), the Holm steps, and the
-reading rule. Commit that file before block `p3s` (a one-epoch, validation-only memory check
-on traffic) runs. P1 and P2 do not depend on P3 and can launch first.
+**P3: second confirmatory test (dataset pending).** Six CISSN runs (horizons 336 and 96, seeds 42,
+123, 456, block `p3`) with the ECL settings plus `--scale_geometry per_cell`. The draft
+`docs/prespecification_traffic.md` fixes the design, two endpoints (cluster SCCP and per-cell
+state-scaled CP, each against flat CP at horizon 336), the Holm steps, and the reading rule.
 
-**After Step 7.** `manuscript/analysis/build_numbers.py` already places the P1 runs in the
-point table. The ACI and traffic results need new rows in that script before the manuscript
-can cite them; add them after the runs exist, from their output files only.
+The dataset is undecided. Traffic at horizon 336 gives only 9.5 bootstrap blocks, and the
+manuscript calls fewer than ten too coarse to read. Options: solar at horizon 336 (30.4 blocks,
+stride to settle) or traffic with horizon 96 as primary (35.8 blocks; ECL h96 is already known).
+The draft is already committed, and no traffic run exists, so it can change freely until the
+first traffic test window is opened. Preflight now passes for P3, so only this rule stops a
+launch: do not launch `p3s`, `p3`, or `p3b` until the dataset is decided.
 
-## Publication review `[ ]`
+**After Step 7.** `build_numbers.py` places the P1 runs in the point table. The ACI and traffic
+results need new rows in that script before the manuscript cites them; add them from the output
+files only, after the runs exist.
 
-Before aggregating, every result must have the full artifact contract and a protocol manifest showing the same split, calibration, and shared training settings for the comparison cell. Exclude incomplete results, results with `structural_passed: false`, different splits, and raw-UQ results from the primary table. Do not exclude a run for poor forecast quality; report it with its advisory flags.
+## Publication review `[~]`
 
-The commands are in `experiments.md`, block R7.
+**Artifact review rule.** Before aggregating, every result needs the full artifact contract and a
+protocol manifest that shows the same split, calibration, and shared training settings for the
+comparison cell. Exclude only incomplete results, runs with `structural_passed: false`, runs on
+different splits, and raw-UQ results. `structural_passed` is false when an artifact is unreadable:
+empty, non-finite, shape-inconsistent, or with inverted interval bounds. Quality flags in
+`sanity.json` are advisory. Never drop a run for poor forecast quality; report it with its flags.
 
-`table_paired_comparison.csv` is the central evidence table: per dataset/horizon cell,
-the primary conditioning mechanism's mean Winkler delta against flat CP, cluster SCCP,
-and state-scaled CP, plus how many seeds it actually won on
-(`winkler_delta_vs_*_wins` out of `winkler_delta_vs_*_count`). Report the win count
-alongside the mean — a favorable mean can still hide a sign that flips seed to seed, as
-it does for cluster-based SCCP against flat CP on some chronological cuts (see
-`docs/methodology.md`).
+**Reporting.** Report these per cell: mean and standard deviation over seeds, paired method
+comparisons with the seed win count beside the mean, `coverage_primary`, width, Winkler score,
+MSIS, coverage scope, interval origin, `worst_prespecified_bin_coverage` and
+`max_coverage_deviation`, cluster and scale fallbacks, and dependence diagnostics. A favourable
+mean can hide a sign that flips between seeds (`docs/methodology.md`). Do not describe the
+time-series result as unconditional distribution-free coverage.
 
-Report mean and standard deviation across outer seeds, paired method comparisons, `coverage_primary`, width, Winkler score, MSIS, coverage scope, interval origin, `worst_prespecified_bin_coverage`/`max_coverage_deviation`, cluster/scale fallbacks, and dependence diagnostics. Do not describe the time-series result as unconditional distribution-free coverage.
+**Naming rule.** Call the state coordinates "level-like", "trend-like", "seasonal-like", and
+"residual-like". Do not claim that they identify physical components unless recovery tests on
+simulated data and stability checks pass.
+
+**Source of numbers.** `manuscript/analysis/build_numbers.py` writes every manuscript number from
+`results/`. The older table and figure scripts (`generate_publication_tables.py` and others) and
+their R7 commands are in `git show a1add62:experiments.md`.
