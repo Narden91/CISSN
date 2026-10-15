@@ -2,7 +2,7 @@
 # Submits the cluster runs R1-R6 and P1-P3 (RUNBOOK.md) after preflight passes. Re-run it to resume:
 # finished cells are skipped, and blocks with nothing left are not submitted.
 #
-#   bash slurm/launch.sh                  # preflight, smoke job, then all blocks
+#   bash slurm/launch.sh                  # preflight, smoke job, then the open blocks r5 p1 p2 p3s p3 p3b
 #   bash slurm/launch.sh --dry-run        # preflight and print the sbatch commands
 #   bash slurm/launch.sh --smoke-only     # preflight and the 1-epoch GPU smoke job only
 #   bash slurm/launch.sh --blocks p1,p2   # a subset
@@ -18,7 +18,9 @@ cd "$ROOT"
 
 DRY_RUN=0
 SMOKE_ONLY=0
-BLOCKS=(r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b)
+# Default: only the blocks still open (experiments.md). The finished blocks r1-r4b and r6 stay
+# launchable with --blocks; a bare call must not rerun finished work.
+BLOCKS=(r5 p1 p2 p3s p3 p3b)
 
 usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 

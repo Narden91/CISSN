@@ -1125,7 +1125,7 @@ class Experiment:
             flat_per_origin = np.full((len(preds), 3), np.nan, dtype=np.float64)
         np.save(folder_path / "per_origin_interval_flat_cp_metrics.npy", flat_per_origin)
         # Paired per-origin scores of state-scaled CP, for an endpoint that compares it with
-        # flat CP (docs/prespecification_traffic.md). Same numbers as interval_state_scaled.
+        # flat CP (docs/prespecification_solar.md). Same numbers as interval_state_scaled.
         scaled_per_origin = (
             per_origin if conditioning_mode == "scale" else getattr(self, "_secondary_per_origin_interval_scores", None)
         )

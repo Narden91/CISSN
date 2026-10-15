@@ -5,7 +5,7 @@ neutral `article` class). Open runs: `experiments.md`.
 
 ## 1. Recommendation
 
-1. Finish `experiments.md` E1 to E3 and the required items in section 4.
+1. Run the open experiments in `experiments.md` (sections 3 to 5) and finish the required items in section 4.
 2. Submit to **COPA 2027** if the second confirmatory dataset (proposal P3, section 3) is
    ready by mid-April 2027. Otherwise submit to **TMLR** as soon as step 1 is done.
 3. Use the **Journal of Forecasting** if both reject the paper, or if you want a forecasting
@@ -38,17 +38,17 @@ Sources: [COPA 2027](https://copa-conference.com/),
 
 ## 3. Added experiments (`RUNBOOK.md` Step 7)
 
-P1 to P3 are now `RUNBOOK.md` Step 7, with code, Slurm blocks `p1`, `p2`, `p3`, `p3b`, and
-commands in `experiments.md`. P3 uses traffic; its design is in
-`docs/prespecification_traffic.md`. None of them changes the prespecified ECL endpoint, its
+P1 to P3 are now `RUNBOOK.md` Step 7, with code, Slurm blocks `p1`, `p2`, `p3s`, `p3`, `p3b`, and
+commands in `experiments.md`. P3 uses solar at stride 25; its design is in
+`docs/prespecification_solar.md`. None of them changes the prespecified ECL endpoint, its
 analysis, or its reading rule. A result added after the confirmatory analysis is reported as
 such.
 
 | ID | Experiment | What it fixes | Helps most at | Cost and conditions |
 | --- | --- | --- | --- | --- |
-| P1 | DLinear, PatchTST-lite, MC-Dropout, and Deep Ensemble under RevIN on ECL, h96 and h336, seeds 42, 123, 456 (24 runs) | The paper says "No baseline ran on ECL", so the point-accuracy result has no comparator on the confirmatory dataset | TMLR, J. Forecasting | `run_baseline.py` has no `--test_origin_stride`, so it needs a small code change to score the same 24-hour origins as CISSN. Descriptive only; the ECL test split is already open |
+| P1 | DLinear, PatchTST-lite, MC-Dropout, and Deep Ensemble under RevIN on ECL, h96 and h336, seeds 42, 123, 456 (24 runs) | The paper says "No baseline ran on ECL", so the point-accuracy result has no comparator on the confirmatory dataset | TMLR, J. Forecasting | Done in code: `run_baseline.py` takes `--test_origin_stride` (default 1) and scores the same 24-hour origins as CISSN. Descriptive only; the ECL test split is already open |
 | P2 | Adaptive conformal inference (Gibbs and Candès, 2021) as a further calibrator on the same residuals of the same models | Related work cites time-series conformal methods but compares none | COPA | New code (the repo has no ACI). ACI updates with realised test errors, so it uses more information than the split calibrators; the text must say so. EnbPI needs bootstrap ensembles and costs much more |
-| P3 | A second prespecified confirmatory test on an untouched dataset: `traffic` (862 channels, 17,544 rows) or `solar` (137 channels, 52,560 rows). Endpoint: cluster SCCP against flat CP at h336, as on ECL; per-cell state-scaled CP as a second endpoint with a multiplicity correction | The confirmatory evidence is one dataset at one horizon, and the Conclusions name a prespecified test of the per-cell scale as the next step | All three; most at COPA | Both datasets are registered and on disk, and no run has touched them. Write the prespecification before the first run. `traffic` needs a memory smoke run first (2.7 times the channels of ECL). `ETTm1` and `ETTm2` come from the same source as ETTh1 and ETTh2, so they are weaker choices |
+| P3 | A second prespecified confirmatory test on `solar` (137 channels, 52,560 rows, untouched). Endpoint: cluster SCCP against flat CP at h336, as on ECL; per-cell state-scaled CP as a second endpoint with a multiplicity correction. Test origins at stride 25, which covers every time of day | The confirmatory evidence is one dataset at one horizon, and the Conclusions name a prespecified test of the per-cell scale as the next step | All three; most at COPA | Chosen over traffic: at h336 traffic gives 9.5 bootstrap blocks, solar 29.1. Draft in `docs/prespecification_solar.md`. `ETTm1` and `ETTm2` come from the same source as ETTh1 and ETTh2, so they are weaker choices |
 
 ## 4. Improvements without new experiments
 

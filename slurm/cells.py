@@ -39,7 +39,7 @@ CKPT_PUB = "./checkpoints/publication"
 SEEDS = (42, 123, 456)
 EXPECTED = {"smoke": 5, "r1": 12, "r2": 2, "r3": 14, "r4": 9, "r4b": 1, "r5": 216, "r6": 3,
             "p1": 24, "p2": 1, "p3s": 1, "p3": 6, "p3b": 1}
-P3_DATA = "traffic"  # the dataset of docs/prespecification_<P3_DATA>.md; preflight reads it from here
+P3_DATA = "solar"  # the dataset of docs/prespecification_<P3_DATA>.md; preflight reads it from here
 LOG_DIR = ROOT / "logs" / "slurm"  # inside the gitignored logs/ so --require_clean_git stays satisfied
 
 TRAIN = ["--train_epochs", "20", "--patience", "5", "--lradj", "cosine"]
@@ -52,6 +52,9 @@ BASELINE_COMMON = [*TRAIN, "--batch_size", "128", "--conformal_alpha", "0.1",
 HORIZONS = {"ETTh1": (24, 96, 192, 336, 720), "ETTh2": (24, 96, 192, 336, 720),
             "weather": (96, 192, 336, 720), "exchange_rate": (96, 192, 336, 720)}
 DAILY_ORIGINS = ["--test_origin_stride", "24"]  # one test origin per day on hourly data (prespecification)
+# P3 stride 25 shares no factor with solar's daily period of 144, so the test origins cycle through
+# every time of day. A stride equal to the period fixes one phase (docs/prespecification_solar.md).
+P3_ORIGINS = ["--test_origin_stride", "25"]
 ACI_ANALYSIS = ["--gamma", "0.005", "--block_multiplier", "1", "--n_boot", "5000", "--seed", "0"]
 
 
@@ -220,7 +223,7 @@ def block_p3() -> list[Cell]:
     # P3: second prespecified confirmatory test (docs/prespecification_<P3_DATA>.md). Per-cell
     # geometry makes the run's state-scaled CP the secondary endpoint's calibrator.
     return [_benchmark("p3", _argv("--data", P3_DATA, "--pred_len", h, "--seed", seed, "--revin", CISSN_COMMON,
-                                   "--scale_geometry", "per_cell", DAILY_ORIGINS, SEALED))
+                                   "--scale_geometry", "per_cell", P3_ORIGINS, SEALED))
             for h in (336, 96) for seed in SEEDS]
 
 

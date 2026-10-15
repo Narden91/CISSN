@@ -1,58 +1,97 @@
 # CISSN — what to run
 
-Updated 2026-10-15, branch `conformal-per-cell-geometry`. Open runs only. `RUNBOOK.md` is the
-protocol and wins on any conflict; `docs/prespecification.md` fixes the confirmatory analysis.
-The finished blocks R1 to R7 and their commands are in `git show a1add62:experiments.md`.
-Where other files name a block R1 to R7, they mean that version.
+Updated 2026-10-15, branch `conformal-per-cell-geometry`. Open runs only. `RUNBOOK.md` is protocol, wins on any conflict; `docs/prespecification.md` fixes confirmatory analysis.
+Finished blocks R1 to R7 and commands in `git show a1add62:experiments.md`.
 
-## 1. Open work
+## 1. Workflow
 
-| Step | What | Where |
+1. **Workstation.** Edit code, run `uv run python tests/run_tests.py`, commit, push.
+   Nothing else leaves machine.
+2. **Cluster.** `git pull --ff-only`, then one launcher call submits every open experiment
+   (section 3).
+3. **Back on workstation.** Pack small result files on cluster, pull, rebuild
+   manuscript (sections 4 and 5).
+
+## 2. Open experiments
+
+`bash slurm/launch.sh` submits exactly these blocks. Finished blocks never rerun.
+
+| Block | What | Cells |
 | --- | --- | --- |
-| E1 | Rerun the 12 R5 baseline runs that the batch-of-one encoder bug hit | Cineca |
-| E2 | Pack the 12 runs and pull them | Cineca, then workstation |
-| E3 | Rebuild manuscript numbers, figures, and PDF | workstation |
-| P0 | Copy the P3 dataset, pull the Step 7 commit on the cluster | workstation, then Cineca |
-| P1 | Point baselines on ECL (block `p1`, 24 cells) | Cineca |
-| P2 | ACI against flat CP: ECL (block `p2`) on the cluster, exposed grid on the workstation | both |
-| P3 | traffic: memory check (`p3s`), confirmatory runs (`p3`, 6 cells), ACI (`p3b`) | Cineca |
-| P4 | Pack, pull, and analyse traffic | both |
+| `r5` | Rerun 12 baseline runs hit by batch-of-one encoder bug | 12 |
+| `p1` | Point baselines on ECL (DLinear, PatchTST-lite, MC-Dropout, Deep Ensemble; h96 and h336) | 24 |
+| `p2` | ACI vs flat CP on ECL CISSN runs | 1 |
+| `p3s`, `p3`, `p3b` | Second confirmatory test on solar: one-epoch memory check, 6 CISSN runs, ACI pass | 1 + 6 + 1 |
 
-P0 to P4 are `RUNBOOK.md` Step 7. Start them after E1 finishes.
+12 `r5` cells: `mc_dropout` and `deep_ensemble` under RevIN, on ETTh1 and ETTh2, horizon 192, seeds 42, 123, 456. Before `6adc24b`, on Linux, `torch.compile` returned wrong encoder state for batch of one window. These splits leave final batch of one at batch size 128. Cluster already moved old copies to `results/_superseded_bs1_bug/`.
 
-**P3 is blocked: its dataset is undecided.** Traffic at horizon 336 gives only 9.5 bootstrap
-blocks (`RUNBOOK.md` Step 7 lists the options). The draft is already committed, so preflight
-passes for P3: until the decision, do not launch `p3s`, `p3`, or `p3b`. P1 and P2 are not
-affected. The traffic names in P0 and P4 change with the decision.
+Runs use commit you pull, later than commit of other 204 R5 runs
+(`6711026`). Since then code changed only by encoder fix and Step 7 additions: `--test_origin_stride` option (default 1, same loader) and extra output files. Manuscript states both commits (section 5).
 
-The 12 E1 cells are `mc_dropout` and `deep_ensemble` under RevIN, on ETTh1 and ETTh2, at
-horizon 192, seeds 42, 123, 456. Before `6adc24b`, on Linux, `torch.compile` returned a wrong
-encoder state for a batch of one window. These splits leave a final batch of one at batch size
-128. The cluster already moved the old copies to `results/_superseded_bs1_bug/`. No other cell
-is affected.
+**P3 (solar).** Needs `docs/prespecification_solar.md` in `HEAD` and `data/solar_AL.txt` on the
+cluster; preflight stops otherwise. Test origins use stride 25, not 24 (`RUNBOOK.md` Step 7 gives
+the reason). `p3` starts only if `p3s` succeeds, `p3b` only if every `p3` task succeeds.
 
-## 2. Shared commands
+## 3. Launch on the cluster (bash, root of the clone that the Slurm jobs used)
 
-### 2.1 Launch and watch (cluster, bash, root of the clone that the Slurm jobs used)
+Once, from the workstation (PowerShell), copy the solar file byte for byte; sealed runs check its
+SHA-256:
 
-Set `BLOCKS` to the blocks of the step. A second `launch.sh` call skips finished cells. The
-failure check reads only these blocks, because older logs hold failures that were resolved.
-
-```bash
-BLOCKS=r5                      # E1: r5. Step 7: p1,p2 then p3s,p3,p3b
-bash slurm/launch.sh --blocks $BLOCKS --dry-run
-bash slurm/launch.sh --blocks $BLOCKS
-squeue -u $(id -un)
-.venv/bin/python slurm/cells.py status
-for b in ${BLOCKS//,/ }; do cat logs/slurm/failed_$b.txt 2>/dev/null; done      # must print nothing
+```powershell
+$remote = 'USER@LOGIN_HOST'; $clone = 'SCRATCH/CISSN'
+scp data/solar_AL.txt "${remote}:$clone/data/"
 ```
 
-### 2.2 Pack only the files the analysis reads (cluster, bash)
+Then on the cluster:
 
-A full run folder holds `pred`, `true`, `lower`, `upper`, `residuals`, and `states` arrays:
-tens of MB to several GB per run. The analysis never reads them. Paste this helper once per
-shell, set `BLOCKS` as in section 2.1 (it selects the logs to pack), and call it from the
-repository root:
+```bash
+git pull --ff-only
+git status --porcelain                                   # must print nothing
+git merge-base --is-ancestor 6adc24b HEAD && echo "encoder fix present"
+bash slurm/launch.sh --dry-run                           # runs preflight, prints the sbatch commands
+bash slurm/launch.sh                                     # smoke job first; r5, p1, p2, p3s wait for it
+```
+
+Preflight fails → fix each `FAIL` line; nothing submitted. Smoke job fails → blocks stay pending: read `logs/slurm/cissn_smoke_*.out`, fix cause, cancel them with the
+command `launch.sh` prints.
+
+Watch and resume. Second `launch.sh` call skips finished cells. Do not `git pull` or edit code
+while jobs run: every run records its commit.
+
+```bash
+squeue -u $(id -un)
+.venv/bin/python slurm/cells.py status                   # r5 216/216, p1 24/24, p2 1/1, p3s 1/1, p3 6/6, p3b 1/1 when done
+for b in r5 p1 p2 p3s p3 p3b; do cat logs/slurm/failed_$b.txt 2>/dev/null; done      # must print nothing
+```
+
+When jobs end, check 12 `r5` runs:
+
+```bash
+for d in results/publication/BASELINE_{mc_dropout,deep_ensemble}_ETTh{1,2}_M_sl96_pl192_seed*_*fullrevin__*; do
+  .venv/bin/python - "$d" <<'EOF'
+import json, subprocess, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+env = json.loads((d / "environment.json").read_text())
+has_fix = subprocess.run(["git", "merge-base", "--is-ancestor", "6adc24b", env["git_commit"]]).returncode == 0
+structural = json.loads((d / "sanity.json").read_text())["structural_passed"]
+print(d.name, env["git_commit"][:7], "dirty" if env["git_dirty"] else "clean",
+      "fix" if has_fix else "NO FIX", "structural ok" if structural else "STRUCTURAL FAIL")
+EOF
+done
+.venv/bin/python -c "import glob, json; print('max ACI reload drift', max(r['reproduction_max_relative_drift'] for f in glob.glob('results/publication/aci_vs_flat_*.json') for c in json.load(open(f))['cells'] for r in c['runs']))"
+```
+
+All 12 lines must show `clean`, `fix`, `structural ok`. Reload drift must stay below
+`1e-4` (ACI script stops itself above that). Run failing structural validity
+check → rerun once at same seed by second `launch.sh` call. Never exclude run for poor
+forecast quality.
+
+## 4. Pack and pull
+
+Full run folder holds `pred`, `true`, `lower`, `upper`, `residuals`, `states` arrays: tens
+of MB to several GB per run. Analysis never reads them. On cluster, paste this helper
+once per shell, call from repository root.
 
 ```bash
 pack_small() {   # pack_small NAME EXPECTED_RUNS 'run-dir glob' ...
@@ -77,184 +116,82 @@ pack_small() {   # pack_small NAME EXPECTED_RUNS 'run-dir glob' ...
 }
 ```
 
-The helper stops if the number of matching run folders differs from `EXPECTED_RUNS`, so a
-partial run set never ships. The run files take about 20 to 80 KB per run. Logs add to that, and
-may hold progress bars. The helper warns when the tarball exceeds 200 MB.
+Pack 12 reruns, 24 ECL baselines, 6 solar runs, and ACI results in one tarball:
 
-Two rules follow:
+```bash
+BLOCKS=r5,p1,p2,p3s,p3,p3b
+pack_small step7 42 'BASELINE_mc_dropout_ETTh[12]_M_sl96_pl192_seed*_*fullrevin__*' 'BASELINE_deep_ensemble_ETTh[12]_M_sl96_pl192_seed*_*fullrevin__*' 'BASELINE_*_ECL_*fullrevin__*' 'CISSN_solar_*'
+```
 
-- An analysis that needs the large arrays runs on the cluster, and only its JSON output is
-  pulled (the ECL rank diagnostic and the ACI pass work this way).
-- `completion.json` lists the omitted arrays, so an integrity check against it fails on the
-  workstation. Check the tarball SHA-256 instead.
+Helper stops if run count differs from expected, so partial set never ships.
+Run files take about 20 to 80 KB per run; logs add more. Helper warns above 200 MB.
+Two rules follow. Analysis needing large arrays runs on cluster; only its JSON
+output gets pulled. `completion.json` lists omitted arrays, so integrity check against it
+fails on workstation; check tarball SHA-256 instead.
 
-### 2.3 Pull and unpack (workstation, PowerShell, repository root)
-
-The archive extracts into `results/`. If your results folder carries the archive name
-`results_14_10_2026/`, first copy its `publication/`, `selection/`, and `validation/` folders
-back to `results/`; `build_numbers.py` and the checks below read them there.
-
-Set `$name` to the pack name, `$remote` to the login host, and `$outDir` to the `OUT_DIR` value
-that `pack_small` printed.
+On workstation (PowerShell, repository root), set `$remote` to login host and `$outDir`
+to `OUT_DIR` value helper printed:
 
 ```powershell
-$remote = 'USER@LOGIN_HOST'; $name = 'NAME'; $outDir = 'OUT_DIR'
+$remote = 'USER@LOGIN_HOST'; $name = 'step7'; $outDir = 'OUT_DIR'
 scp "${remote}:$outDir/$name.tar.gz" .
 Get-FileHash ".\$name.tar.gz" -Algorithm SHA256         # must equal the sha256 printed on the cluster
 tar -xzkf ".\$name.tar.gz"                              # -k keeps existing files
+$b = Get-ChildItem ./results/publication -Directory -Filter 'BASELINE_*fullrevin__*'
+($b | Where-Object Name -notlike '*_ECL_*').Count       # must print 216
+($b | Where-Object Name -like '*_ECL_*').Count         # must print 24
+(Get-ChildItem ./results/publication -Directory -Filter 'CISSN_solar_*').Count   # must print 6
 ```
 
-## 3. E1. Rerun on the cluster
+## 5. Rebuild the manuscript (workstation, PowerShell, repository root)
 
-Run E1 on the cluster's current checkout. Do not `git pull` first: the Step 7 commit (`ef84e5e`)
-would put these 12 runs on a different commit than the other 204 R5 runs. Check the
-preconditions and stop if one fails.
-
-```bash
-git rev-parse HEAD
-git status --porcelain                                   # must print nothing
-git merge-base --is-ancestor 6adc24b HEAD && echo "encoder fix present"
-squeue -u $(id -un)                                      # no cissn_* job may still run
-.venv/bin/python slurm/cells.py check
-.venv/bin/python slurm/cells.py list r5 | grep todo      # must print exactly the 12 cells
-```
-
-Launch with section 2.1, `BLOCKS` = `r5`. Status must reach `r5 216/216`. Then check each new
-run:
-
-```bash
-for d in results/publication/BASELINE_{mc_dropout,deep_ensemble}_ETTh{1,2}_M_sl96_pl192_seed*_*fullrevin__*; do
-  .venv/bin/python - "$d" <<'EOF'
-import json, subprocess, sys
-from pathlib import Path
-d = Path(sys.argv[1])
-env = json.loads((d / "environment.json").read_text())
-has_fix = subprocess.run(["git", "merge-base", "--is-ancestor", "6adc24b", env["git_commit"]]).returncode == 0
-structural = json.loads((d / "sanity.json").read_text())["structural_passed"]
-print(d.name, env["git_commit"][:7], "dirty" if env["git_dirty"] else "clean",
-      "fix" if has_fix else "NO FIX", "structural ok" if structural else "STRUCTURAL FAIL")
-EOF
-done
-```
-
-All 12 lines must show `clean`, `fix`, and `structural ok`. A run that fails the structural
-validity check is rerun once at the same seed. Never exclude a run for poor forecast quality.
-
-## 4. E2. Pack and pull
-
-On the cluster, with `pack_small` from section 2.2:
-
-```bash
-BLOCKS=r5
-pack_small r5rerun 12 'BASELINE_mc_dropout_ETTh[12]_M_sl96_pl192_seed*_*fullrevin__*' 'BASELINE_deep_ensemble_ETTh[12]_M_sl96_pl192_seed*_*fullrevin__*'
-```
-
-On the workstation, run section 2.3 with `$name = 'r5rerun'`, then:
+Exposed-grid checkpoints on workstation, so ACI pass for that grid runs here. To check first
+whether it can run on the cluster instead, paste `slurm/PROMPT_aci_exposed.md` into Claude Code there:
 
 ```powershell
-(Get-ChildItem ./results/publication -Directory -Filter 'BASELINE_*fullrevin__*').Count   # must print 216
-```
-
-## 5. E3. Rebuild the manuscript (workstation, PowerShell, repository root)
-
-`build_numbers.py` reads `results/publication`, `results/selection`, and `results/validation`
-(see the note in section 2.3).
-
-```powershell
+uv run python scripts/aci_paired_comparison.py --results_root ./results/publication --checkpoints_root ./checkpoints/publication --datasets ETTh2 weather exchange_rate --gamma 0.005 --block_multiplier 1 --n_boot 5000 --seed 0 --output ./results/publication/aci_vs_flat_exposed.json
 uv run python manuscript/analysis/build_numbers.py
 uv run python manuscript/analysis/make_figures.py
 Push-Location manuscript; latexmk -pdf -interaction=nonstopmode main.tex; Pop-Location
 Select-String -Path manuscript/generated/tab_point.tex -Pattern 'ddagger'   # must print nothing
 ```
 
-`build_numbers.py` stops if a run fails the structural validity check, or if a per-origin
-array does not reproduce its `metrics.json` Winkler score. Then update the text that still
-calls the 12 runs missing:
+`build_numbers.py` stops if run fails structural validity check, or if per-origin array
+does not reproduce its `metrics.json` Winkler score. Then update manuscript:
 
 1. In `manuscript/main.tex`, "Deviations and disclosures": replace "they are excluded and wait
-   for a rerun" with a statement that they were rerun at the fix commit, settings unchanged.
-2. In the same file, remove the `$^\ddagger$` sentence from the caption of `tab:point`, and
-   remove "Twelve baseline runs await a rerun" from "Limitations".
-3. State that R5 now spans two commits, `6711026` and the rerun commit, which differ only by
-   the encoder fix. The provenance table shows both.
+   for a rerun" with statement that they were rerun at fix commit, settings unchanged.
+2. Same file: remove `$^\ddagger$` sentence from caption of `tab:point`, remove
+   "Twelve baseline runs await a rerun" from "Limitations", replace "No baseline ran on
+   ECL" with P1 results.
+3. State R5 now spans two commits, `6711026` and rerun commit. They differ by
+   encoder fix and Step 7 additions that leave stride-1 computation unchanged. Provenance table shows both.
 4. In `manuscript/README.md`, delete open item 3.
+5. `build_numbers.py` has no rows yet for ACI results (`aci_vs_flat_*.json`). Add them from
+   those files only, then cite them as calibrator with more information than split CP.
 
-## 6. Step 7 (after E1)
+## 6. Solar analysis (workstation, PowerShell, repository root, after the pull)
 
-### P0. Copy, pull
-
-1. The Step 7 code and `docs/prespecification_traffic.md` are committed (`ef84e5e`). Settle the
-   P3 dataset first and update the draft; it can change freely until a traffic test window
-   is opened.
-2. Copy the traffic file byte for byte (sealed runs check its SHA-256):
-
-   ```powershell
-   $remote = 'USER@LOGIN_HOST'; $clone = 'SCRATCH/CISSN'
-   scp data/traffic.csv "${remote}:$clone/data/"
-   ```
-
-3. On the cluster, when `squeue` shows no `cissn_*` job:
-
-   ```bash
-   git pull --ff-only
-   git merge-base --is-ancestor 6adc24b HEAD && echo "encoder fix present"
-   bash slurm/preflight.sh                  # every line must be OK
-   ```
-
-### P1, P2, P3. Launch on the cluster
-
-Use section 2.1. P1 and P2 need neither the traffic data nor its prespecification:
-
-- `BLOCKS` = `p1,p2`.
-- Then, once the prespecification is committed and `traffic.csv` is on the cluster:
-  `BLOCKS` = `p3s,p3,p3b`. `p3s` trains one epoch on traffic through the validation-only
-  controller to check memory. `p3` starts only if it succeeds, and `p3b` only if every `p3`
-  task succeeds.
-
-After `p3s`, compare its epoch time times 20 with `TIME_P3` in `slurm/env.sh` (an estimate)
-and raise the limit before `p3` starts if needed. At the end, status must read `p1 24/24`,
-`p2 1/1`, `p3s 1/1`, `p3 6/6`, `p3b 1/1`. The ACI script stops on its own if a reload does not
-reproduce the saved flat CP; read the largest reload drift with:
-
-```bash
-.venv/bin/python -c "import glob, json; print('max reload drift', max(r['reproduction_max_relative_drift'] for f in glob.glob('results/publication/aci_vs_flat_*.json') for c in json.load(open(f))['cells'] for r in c['runs']))"
-```
-
-### P2 on the exposed grid (workstation, PowerShell, repository root)
-
-The exposed-grid checkpoints are on the workstation, so this pass runs here:
-
-```powershell
-uv run python scripts/aci_paired_comparison.py --results_root ./results/publication --checkpoints_root ./checkpoints/publication --datasets ETTh2 weather exchange_rate --gamma 0.005 --block_multiplier 1 --n_boot 5000 --seed 0 --output ./results/publication/aci_vs_flat_exposed.json
-```
-
-### P4. Pack, pull, analyse
-
-On the cluster, with `pack_small` from section 2.2 (24 ECL baselines and 6 traffic runs):
-
-```bash
-BLOCKS=p1,p2,p3s,p3,p3b
-pack_small step7 30 'BASELINE_*_ECL_*fullrevin__*' 'CISSN_traffic_*'
-```
-
-On the workstation, run section 2.3 with `$name = 'step7'`, then:
+`p3b` already ran ACI on the solar runs on the cluster; its `aci_vs_flat_solar.json` arrived with the
+pack. Run the paired analysis for both endpoints at both confidence levels (the Holm steps of
+`docs/prespecification_solar.md` need the 97.5% interval):
 
 ```powershell
 foreach ($method in 'primary','state_scaled') { foreach ($conf in '0.975','0.95') {
-  uv run python scripts/paired_interval_inference.py --results_root ./results/publication --datasets traffic --block_multiplier 1 --n_boot 5000 --seed 0 --method $method --confidence $conf --output "./results/publication/paired_interval_inference_traffic_${method}_$conf.json"
+  uv run python scripts/paired_interval_inference.py --results_root ./results/publication --datasets solar --block_multiplier 1 --n_boot 5000 --seed 0 --method $method --confidence $conf --output "./results/publication/paired_interval_inference_solar_${method}_$conf.json"
 } }
 ```
 
-Read E1 and E2 from the horizon-336 rows with the Holm steps and the reading rule of
-`docs/prespecification_traffic.md`, section 3. Then rerun E3 to place the P1 runs in the point
-table, and update the manuscript sentence "No baseline ran on ECL".
+Read the two endpoints from the horizon-336 rows with the Holm steps and the reading rule of
+`docs/prespecification_solar.md`, section 3. If `p3s` ran longer than expected, compare its epoch
+time times 20 with `TIME_P3` in `slurm/env.sh` before you rerun `p3`.
 
 ## 7. Rules that bind every launch
 
 - Confirmation runs need `--evidence_role confirmation --immutable_artifacts
   --strict_determinism --require_clean_git` together. `slurm/cells.py` sets them.
-- Do not change code in `cissn/` or `experiments/` between the launch commit and the end of E1.
-- The H100 and the RTX 5080 differ beyond floating-point noise under the same seed. Run all 12
-  E1 cells on the H100 nodes, like the other 204 R5 runs.
-- Never copy a whole run folder or `results/publication` from the cluster. Use `pack_small`.
-- A new experiment needs a `RUNBOOK.md` step before it gets a command here.
+- Never change code, pull, or switch branch on cluster while jobs run.
+- H100 and RTX 5080 differ beyond floating-point noise under same seed. Run on
+  H100 nodes, like other 204 R5 runs.
+- Never copy whole run folder or `results/publication` from cluster. Use `pack_small`.
+- New experiment needs `RUNBOOK.md` step before it gets command here.

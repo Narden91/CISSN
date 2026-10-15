@@ -45,8 +45,10 @@ scp -r results/selection <user>@<login-host>:<scratch>/CISSN/results/
 scp -r results/publication/CISSN_weather_M_sl96_pl192_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed42__1cc2e8e45bee results/publication/CISSN_weather_M_sl96_pl192_sd5_dm64_fullrevin_lc1_lt0p5_a0p1_per_feature_seed456__025daa56de32 <user>@<login-host>:<scratch>/CISSN/results/publication/
 ```
 
-With these copies, `bash slurm/launch.sh` submits only r4, r4b, r5 and r6 (R1 says RevIN wins, so R3 is
-excluded). To rerun R1 and R2 on the cluster instead, skip the last two `scp` lines.
+With these copies (R1 says RevIN wins, so R3 is excluded), a bare `bash slurm/launch.sh` submits only
+the open blocks `r5 p1 p2 p3s p3 p3b` (see `experiments.md`; the P3 blocks need `data/solar_AL.txt` on the
+cluster). Any finished block (`r1`-`r4b`, `r6`) needs `--blocks`. To rerun R1 and R2 on the cluster instead, skip the last two
+`scp` lines and pass `--blocks r1,r2`.
 
 ## 3. Check and launch
 
@@ -72,9 +74,9 @@ driver that CUDA 12.8 wheels need. The fix changes `uv.lock`, so it needs a new 
 | r6 ablations ETTh1-h336 | 3 (x6 ablations) | 3 | r2-r5 |
 | p1 ECL baselines with RevIN, daily origins | 24 | 12 | smoke |
 | p2 ACI against flat CP, ECL | 1 | 1 | smoke |
-| p3s one-epoch memory check on traffic (validation only) | 1 | 1 | smoke |
-| p3 traffic confirmatory (needs `docs/prespecification_traffic.md` in HEAD and `data/traffic.csv`) | 6 | 6 | p3s succeeded |
-| p3b ACI against flat CP, traffic | 1 | 1 | every p3 task succeeded |
+| p3s one-epoch memory check on solar (validation only) | 1 | 1 | smoke |
+| p3 solar confirmatory (needs `docs/prespecification_solar.md` in HEAD and `data/solar_AL.txt`) | 6 | 6 | p3s succeeded |
+| p3b ACI against flat CP, solar | 1 | 1 | every p3 task succeeded |
 
 ## 4. Watch, resume
 
