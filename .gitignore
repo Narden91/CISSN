@@ -101,7 +101,7 @@ build/
 .claude/
 *.pdf
 manuscript/
-
+results_*
 *.tar
 
 # Latex
