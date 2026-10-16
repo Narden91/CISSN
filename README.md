@@ -32,9 +32,10 @@ Each completed run saves predictions, targets, interval bounds when applicable, 
 
 ## Documentation
 
+- [HPC_JOBS.md](HPC_JOBS.md): steps to launch only the two remaining prepared HPC jobs.
 - [RUNBOOK.md](RUNBOOK.md): runnable publication protocol and acceptance criteria.
 - [docs/prespecification.md](docs/prespecification.md): confirmatory dataset, endpoint, and claim-reading rules.
-- [experiments.md](experiments.md): what to run, in order, with exact commands.
+- [experiments.md](experiments.md): historical training and analysis commands.
 - [docs/architecture.md](docs/architecture.md): implementation architecture.
 - [docs/datasets.md](docs/datasets.md): datasets and split protocol.
 - [docs/methodology.md](docs/methodology.md): scientific scope and reporting.

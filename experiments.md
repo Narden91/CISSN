@@ -1,4 +1,7 @@
-# CISSN — what to run
+# Historical CISSN training and analysis commands
+
+For the current remaining jobs, follow [HPC_JOBS.md](HPC_JOBS.md).
+The workflow below records the earlier training campaign; its open-job list is historical.
 
 Updated 2026-10-15, branch `conformal-per-cell-geometry`. Open runs only. `RUNBOOK.md` is protocol, wins on any conflict; `docs/prespecification.md` fixes confirmatory analysis.
 Finished blocks R1 to R7 and commands in `git show a1add62:experiments.md`.

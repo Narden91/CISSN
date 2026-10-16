@@ -2,6 +2,13 @@
 
 Each entry: the concrete failure, then the rule that prevents it.
 
+## Pytest temporary directories in the Windows sandbox
+
+- **Failure:** tests using `tmp_path` failed during setup because pytest could not
+  read `AppData/Local/Temp/pytest-of-emanu`, although ordinary tests passed.
+  **Rule:** pass a new, unused `--basetemp` path inside the repository for these
+  checks. Never reuse a directory containing user files: pytest clears that path.
+
 ## Editing files with LaTeX or regex strings
 
 - **Failure:** three Python heredoc patches (`s.replace(old, new)`) to a script that writes

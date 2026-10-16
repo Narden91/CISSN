@@ -1,5 +1,13 @@
 # CISSN on the cluster
 
+Follow [HPC_JOBS.md](../HPC_JOBS.md) to launch the two remaining prepared jobs.
+It is the current guide for checking files, submission, monitoring, and result merging.
+
+## Historical training workflow
+
+The remaining sections record the earlier training campaign. Their open-job lists
+and commit requirements belong to that campaign.
+
 Runs R1-R6 and the Step 7 blocks P1-P3 (`RUNBOOK.md`) as Slurm GPU array jobs. The open
 commands are in `experiments.md`. R7 (analysis) runs on the workstation.
 All commands run from the repository root, in bash. Never `chmod` the scripts and never edit a

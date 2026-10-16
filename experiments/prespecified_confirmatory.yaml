@@ -1,0 +1,38 @@
+# Written 2026-10-16 before any new candidate test scoring in this task.
+# Internal prespecification, without external registration or a commit timestamp.
+status: blocked_missing_checkpoints_and_unverified_complete_exposure_history
+candidate_datasets: [traffic, ILI]
+exposure_evidence:
+  source: docs/prespecification.md and docs/prespecification_solar.md
+  available_result_config_inventory: no_traffic_or_ILI_runs
+  limitation: records_cannot_prove_no_unrecorded_prior_use
+exclude: [ETTm1, ETTm2] # Same sources as exposed ETTh1/ETTh2.
+checkpoints: must_be_frozen_and_identified_by_sha256_before_test_scoring
+point_model: CISSN_legacy_RevIN
+training: {seq_len: 96, epochs: 20, patience: 5, d_model: 64, state_dim: 5, seeds: [42, 123, 456]}
+horizons: {traffic: [96, 336], ILI: [24, 48]}
+split: canonical_registry_with_cal_fraction_0.2_from_training_tail
+conditioning: first_half_of_chronological_calibration_origins
+quantile_calibration: second_half_of_chronological_calibration_origins
+full_flat: every_calibration_origin
+alphas: [0.05, 0.10, 0.20]
+primary_alpha: 0.10
+clustering: {method: StandardScaler_then_KMeans, requested_clusters: 5, n_init: 10, seed: model_seed}
+cluster_selection: existing_fit_partition_reduces_K_until_minimum_reference_occupancy
+phase: {traffic: hour_of_first_target, ILI: ISO_week_minus_1_modulo_52}
+fallback: phase_to_paired_global_and_phase_state_to_phase_then_paired_global
+minimum_group_count: max_5_ceil_1_over_alpha
+metrics: [coverage, absolute_coverage_error, mean_width, Winkler, MAE, MSE]
+primary_comparison: State_SCCP_minus_Phase_Mondrian_Winkler_at_alpha_0.10
+secondary_comparisons: [paired_flat, full_flat, phase_state, delayed_ACI_gamma_0.005]
+test_stride: {traffic: 23, ILI: 1}
+bootstrap: {unit: chronological_origins_averaged_across_seeds, method: moving_block_percentile, n_boot: 5000, seed: 0, confidence: 0.95, block_multipliers: [1, 2, 4]}
+block_length: ceil_horizon_over_stride_times_multiplier
+reading:
+  support_beyond_phase: upper_Winkler_difference_CI_below_zero_and_coverage_difference_CI_inside_minus_0.01_to_plus_0.01
+  material_gain: relative_Winkler_upper_CI_below_minus_0.01
+  otherwise: report_inconclusive_or_negative_per_dataset_without_pooled_claim
+  insufficient_blocks: fewer_than_10_blocks_is_descriptive_only
+  multiplicity: no_familywise_claim_across_datasets_horizons_or_alphas
+matched_coverage: deferred_requires_separate_development_design_no_test_scaling
+git: leave_uncommitted_under_user_Git_boundaries

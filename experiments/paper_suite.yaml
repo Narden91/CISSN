@@ -1,0 +1,14 @@
+# Descriptive follow-up. Freeze before reading any new scores.
+results_root: results/publication
+checkpoints_root: checkpoints/publication
+output_root: results/paper_strengthening
+datasets: [ECL, solar, ETTh2, weather, exchange_rate]
+horizons: [96, 336]
+seeds: [42, 123, 456]
+models: [cissn, dlinear, patchtst]
+alphas: [0.05, 0.10, 0.20]
+test_strides: {ECL: 23, solar: 25, ETTh2: 1, weather: 1, exchange_rate: 1}
+bootstrap: {multipliers: [1, 2, 4], n_boot: 5000, seed: 0, confidence: 0.95}
+aci_gamma: 0.005
+batch_size: 128
+evidence_role: descriptive_followup
