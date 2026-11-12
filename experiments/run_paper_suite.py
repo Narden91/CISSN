@@ -18,6 +18,7 @@ import pandas as pd
 import torch
 import yaml
 from sklearn.metrics import normalized_mutual_info_score
+from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader, Subset
 
 from cissn.baselines.flat_conformal import FlatConformal
@@ -25,12 +26,37 @@ from cissn.conformal.aci import adaptive_conformal_quantiles
 from cissn.conformal.phase import PhaseConformal, phase_from_timestamps
 from cissn.conformal.state_conditional import StateConditionalConformal
 from cissn.data.registry import get_dataset_spec
-from cissn.evaluation.inference import moving_block_bootstrap_ci
+from cissn.evaluation.inference import moving_block_bootstrap_ci, moving_block_bootstrap_ratio_ci
 from cissn.evaluation.metrics import per_origin_interval_scores
 from experiments.run_benchmark import Experiment, environment_snapshot, set_random_seed
 
 METRICS = ("coverage", "width", "winkler")
-METHODS = ("flat_paired", "flat_full", "phase", "state", "phase_state", "aci")
+METHODS = ("flat_paired", "flat_full", "phase", "state", "phase_state", "aci",
+           "phase_coarse", "phase_coarse_state", "flat_scaled")
+
+
+def choose_flat_scale(cond_residuals, q, alpha, grid):
+    """Minimise conditioning-half Winkler loss, breaking ties toward unit scale."""
+    residuals = np.asarray(cond_residuals)
+    q = np.asarray(q)
+    grid = np.asarray(grid, dtype=float)
+    if (residuals.ndim < 1 or residuals.size == 0 or not np.all(np.isfinite(residuals)) or np.any(residuals < 0)
+            or not np.all(np.isfinite(q)) or np.any(q < 0) or not 0 < alpha < 1
+            or grid.ndim != 1 or not grid.size or not np.all(np.isfinite(grid)) or np.any(grid <= 0)):
+        raise ValueError("Provide finite non-negative residuals/quantiles and a positive scale grid.")
+    q = np.broadcast_to(q, residuals.shape[1:])
+    best, best_loss = None, np.inf
+    # Bound temporary memory independently of the calibration length and grid size.
+    for scale in grid:
+        widths = scale * q
+        total = 0.0
+        for start in range(0, len(residuals), 64):
+            excess = np.maximum(residuals[start:start + 64] - widths, 0)
+            total += float(excess.sum(dtype=np.float64))
+        loss = 2 * float(widths.mean()) + 2 / alpha * total / residuals.size
+        if loss < best_loss or (loss == best_loss and (abs(scale - 1), scale) < (abs(best - 1), best)):
+            best, best_loss = float(scale), loss
+    return best
 
 
 def write_json(path, payload):
@@ -73,8 +99,94 @@ def fit_methods(residuals, states, phases, alpha, n_clusters, seed, stride, peri
     full_flat.fit(residuals[full])
     phase = PhaseConformal(alpha, period).fit(residuals[paired], phases[paired])
     cross = PhaseConformal(alpha, period).fit(residuals[paired], phases[paired], labels, cluster.kmeans.n_clusters)
+    groups = cluster.kmeans.n_clusters
+    phase_map = np.arange(period) * groups // period
+    coarse = PhaseConformal(alpha, groups).fit(residuals[paired], phase_map[phases[paired]])
+    coarse_cross = PhaseConformal(alpha, groups).fit(
+        residuals[paired], phase_map[phases[paired]], labels, groups)
+    scale = choose_flat_scale(residuals[conditioning], flat.quantile_, alpha, np.arange(80, 121, 2) / 100)
     return {"cluster": cluster, "flat_paired": flat, "flat_full": full_flat, "phase": phase, "phase_state": cross,
+            "phase_coarse": coarse, "phase_coarse_state": coarse_cross, "phase_map": phase_map,
+            "flat_scale": scale,
             "conditioning_indices": conditioning, "paired_indices": paired, "full_indices": full}
+
+
+def method_widths(method, fitted, phases, labels, residuals, errors, origins, horizon, alpha, gamma):
+    """Dispatch explicitly so a newly registered method cannot silently become ACI."""
+    capped = 0
+    if method in ("flat_paired", "flat_full"):
+        widths = fitted[method].quantile_
+    elif method == "flat_scaled":
+        widths = fitted["flat_scale"] * fitted["flat_paired"].quantile_
+    elif method == "state":
+        widths = np.stack([fitted["cluster"].quantiles[int(k)] for k in labels])
+    elif method == "phase":
+        widths = fitted[method].half_widths(phases)
+    elif method == "phase_state":
+        widths = fitted[method].half_widths(phases, labels)
+    elif method == "phase_coarse":
+        widths = fitted[method].half_widths(fitted["phase_map"][phases])
+    elif method == "phase_coarse_state":
+        widths = fitted[method].half_widths(fitted["phase_map"][phases], labels)
+    elif method == "aci":
+        widths, capped = adaptive_conformal_quantiles(
+            residuals[fitted["paired_indices"]], errors, origins, horizon, alpha, gamma)
+    else:
+        raise ValueError(f"Unknown interval method: {method}")
+    return np.broadcast_to(widths, errors.shape), capped
+
+
+def calendar_diagnostic(residuals, phases, conditioning, paired, period, groups, seed=0):
+    """Compare phase partitions on the later calibration half, without test inputs.
+
+    Profiles average channels but retain horizon steps. Shares are between-phase
+    variance explained on the later half; K-means labels use the earlier half.
+    Missing phases and zero variance make these quantities unidentified.
+    """
+    profiles, counts = [], []
+    for indices in (conditioning, paired):
+        profile = []
+        count = np.bincount(phases[indices], minlength=period)
+        counts.append(count.tolist())
+        if np.any(count == 0):
+            return {"status": "missing_calibration_phases", "phase_counts": counts, "period": period}
+        for phase in range(period):
+            selected = indices[phases[indices] == phase]
+            total = np.zeros(residuals.shape[1], dtype=np.float64)
+            for start in range(0, len(selected), 64):
+                total += residuals[selected[start:start + 64]].sum(axis=(0, 2), dtype=np.float64)
+            profile.append(total / (len(selected) * residuals.shape[2]))
+        profiles.append(np.asarray(profile))
+    early, late = profiles
+    total_variance = float(np.square(late - late.mean(axis=0)).sum())
+    if total_variance == 0 or period < 2:
+        return {"status": "zero_phase_variance", "phase_counts": counts, "period": period}
+
+    def share(labels):
+        within = sum(float(np.square(late[labels == k] - late[labels == k].mean(axis=0)).sum())
+                     for k in np.unique(labels))
+        return 1 - within / total_variance
+
+    arcs = np.arange(period) * groups // period
+    learned = KMeans(n_clusters=min(groups, period), n_init=10, random_state=seed).fit_predict(early)
+    ranked = np.empty(period, dtype=int)
+    ranked[np.argsort(early.mean(axis=1), kind="stable")] = arcs
+    # Remove the shared horizon trend; correlation must measure phase structure.
+    early_phase, late_phase = early - early.mean(axis=0), late - late.mean(axis=0)
+    correlation = (float(np.corrcoef(early_phase.ravel(), late_phase.ravel())[0, 1])
+                   if early_phase.std() > 0 and late_phase.std() > 0 else None)
+    variations = []
+    for profile in profiles:
+        means = profile.mean(axis=0)
+        variations.append(float(np.mean(np.divide(profile.std(axis=0), means,
+                                                 out=np.zeros_like(means), where=means != 0))))
+    return {"status": "ok", "period": period, "groups": groups, "phase_counts": counts,
+            "phase_variation_per_step": variations, "profile_correlation": correlation,
+            "equal_arc_share": share(arcs), "ranked_level_share": share(ranked),
+            "kmeans_share": share(learned), "random_group_reference": (min(groups, period) - 1) / (period - 1),
+            "early_profile": early.tolist(), "late_profile": late.tolist(),
+            "correlation_definition": "flattened_profiles_centred_over_phases_at_each_step",
+            "kmeans_phase_labels": learned.tolist(), "role": "calibration_only_descriptive"}
 
 
 def score_bounds(pred, true, widths, alpha):
@@ -250,26 +362,24 @@ def score_cache(cache, config, settings, model):
         labels = cluster.assign_clusters(arrays["test_states"])
         phase, cross = fitted["phase"], fitted["phase_state"]
         stats = {"phase": phase.stats(), "phase_state": cross.stats(),
+                 "phase_coarse": fitted["phase_coarse"].stats(),
+                 "phase_coarse_state": fitted["phase_coarse_state"].stats(),
+                 "coarse_groups": cluster.kmeans.n_clusters, "phase_to_group": fitted["phase_map"].tolist(),
+                 "flat_scale": fitted["flat_scale"],
                  "state_counts": cluster.cluster_sizes_, "state_fallbacks": cluster.cluster_fallbacks_,
                  "conditioning_indices": fitted["conditioning_indices"].tolist(),
                  "paired_indices": fitted["paired_indices"].tolist(), "n_full": len(fitted["full_indices"])}
         if alpha == 0.1:
+            write_json(out / "calendar_diagnostic.json", calendar_diagnostic(
+                residuals, arrays["cal_phases"], fitted["conditioning_indices"], fitted["paired_indices"],
+                phase.period, cluster.kmeans.n_clusters))
             write_json(out / "diagnostics.json", diagnostics(fitted, arrays["cal_states"], residuals, arrays["cal_phases"],
                        arrays["test_states"], np.abs(pred - true), arrays["test_phases"]))
         write_json(out / f"calibration_alpha{alpha}.json", stats)
         for method in METHODS:
-            capped = 0
-            if method in ("flat_paired", "flat_full"):
-                widths = fitted[method].quantile_
-            elif method == "state":
-                widths = np.stack([cluster.quantiles[int(k)] for k in labels])
-            elif method == "phase":
-                widths = phase.half_widths(arrays["test_phases"])
-            elif method == "phase_state":
-                widths = cross.half_widths(arrays["test_phases"], labels)
-            else:
-                widths, capped = adaptive_conformal_quantiles(residuals[fitted["paired_indices"]], np.abs(pred - true),
-                    arrays["test_origins"], config["pred_len"], alpha, settings["aci_gamma"])
+            widths, capped = method_widths(method, fitted, arrays["test_phases"], labels, residuals,
+                                          np.abs(pred - true), arrays["test_origins"], config["pred_len"],
+                                          alpha, settings["aci_gamma"])
             per_origin, per_horizon = score_bounds(pred, true, widths, alpha)
             np.save(out / f"{method}_alpha{alpha}.npy", per_origin)
             np.save(out / f"{method}_alpha{alpha}_horizon.npy", per_horizon)
@@ -325,15 +435,18 @@ def summarize(rows, settings):
             summaries.append({**base, "method": method, **dict(zip(METRICS, means.tolist())),
                               "nominal_coverage": 1 - alpha, "absolute_coverage_error": float(abs(means[0] - (1 - alpha))),
                               "mae": float(group[group.method == method].mae.mean()), "mse": float(group[group.method == method].mse.mean())})
-        for baseline in METHODS:
-            if baseline == "state":
-                continue
-            delta = values["state"] - values[baseline]
+        pairs = [("state", baseline) for baseline in METHODS if baseline != "state"]
+        pairs.append(("phase_coarse_state", "phase_coarse"))
+        for method, baseline in pairs:
+            delta = values[method] - values[baseline]
+            delta = np.column_stack((delta, delta[:, 2] - delta[:, 1]))
             for multiplier in settings["bootstrap"]["multipliers"]:
                 block = math.ceil(multiplier * horizon / settings["test_strides"][dataset])
-                for column, metric in enumerate(METRICS):
+                for column, metric in enumerate((*METRICS, "miss")):
                     record = {**base, "baseline": baseline, "metric": metric, "block_multiplier": multiplier,
                               "block_len": block, "effective_blocks": len(delta) / block, "mean": float(delta[:, column].mean())}
+                    if method != "state":
+                        record.update(kind="nested", method=method)
                     if block > len(delta):
                         record.update(ci_low=None, ci_high=None, status="block_longer_than_series")
                     else:
@@ -341,10 +454,15 @@ def summarize(rows, settings):
                             settings["bootstrap"]["seed"], settings["bootstrap"]["confidence"])
                         record.update(ci, status="descriptive_fewer_than_10_blocks" if len(delta) / block < 10 else "descriptive")
                     uncertainty.append(record)
+                if method == "state" and baseline == "flat_paired" and block <= len(delta):
+                    ratio = moving_block_bootstrap_ratio_ci(values[method][:, 2], values[baseline][:, 2], block,
+                        settings["bootstrap"]["n_boot"], settings["bootstrap"]["seed"], settings["bootstrap"]["confidence"])
+                    uncertainty.append({**base, "baseline": baseline, "metric": "winkler", "kind": "ratio_of_means",
+                                        "block_multiplier": multiplier, **ratio})
             for phase in np.unique(phases[0]):
                 mask = phases[0] == phase
                 for column, metric in enumerate(METRICS):
-                    phase_rows.append({**base, "baseline": baseline, "metric": metric, "phase": int(phase),
+                    phase_rows.append({**base, "baseline": baseline, "method": method, "metric": metric, "phase": int(phase),
                                        "n_origins_phase": int(mask.sum()), "state_minus_baseline": float(delta[mask, column].mean())})
         # Separate CIs for individual metrics use the same chronological blocks.
         for method, scores in values.items():

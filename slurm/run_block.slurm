@@ -4,6 +4,7 @@
 # One array task of one block (see slurm/cells.py). launch.sh sets the job name, account,
 # partition, GPU, time, array range, dependency, output and the exports ROOT, BLOCK, NTASKS.
 # Submit through "bash slurm/launch.sh", never with sbatch directly.
+# Edit account, partition, and resource fields in slurm/env.sh once.
 set -euo pipefail
 
 ROOT="${ROOT:?ROOT is not set; submit with slurm/launch.sh}"

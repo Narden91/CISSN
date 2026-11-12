@@ -122,3 +122,49 @@ do not change.
    solar run. Reasons: traffic at horizon 336 gives only 9.5 bootstrap blocks, which the manuscript
    calls too coarse to read (solar gives 29.1), and a stride of 24 on hourly data fixes one phase
    (section 1). The endpoints, the Holm steps, and the reading rule are unchanged.
+
+
+## Follow-up controls
+
+Written 2026-11-12; takes effect after the user's commit, before new control scoring.
+
+ECL and Solar historical test scores and the ETTh2, Weather, and Exchange follow-up scores were already read. The design diagnostics used training rows, calibration residuals, and saved run times only; no ECL or Solar calendar-control score was available when the design was chosen. All new comparisons are descriptive. The historical endpoints and rules above are unchanged.
+
+### Methods added
+
+All use calibration data only. Partition or scale comes from the conditioning half, quantiles from the paired half, as for State.
+
+| Name | Definition | Detail |
+| - | - | - |
+| `phase_coarse` | `PhaseConformal(alpha, G)` on `phase * G // period` | `G = cluster.kmeans.n_clusters`. Bins start at phase 0. Do not tune the offset. |
+| `phase_coarse_state` | `phase_coarse` crossed with State clusters | Falls back to `phase_coarse`, then to the global quantile. |
+| `flat_scaled` | Paired Flat quantile times one `c` per run and alpha | Grid 0.80 to 1.20, step 0.02. Pick the `c` with the lowest mean Winkler score on the conditioning half. Ties: the `c` closest to 1.00. |
+
+With `G = 5`, ECL and ETTh2 give bins of 5, 5, 5, 5, 4 hours. Weather and Solar give 29, 29, 29, 29, 28 slots. Exchange gives weekday groups {0,1}, {2}, {3,4}, {5}, {6}. Estimated paired windows at `H = 336`: ECL about 1,673 (about 70 per hour, 335 per coarse bin), Solar about 3,511 (about 24 per slot, 700 per coarse bin). Read the real counts from `calibration_alpha0.1.json`.
+
+Limits to state in the paper: the conditioning half is older than the paired half; `flat_scaled` is a correction of level fitted on older data; `phase_coarse` pools neighbouring phases separately for each horizon step and channel, while full-period `phase` does not pool phases. Exchange is a placebo for the calendar controls.
+
+The Winkler score of `pred +- c*q` needs residuals only: with `r = |y - pred|` and `w = c*q`, the per-cell score is `2w + (2/alpha) * max(r - w, 0)`. This matches `score_bounds` (`run_paper_suite.py` lines 84 to 88).
+
+### Reading rule
+
+Apply at ECL `H = 336` and Solar `H = 336`, alpha 0.1, each dataset on its own, no pooled claim. Each comparison is the paired Winkler difference State minus control, with a 95% moving-block bootstrap interval (block multiplier 1, 5000 resamples, seed 0, seeds averaged per origin first). `U` is the upper limit, `L` the lower. Calendar-only controls: `phase` and `phase_coarse`.
+
+1. **Outcome A, not separated from a clock:** `U >= 0` for a calendar-only control. If `L > 0` for it, write "the clock gave a lower score"; otherwise "the data do not separate State from a clock".
+2. **Outcome C, not separated from a change of level:** `U < 0` for both calendar controls, `U >= 0` for `flat_scaled`.
+3. **Outcome B:** `U < 0` for both calendar controls and for `flat_scaled`.
+4. **Coverage qualifier for B:** if State coverage is more than 1 pp below any of these controls, write "with lower coverage", never "at comparable coverage". The 1 pp threshold is a practical choice.
+
+Outcome B needs every comparison to pass, so it needs no multiplicity correction. Estimated power: the 95% half-width is about 0.5% of the Flat score on ECL and 2.8% on Solar, while the whole ECL gain is 1.07%. Outcome A is the likely reading on ECL and means "not separated", not "no difference".
+
+Also report the nested difference `phase_coarse_state` minus `phase_coarse`. It is descriptive and not part of the rule. Everything else is descriptive: alpha 0.05 and 0.20, `H = 96`, the exposed datasets, and DLinear and PatchTST-lite residuals.
+
+### Allowed claims
+
+| Outcome | Allowed | Not allowed |
+| - | - | - |
+| A | "The data do not separate State from a calendar partition" (or "a calendar partition scored lower"). | "The state carries information beyond phase." |
+| C | "State scored lower than both calendar partitions, and a global width multiplier scored similarly." | "The state improves uncertainty estimates." |
+| B | "State scored lower than both calendar partitions and a global multiplier", plus the coverage qualifier. | "The state is needed", "the effect generalises", any coverage guarantee. |
+
+Every outcome carries: "descriptive, on a test split that was scored before".

@@ -156,7 +156,7 @@ uv run python scripts/aci_paired_comparison.py --results_root ./results/publicat
 uv run python manuscript/analysis/build_numbers.py
 uv run python manuscript/analysis/make_figures.py
 Push-Location manuscript; latexmk -pdf -interaction=nonstopmode main.tex; Pop-Location
-Select-String -Path manuscript/generated/tab_point.tex -Pattern 'ddagger'   # must print nothing
+Select-String -Path manuscript/tables/tab_point.tex -Pattern 'ddagger'   # must print nothing
 ```
 
 `build_numbers.py` stops if run fails structural validity check, or if per-origin array

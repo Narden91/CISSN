@@ -4,6 +4,38 @@ from __future__ import annotations
 import numpy as np
 
 
+def moving_block_bootstrap_ratio_ci(
+    state: np.ndarray,
+    flat: np.ndarray,
+    block: int,
+    n_boot: int,
+    seed: int,
+    confidence: float = 0.95,
+) -> dict:
+    """Paired ratio-of-means interval; resample the denominator with the numerator."""
+    state, flat = np.asarray(state, dtype=np.float64), np.asarray(flat, dtype=np.float64)
+    if (state.ndim != 1 or state.size == 0 or flat.shape != state.shape
+            or not np.all(np.isfinite(state)) or not np.all(np.isfinite(flat))
+            or np.any(flat <= 0)):
+        raise ValueError("Provide aligned finite one-dimensional scores with positive flat scores.")
+    n = state.size
+    if not 1 <= block <= n or n_boot < 1 or not 0 < confidence < 1:
+        raise ValueError("Invalid block length, resample count, or confidence.")
+    rng = np.random.default_rng(seed)
+    ratios = np.empty(n_boot)
+    # Chunk draws so memory does not grow as n_origins * n_boot.
+    for start in range(0, n_boot, 64):
+        size = min(64, n_boot - start)
+        starts = rng.integers(0, n - block + 1, size=(size, -(-n // block)))
+        indices = (starts[:, :, None] + np.arange(block)).reshape(size, -1)[:, :n]
+        ratios[start:start + size] = state[indices].mean(axis=1) / flat[indices].mean(axis=1) - 1
+    tail = (1 - confidence) / 2
+    low, high = np.quantile(ratios, [tail, 1 - tail])
+    return {"mean": float(state.mean() / flat.mean() - 1), "ci_low": float(low), "ci_high": float(high),
+            "n_origins": n, "block_len": int(block), "n_boot": int(n_boot), "seed": int(seed),
+            "confidence": float(confidence)}
+
+
 def moving_block_bootstrap_ci(
     delta: np.ndarray,
     block_len: int,

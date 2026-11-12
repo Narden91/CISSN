@@ -15,6 +15,7 @@ for arg in "$@"; do
         *) echo "ERROR: unknown argument '$arg'" >&2; exit 2 ;;
     esac
 done
+if [ "$NO_SLURM" -eq 0 ]; then require_cluster_settings || exit 2; fi
 
 FAILURES=0
 ok()   { echo "  OK    $1"; }
@@ -113,8 +114,10 @@ if [ "$NO_SLURM" -eq 1 ]; then
 elif ! command -v sbatch >/dev/null 2>&1; then
     bad "sbatch not found; run on a login node"
 else
-    OUT=$(sbatch --test-only -A "$ACCOUNT" -p "$PARTITION" --qos="$QOS" --gres="$GRES" -N 1 -c "$CPUS" \
-        --mem="$MEM" -t 01:00:00 --wrap=true 2>&1)
+    cmd=(sbatch --test-only -A "$ACCOUNT" -p "$PARTITION" --gres="$GRES" -N 1 -c "$CPUS"
+         --mem="$MEM" -t 01:00:00 --wrap=true)
+    [ -n "$QOS" ] && cmd+=(--qos="$QOS")
+    OUT=$("${cmd[@]}" 2>&1)
     if [[ "$OUT" == *"to start at"* ]]; then
         ok "scheduler accepts the job shape ($ACCOUNT, $PARTITION, qos $QOS, $GRES, $CPUS cpus, $MEM)"
     else

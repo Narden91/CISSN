@@ -120,6 +120,10 @@ R2-R5 cells come from a different GPU than the 52 CISSN and 256 baseline cells r
 
 ## Settings
 
-`slurm/env.sh` holds the account (`FUPB2_MEATIC`), partition (`boost_fua_prod`), GPU request, memory, tasks per
-block and time limits. Override with an environment variable, e.g. `ACCOUNT=X PARTITION=Y bash slurm/launch.sh`.
+Edit the blank `ACCOUNT` and `PARTITION` fields directly in `slurm/env.sh` once.
+Optional `QOS` and `MAIL_USER` fields can stay blank: the scripts omit those flags.
+The same file holds the GPU request, memory, tasks per block, and time limits,
+including `PAPER_TIME`. All launchers read it automatically; no separate environment
+file or per-session exports are needed. Commit these non-secret settings before
+historical training runs, which require a clean working tree.
 `preflight.sh` asks the scheduler whether the job shape is accepted (`sbatch --test-only`).

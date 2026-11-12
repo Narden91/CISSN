@@ -38,6 +38,7 @@ done
 for b in "${BLOCKS[@]}"; do
     case "$b" in r1|r2|r3|r4|r4b|r5|r6|p1|p2|p3s|p3|p3b) ;; *) echo "ERROR: unknown block '$b' (r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b)" >&2; exit 2 ;; esac
 done
+require_cluster_settings
 
 PREFLIGHT_ARGS=()
 if [ "$DRY_RUN" -eq 1 ] && ! command -v sbatch >/dev/null 2>&1; then PREFLIGHT_ARGS=(--no-slurm); fi
@@ -55,10 +56,12 @@ submit() {
     local block="$1" size="$2" dep="$3" time_var
     time_var="TIME_$(upper "$block")"
     local cmd=(sbatch --parsable --job-name="cissn_$block" --account="$ACCOUNT" --partition="$PARTITION"
-        --qos="$QOS" --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="${!time_var}"
-        --array="0-$((size - 1))%$THROTTLE" --mail-type=FAIL --mail-user="$MAIL_USER"
+        --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="${!time_var}"
+        --array="0-$((size - 1))%$THROTTLE"
         --export="ALL,ROOT=$ROOT,BLOCK=$block,NTASKS=$size"
         --output="$LOGS/%x_%A_%a.out")
+    [ -n "$QOS" ] && cmd+=(--qos="$QOS")
+    [ -n "$MAIL_USER" ] && cmd+=(--mail-type=FAIL --mail-user="$MAIL_USER")
     [ -n "$dep" ] && cmd+=(--dependency="$dep")
     cmd+=(slurm/run_block.slurm)
     if [ "$DRY_RUN" -eq 1 ]; then

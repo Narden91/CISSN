@@ -115,6 +115,9 @@ results_*
 *.fdb_latexmk
 *.sty
 *.sty
+!manuscript/*.sty
+manuscript/*.bbl
+manuscript/*.blg
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/

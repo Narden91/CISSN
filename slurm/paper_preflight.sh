@@ -18,6 +18,7 @@ while [ "$#" -gt 0 ]; do
         *) echo "FAIL unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+if [ "$NO_SLURM" -eq 0 ]; then require_cluster_settings; fi
 [ -x "$PY" ] || { echo "FAIL project environment missing: $PY" >&2; exit 1; }
 "$PY" -c 'import torch, numpy, pandas, sklearn, scipy, yaml, matplotlib, cissn'
 for file in slurm/paper_preflight.sh slurm/launch_paper.sh slurm/run_paper.slurm; do
@@ -27,7 +28,9 @@ echo "INFO checkout $ROOT; source $(git rev-parse --short HEAD); follow-up accep
 "$PY" slurm/paper_jobs.py check --config "$CONFIG" --datasets "$DATASETS" --output "$OUTPUT"
 if [ "$NO_SLURM" -eq 0 ]; then
     command -v sbatch >/dev/null || { echo "FAIL sbatch unavailable; use --no-slurm only for a workstation check" >&2; exit 1; }
-    sbatch --test-only --account="$ACCOUNT" --partition="$PARTITION" --qos="$QOS" --gres="$GRES" \
-        --nodes=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="${PAPER_TIME:-06:00:00}" --wrap=true
+    cmd=(sbatch --test-only --account="$ACCOUNT" --partition="$PARTITION" --gres="$GRES"
+         --nodes=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME" --wrap=true)
+    [ -n "$QOS" ] && cmd+=(--qos="$QOS")
+    "${cmd[@]}"
 fi
 echo "Paper preflight OK"

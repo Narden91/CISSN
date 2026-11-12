@@ -1,18 +1,17 @@
-# Cluster settings, sourced by launch.sh, preflight.sh and setup_cluster.sh.
-# Override any value by exporting it before the call, e.g.  ACCOUNT=OTHER bash slurm/launch.sh
-# Defaults follow the HQD-GP example scripts (GPU account and Booster-style partition). Confirm
-# them with preflight.sh, which asks the scheduler with "sbatch --test-only".
+# Edit the fields below once. Every launcher and preflight script reads this file.
+# Set ACCOUNT and PARTITION before submission. QOS and MAIL_USER are optional.
 
 ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 
-ACCOUNT="${ACCOUNT:-FUPB2_MEATIC}"
-PARTITION="${PARTITION:-boost_fua_prod}"
-QOS="${QOS:-normal}"
+ACCOUNT=""                              # required: your project account
+PARTITION=""                            # required: your GPU partition
+QOS=""                                  # optional: blank uses the scheduler default
+MAIL_USER=""                            # optional: blank disables email notifications
+PAPER_TIME="06:00:00"                    # time limit for each paper dataset job
 GRES="${GRES:-gpu:1}"
 CPUS="${CPUS:-8}"
 MEM="${MEM:-64G}"
 THROTTLE="${THROTTLE:-8}"                   # array tasks of one block that run at the same time
-MAIL_USER="${MAIL_USER:-emanuele.nardone@unicas.it}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"            # R4 (ECL) + R5 (216 cells) write about 25 GB
 
 # Array tasks per block and time limit per task. A task runs its share of cells one after the
@@ -50,3 +49,10 @@ else
     PY="$ROOT/.venv/bin/python"
 fi
 LOGS="$ROOT/logs/slurm"                    # logs/ is gitignored; --require_clean_git needs a clean tree
+
+require_cluster_settings() {
+    if [ -z "$ACCOUNT" ] || [ -z "$PARTITION" ]; then
+        echo "ERROR: fill ACCOUNT and PARTITION in slurm/env.sh before using Slurm." >&2
+        return 2
+    fi
+}

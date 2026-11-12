@@ -23,6 +23,7 @@ done
 if [ "$NO_SLURM" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
     echo "ERROR --no-slurm is allowed only with --dry-run" >&2; exit 2
 fi
+if [ "$NO_SLURM" -eq 0 ]; then require_cluster_settings; fi
 PREFLIGHT_ARGS=(--config "$CONFIG" --datasets "$DATASETS" --output "$OUTPUT")
 [ "$NO_SLURM" -eq 1 ] && PREFLIGHT_ARGS+=(--no-slurm)
 bash slurm/paper_preflight.sh "${PREFLIGHT_ARGS[@]}"
@@ -40,9 +41,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 for dataset in "${NAMES[@]}"; do
     cmd=(sbatch --parsable --job-name="cissn_paper_$dataset" --account="$ACCOUNT" --partition="$PARTITION"
-        --qos="$QOS" --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="${PAPER_TIME:-06:00:00}"
+        --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME"
         --export="ALL,ROOT=$ROOT,PAPER_CONFIG=$OUTPUT/job_configs/$dataset.yaml"
-        --output="$LOGS/%x_%j.out" slurm/run_paper.slurm)
+        --output="$LOGS/%x_%j.out")
+    [ -n "$QOS" ] && cmd+=(--qos="$QOS")
+    [ -n "$MAIL_USER" ] && cmd+=(--mail-type=FAIL --mail-user="$MAIL_USER")
+    cmd+=(slurm/run_paper.slurm)
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '%q ' "${cmd[@]}"; printf '\n'
     else

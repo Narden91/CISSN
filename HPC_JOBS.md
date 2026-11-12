@@ -32,6 +32,9 @@ manuscript/analysis/build_strengthening.py
 Keep the existing project environment, `slurm/env.sh`, datasets, publication
 configurations, and checkpoints. Shell files must use LF line endings.
 The scripts use the account and resource settings in `slurm/env.sh`.
+Fill its blank `ACCOUNT` and `PARTITION` fields directly. `QOS` and `MAIL_USER`
+are optional; leave them blank to use the scheduler default and disable email.
+No separate environment file or per-session account exports are needed.
 
 ## 2. Check all required files
 

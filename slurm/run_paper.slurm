@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+# Edit account, partition, and resources in slurm/env.sh; submit with launch_paper.sh.
 set -euo pipefail
 ROOT="${ROOT:?Submit with bash slurm/launch_paper.sh}"
 PAPER_CONFIG="${PAPER_CONFIG:?Missing dataset job config}"
