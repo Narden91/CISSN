@@ -101,7 +101,8 @@ build/
 .github/
 .claude/
 *.pdf
-manuscript/
+manuscript/*
+!manuscript/analysis/
 results_*
 *.tar
 
