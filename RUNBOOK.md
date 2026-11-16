@@ -1,6 +1,6 @@
 # CISSN publication runbook
 
-Sole launch protocol. Earlier-protocol results not publication evidence. Never pool with these artifacts. Open run commands in `experiments.md`. Finished blocks R1 to R7 in `git show a1add62:experiments.md`. Confirmatory analysis and reading rules in `docs/prespecification.md` (ECL) and
+Sole launch protocol. Earlier-protocol results not publication evidence. Never pool with these artifacts. All training blocks are finished (`experiments.md`). What to run now: `HPC_JOBS.md`. Confirmatory analysis and reading rules in `docs/prespecification.md` (ECL) and
 `docs/prespecification_solar.md` (solar, draft).
 
 > Evidence note: ETTh1 test artifacts informed development, stay diagnostics only. ETTh2, weather, exchange-rate test splits read in pre-RevIN grid, so results secondary, descriptive. ECL = confirmatory dataset. Second confirmatory dataset: solar (Step 7, P3). All selection use validation data only.
@@ -22,11 +22,11 @@ Sole launch protocol. Earlier-protocol results not publication evidence. Never p
 | 5 hybrid variant selection | `[x]` | `hybrid_anchored` meets all four criteria: `results/selection/hybrid_feature_mse.json` |
 | Prespecified statistics | `[x]` | `docs/prespecification.md`, written 2026-10-13 |
 | Main grid, CISSN | `[x]` | 54 exposed-dataset runs; 9 ECL runs at `6adc24b` (legacy h96 and h336, hybrid h336) |
-| Main grid, baselines under RevIN | `[~]` | 204 of 216 R5 runs; 12 MC-Dropout and Deep Ensemble runs at h192 await encoder-fix rerun (block `r5`, `experiments.md`). DeepState: 54 runs without RevIN |
+| Main grid, baselines under RevIN | `[x]` | 216 of 216 R5 runs; the 12 MC-Dropout and Deep Ensemble runs at h192 were rerun after the encoder fix (block `r5`). DeepState: 54 runs without RevIN |
 | Ablations | `[x]` | `results/publication/ablations_ETTh1_h336_s*.json`, regime without RevIN |
 | Publication review | `[~]` | draft `manuscript/main.tex`; numbers from `manuscript/analysis/build_numbers.py` |
-| 7 P1 ECL baselines, P2 ACI | `[ ]` | launch with `bash slurm/launch.sh` (blocks `p1`, `p2`); see Step 7 |
-| 7 P3 solar confirmatory test | `[ ]` | draft `docs/prespecification_solar.md`; launch with `bash slurm/launch.sh`; see Step 7 |
+| 7 P1 ECL baselines, P2 ACI | `[x]` | 24 `BASELINE_*_ECL_*fullrevin__*` runs; `aci_vs_flat_ECL.json`, `aci_vs_flat_exposed.json` (checked 2026-11-16) |
+| 7 P3 solar confirmatory test | `[x]` | 6 `CISSN_solar_*` runs; `aci_vs_flat_solar.json` (checked 2026-11-16) |
 
 Epoch budget: `--train_epochs 20 --patience 5` checked against 60-epoch, patience-10 arm on ETTh1-h336, seed 42, RevIN. Arm stopped epoch 27, best validation epoch 17. Twenty epochs not truncation. Keep budget so grid stays comparable with Step 2.
 
@@ -191,13 +191,13 @@ Exposed-dataset CISSN grid ran with `--revin --conformal_conditioning cluster
 
 Ablations run after main comparison. Run fixes one `--scale_geometry`, so two cells not reachable from `run_ablation.py`: both geometries in one run, and conditioning mode crossed with architecture ablation. Neither added; validation selection and window-placement diagnostic cover geometry question.
 
-## Step 7: additions for submission `[ ]`
+## Step 7: additions for submission `[x]`
 
 Three additions answer gaps listed in `venue.md`. None change ECL endpoint, its analysis, or its reading rule. Each result reported as added after ECL confirmatory analysis.
 
-**Order.** Commit and push Step 7 code and `docs/prespecification_solar.md` (preflight refuses a P3 launch without that file in `HEAD`). Copy `data/solar_AL.txt` to the cluster. Pull on cluster, run `bash slurm/launch.sh`: submits baseline reruns (`r5`), P1 (`p1`), P2 (`p2`), P3 (`p3s`, `p3`, `p3b`) together. `r5` reruns then run at later commit than other 204 R5 runs. Code differs by encoder fix and by Step 7 additions that leave stride-1 computation unchanged (stride option with default 1, extra output files); manuscript states both commits.
+**Order (done).** Step 7 code and `docs/prespecification_solar.md` were committed before launch. One `bash slurm/launch.sh` call submitted `r5`, `p1`, `p2`, `p3s`, `p3`, `p3b` together. The `r5` reruns ran at a later commit than the other 204 R5 runs. Code differs by encoder fix and by Step 7 additions that leave stride-1 computation unchanged (stride option with default 1, extra output files); manuscript states both commits.
 
-**Transfer.** Pull only small files analysis reads (`pack_small` in `experiments.md`,
+**Transfer.** Pull only small files analysis reads (`pack_small` in `git show 75cbfae:experiments.md`,
 section 4). Never copy whole run folders.
 
 **P1: point baselines on ECL.** DLinear, PatchTST-lite, MC-Dropout, Deep Ensemble under RevIN, horizons 336 and 96, seeds 42, 123, 456 (24 runs, block `p1`). `--test_origin_stride 24`

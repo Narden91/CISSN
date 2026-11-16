@@ -10,7 +10,7 @@ upper bound.
 
 ## Scope
 
-CISSN forecasts multivariate time series with a structured five-dimensional latent state and state-conditional conformal intervals. The executable publication protocol is `RUNBOOK.md`; do not create alternative experiment plans. The statistical analysis, the confirmatory dataset (ECL), and the claim-reading rules are fixed in `docs/prespecification.md`; the current run status is in `experiments.md`.
+CISSN forecasts multivariate time series with a structured five-dimensional latent state and state-conditional conformal intervals. The executable publication protocol is `RUNBOOK.md`; do not create alternative experiment plans. The statistical analysis, the confirmatory dataset (ECL), and the claim-reading rules are fixed in `docs/prespecification.md`; what to run now is in `HPC_JOBS.md`; finished training blocks are listed in `experiments.md`.
 
 ## What is novel here vs. reused
 

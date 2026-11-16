@@ -32,6 +32,10 @@ Each entry: the concrete failure, then the rule that prevents it.
   **Rule:** before writing a launch command into a doc, run it through the target script's
   real argument parser with the real PowerShell block (override `uv` to call a parse-only
   wrapper). Check every skip-check wildcard against the runner's real name builder.
+- **Failure:** `HPC_JOBS.md` gave `--basetemp results/_pytest_<date>_a`. The user pasted it as
+  is; Windows rejects `<` and `>` in folder names, so 9 `tmp_path` tests errored at setup.
+  **Rule:** a copy-and-paste command has no placeholder the user must edit. Compute the value
+  in the command (`$(Get-Date -Format yyyyMMdd_HHmmss)`) and run the exact text once.
 
 ## Dataset-specific facts in review notes
 

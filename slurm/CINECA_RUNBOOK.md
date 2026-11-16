@@ -1,6 +1,6 @@
 # Cineca Leonardo runbook (copy and paste)
 
-Runs the CISSN cluster jobs with the scripts already in `slurm/`. Fill the editable fields in `slurm/env.sh` once; every launcher reads them automatically.
+Reference for the CISSN cluster: one-time setup, watch and cancel, failures, and Cineca facts. What to launch now is in `HPC_JOBS.md`. Fill the editable fields in `slurm/env.sh` once; every launcher reads them automatically.
 Blocks marked **[workstation]** run in PowerShell on your PC. Blocks marked **[cluster]** run in bash on the login node. Facts are marked **verified** (source, date) or **not verified**.
 
 ## 0. Values to set once in the script
@@ -65,28 +65,9 @@ git status --short                 # empty = clean. Then:  git pull --ff-only
 
 If you changed code on the workstation, the user commits and pushes first (git is read-only for the agent). `slurm/` files must be committed and use LF line endings; `bash slurm/preflight.sh` checks both.
 
-## 3. Paper follow-up jobs (ECL, solar): no training, 1 GPU each
+## 3. Paper follow-up jobs (ECL, solar)
 
-The settings come from `experiments/paper_suite.yaml` (strides ECL 23, solar 25; alphas 0.05, 0.10, 0.20). Follows `HPC_JOBS.md`.
-
-```bash
-bash slurm/paper_preflight.sh --datasets ECL,solar          # last line must be: Paper preflight OK
-bash slurm/launch_paper.sh --datasets ECL,solar --dry-run   # expect two sbatch lines, one per dataset
-bash slurm/launch_paper.sh --datasets ECL,solar             # submits; prints one job id per dataset
-```
-
-- A good log ends with `End UTC:`. Logs: `logs/slurm/cissn_paper_ECL_<jobid>.out` and `..._solar_<jobid>.out`.
-- Time limit is `PAPER_TIME` in `slurm/env.sh` (default `06:00:00`; not a measured runtime). Edit that field directly to change it.
-- Resubmit only a failed dataset: `bash slurm/launch_paper.sh --datasets ECL`. Finished prediction caches are reused. The launcher refuses a dataset that is already queued.
-
-After both jobs succeed:
-
-```bash
-.venv/bin/python slurm/paper_jobs.py merge --datasets ECL,solar --output results/paper_cluster
-.venv/bin/python manuscript/analysis/build_strengthening.py --results results/paper_cluster --prefix cluster
-```
-
-Expect `summary.csv`, `runs.csv`, `uncertainty.csv`, `phase_effects.csv`, `inventory.json` in `results/paper_cluster/`. The merge stops on incomplete runs. Do not edit a result in place; rerun under a new `--output`.
+Follow `HPC_JOBS.md`, parts B and C. That file is the only copy of the launch, merge, and copy-back commands.
 
 ## 4. Training blocks (R1 to R6, P1 to P3): only when a block is open
 
@@ -98,7 +79,7 @@ bash slurm/launch.sh --blocks p1,p2 --dry-run           # print the sbatch comma
 bash slurm/launch.sh --blocks p1,p2                     # submit
 ```
 
-- A bare `bash slurm/launch.sh` submits the blocks still open in `experiments.md`. Finished blocks need `--blocks`.
+- All historical blocks are finished, so always name the block with `--blocks`.
 - Resume by running the same command again: finished cells are skipped, and partial checkpoints of unfinished cells are removed first.
 - **Gap:** `slurm/cells.py` has no Solar baseline block (DLinear, PatchTST-lite). `plan.md` Phase 5 adds it as a copy of `block_p1`. Until then, Solar baselines cannot be launched.
 - Sealed runs (`--require_clean_git --immutable_artifacts`) need a clean tree and byte-identical data.
@@ -119,16 +100,7 @@ Preflight refuses to start while a `cissn_*` job is queued. Wait or cancel first
 
 ## 6. Bring results back
 
-**[workstation]** The two paper jobs write to `results/paper_cluster`. The training blocks write to `results/publication`.
-
-```powershell
-scp -r "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/results/paper_cluster" results/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/generated/*cluster*" manuscript/generated/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/tables/*cluster*" manuscript/tables/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/figures/cluster_*" manuscript/figures/
-```
-
-Record the commit and the GPU (`nvidia-smi -L` is at the top of each log) next to every cluster result.
+Follow `HPC_JOBS.md`, part C. The paper jobs write to `results/paper_cluster`; the training blocks write to `results/publication`.
 
 ## 7. If something fails
 

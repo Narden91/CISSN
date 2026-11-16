@@ -1,111 +1,140 @@
-# Launch the remaining HPC jobs
+# What to run now: workstation and cluster
 
-Run this checklist in Bash from the existing CISSN checkout on the cluster.
-It submits **two GPU jobs** using the existing frozen checkpoints.
+This is the only launch checklist. Run the parts in order: A, B, C. Part D is optional.
+Every step says where it runs:
 
-| Job name | Point forecasts | Frozen runs | Test-origin stride |
-| --- | --- | --- | --- |
-| `cissn_paper_ECL` | CISSN, DLinear, PatchTST | 18 | 23 |
-| `cissn_paper_solar` | CISSN | 6 | 25 |
+- **[workstation]**: PowerShell, repository root, `.\.venv\Scripts\python.exe`.
+- **[cluster]**: bash on the Cineca login node, root of the cluster checkout, `.venv/bin/python`.
 
-Both jobs cover horizons 96 and 336, seeds 42/123/456, and alpha 0.05/0.10/0.20.
-Each compares paired Flat, full Flat, Phase Mondrian, State SCCP, Phase+State,
-and capped delayed-feedback ACI. These jobs cover the prepared follow-up analyses.
-New datasets, additional conformal comparators, and matched-coverage analysis need
-further work before they have launch-ready jobs.
+Reference material is elsewhere. Do not copy commands from those files:
 
-## 1. Update the cluster checkout
+- `slurm/CINECA_RUNBOOK.md`: one-time cluster setup, watch and cancel commands, failure table.
+- `plan.md`: why each run exists, and the result checks (section 7) before any comparison is read.
+- `RUNBOOK.md`: the protocol of the historical confirmatory runs.
 
-Copy the new source files into their matching paths in the existing checkout:
+## Status (2026-11-16)
 
-```text
-cissn/conformal/phase.py
-experiments/run_paper_suite.py
-experiments/paper_suite.yaml
-slurm/paper_jobs.py
-slurm/paper_preflight.sh
-slurm/launch_paper.sh
-slurm/run_paper.slurm
-manuscript/analysis/build_strengthening.py
+| Work | Where | State |
+| - | - | - |
+| Historical training blocks R1 to R7, P1, P2, P3 | cluster | Done. Results are in `results/publication` (216 R5 baselines, 24 ECL baselines, 6 Solar CISSN runs, 3 ACI files). |
+| A. Local follow-up scoring on ETTh2, Weather, Exchange | workstation | Open. `results/paper_strengthening_v2` does not exist yet. |
+| B. Follow-up scoring on ECL and Solar | cluster | Open. Needs the ECL and Solar checkpoints, which exist only on the cluster. |
+| D. Solar DLinear and PatchTST-lite training | cluster | Not launchable. `slurm/cells.py` has no Solar baseline block yet (`plan.md` Phase 5). |
+
+The follow-up scores 9 interval methods on frozen models, with no training: `flat_paired`, `flat_full`,
+`phase`, `phase_coarse`, `state`, `phase_state`, `phase_coarse_state`, `flat_scaled`, and capped
+delayed-feedback `aci`. Alphas 0.05, 0.10, 0.20; horizons 96 and 336; seeds 42, 123, 456.
+
+## A. [workstation] Local scoring and commit
+
+A1. Run the tests. Expect no failures.
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_paper_suite.py tests/test_paper_jobs.py -q -p no:cacheprovider --basetemp "results/_pytest_$(Get-Date -Format yyyyMMdd_HHmmss)"
 ```
 
-Keep the existing project environment, `slurm/env.sh`, datasets, publication
-configurations, and checkpoints. Shell files must use LF line endings.
-The scripts use the account and resource settings in `slurm/env.sh`.
-Fill its blank `ACCOUNT` and `PARTITION` fields directly. `QOS` and `MAIL_USER`
-are optional; leave them blank to use the scheduler default and disable email.
-No separate environment file or per-session account exports are needed.
+The timestamp gives a new, unused `--basetemp` folder each time; pytest clears it.
 
-## 2. Check all required files
+A2. Score the three exposed datasets: 18 CISSN runs, about 30 minutes (estimate from one 102-second run).
+The agent asks before it starts this run.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.run_paper_suite --config experiments/paper_suite_v2.yaml
+```
+
+Output goes to `results/paper_strengthening_v2`. Never write into `results/paper_strengthening`.
+
+A3. Apply checks 7.1 and 7.2 of `plan.md`. Then build the tables:
+
+```powershell
+.\.venv\Scripts\python.exe manuscript/analysis/build_strengthening.py --results results/paper_strengthening_v2
+```
+
+A4. Commit the code and the dated design text (`plan.md` Stop point 1). Push the branch
+`conformal-per-cell-geometry`. Write down the commit hash. The cluster runs this commit.
+
+## B. [cluster] Score ECL and Solar
+
+B1. Update the checkout to the commit of step A4. Do not copy files by hand.
+
+```bash
+git status --short        # must print nothing
+git pull --ff-only
+git log -1 --oneline      # must show the commit of step A4
+```
+
+If this is the first session on Cineca, do section 1 of `slurm/CINECA_RUNBOOK.md` first.
+
+B2. Fill `ACCOUNT` and `PARTITION` in `slurm/env.sh` if they are blank. `QOS` and `MAIL_USER` may stay
+blank. `PAPER_TIME` (default `06:00:00`, not a measured runtime) is the time limit of each job.
+
+B3. Check every input. The last line must be `Paper preflight OK`.
 
 ```bash
 bash slurm/paper_preflight.sh --datasets ECL,solar
 ```
 
-Continue only when the command ends with `Paper preflight OK`.
-Fix each reported missing file or failed check first. The checker verifies the
-weights, dataset hashes, configurations, environment, disk space, and scheduler settings.
+The check covers weights, dataset hashes, configurations, environment, disk space, and scheduler settings.
+Fix each reported failure, then run it again.
 
-## 3. Preview the two jobs
+B4. Preview, then submit. The preview must show two `sbatch` commands, one per dataset.
 
 ```bash
 bash slurm/launch_paper.sh --datasets ECL,solar --dry-run
-```
-
-Expect two `sbatch` commands: one for ECL and one for Solar.
-Use `launch_paper.sh` for this follow-up. The older `launch.sh` runs the historical training workflow.
-
-## 4. Submit
-
-```bash
 bash slurm/launch_paper.sh --datasets ECL,solar
 ```
 
-Save the two job IDs printed by the launcher.
-Keep the source and configuration files unchanged until both jobs finish.
+| Job name | Models scored | Frozen runs | Test-origin stride |
+| --- | --- | --- | --- |
+| `cissn_paper_ECL` | CISSN, DLinear, PatchTST-lite | 18 | 23 |
+| `cissn_paper_solar` | CISSN | 6 | 25 |
 
-## 5. Monitor and check completion
+Write down the two job IDs. Do not edit code, pull, or switch branch until both jobs end.
+
+B5. Watch the jobs.
 
 ```bash
 squeue -u "$(id -un)"
-ls -lt logs/slurm/cissn_paper_*.out
+tail -n 20 $(ls -t logs/slurm/cissn_paper_*.out | head -n 2)   # the two newest paper logs
 ```
 
-Read the logs whose filenames contain the submitted job IDs:
+A successful log ends with `End UTC:`. If one job fails, fix the cause in its log and resubmit only
+that dataset, for example `bash slurm/launch_paper.sh --datasets ECL`. Complete prediction caches are
+reused. The launcher refuses a dataset that is already queued.
 
-- `logs/slurm/cissn_paper_ECL_<jobid>.out`
-- `logs/slurm/cissn_paper_solar_<jobid>.out`
-
-A successful log ends with `End UTC:` after checking every expected run completed.
-If one job fails, fix its reported cause and resubmit only that dataset.
-For ECL, use:
-
-```bash
-bash slurm/launch_paper.sh --datasets ECL
-```
-
-For Solar, replace `ECL` with `solar`. Complete prediction caches are reused when
-their inputs and source hashes match. The launcher rejects a duplicate active job.
-
-## 6. Merge the completed results
-
-After both jobs succeed:
+B6. After both jobs succeed, merge and build. The merge stops if any run is incomplete.
 
 ```bash
 .venv/bin/python slurm/paper_jobs.py merge --datasets ECL,solar --output results/paper_cluster
-```
-
-The merge stops if either dataset has incomplete runs.
-The merged results are in `results/paper_cluster/`:
-`summary.csv`, `runs.csv`, `uncertainty.csv`, `phase_effects.csv`, and `inventory.json`.
-
-## 7. Generate the tables and figures
-
-```bash
 .venv/bin/python manuscript/analysis/build_strengthening.py --results results/paper_cluster --prefix cluster
 ```
 
-Collect the merged result files, `manuscript/generated/*cluster*`, and
-`manuscript/figures/cluster_*` for review. The `cluster` prefix keeps these outputs
-separate from the current manuscript's local results. Review them before changing
-the manuscript's conclusions.
+Expect `summary.csv`, `runs.csv`, `uncertainty.csv`, `phase_effects.csv`, and `inventory.json` in
+`results/paper_cluster/`.
+
+## C. [workstation] Bring the results back
+
+C1. Copy the merged results and the generated files. In the first line, replace the three
+quoted values with your own; they are the only values you edit in this file.
+
+```powershell
+$env:CU = "<cineca user>"; $env:LOGIN = "<login host>"; $env:WORKDIR = "<work folder>"
+scp -r "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/results/paper_cluster" results/
+scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/generated/*cluster*" manuscript/generated/
+scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/tables/*cluster*" manuscript/tables/
+scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/figures/cluster_*" manuscript/figures/
+```
+
+Never copy whole run folders or `results/publication` from the cluster.
+
+C2. Apply `plan.md` section 7 in order: integrity (7.1), control identities (7.2), then the
+comparison table and outcome A, B, or C (7.3). Read no comparison before 7.1 and 7.2 pass.
+
+C3. Record the commit of step A4 and the GPU next to the cluster results. `nvidia-smi -L` prints
+the GPU at the top of each log.
+
+## D. [cluster] Optional: Solar DLinear and PatchTST-lite training
+
+Not launchable yet. First, `plan.md` Phase 5 adds a Solar baseline block to `slurm/cells.py`
+(12 runs, about 70 minutes of GPU time, estimate). After that block exists and is committed, launch it
+with section 4 of `slurm/CINECA_RUNBOOK.md`. Then rerun step B4 with `--datasets solar`.
