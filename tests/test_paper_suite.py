@@ -9,7 +9,8 @@ from cissn.conformal.aci import adaptive_conformal_quantiles
 from cissn.conformal.phase import PhaseConformal, phase_from_timestamps
 from cissn.conformal.state_conditional import split_conformal_q_level
 from experiments.run_paper_suite import (METHODS, assert_aligned, calibration_selection, fit_methods, score_bounds,
-                                        choose_flat_scale, method_widths, calendar_diagnostic, summarize)
+                                        choose_flat_scale, method_widths, calendar_diagnostic, summarize,
+                                        reproduction_report)
 from cissn.evaluation.inference import moving_block_bootstrap_ci, moving_block_bootstrap_ratio_ci
 from experiments.run_benchmark import Experiment
 
@@ -223,6 +224,52 @@ def test_metrics_exact_and_alignment():
         assert_aligned(np.arange(2), np.arange(2)[::-1], true, true)
     with pytest.raises(ValueError):
         assert_aligned(np.arange(2), np.arange(2), true, true + 1)
+
+
+@pytest.mark.parametrize("coverage", [0.0, 0.7350973236009732])
+def test_frozen_reproduction_accepts_one_cell_cpu_boundary_drift(coverage):
+    # Solar H=96: one coverage cell exceeds the old relative-only threshold.
+    cells = 96 * 137
+    saved = np.array([[coverage, 1.2454568147659302, 2.9754345417022705]])
+    new = saved + [[1 / cells, -2.384185791015625e-7, -2.47955322265625e-5]]
+    report = reproduction_report(saved, new, cells)
+    assert report["passed"]
+    assert report["max_relative_drift"] > 1e-4
+    assert report["metrics"]["coverage"]["max_absolute_drift"] == pytest.approx(1 / cells)
+    assert report["coverage_absolute_tolerance"] == pytest.approx(1 / cells)
+
+
+def test_frozen_reproduction_rejects_coverage_change_beyond_one_cell():
+    cells = 96 * 137
+    report = reproduction_report([[0.735, 1, 2]], [[0.735 - 2 / cells, 1, 2]], cells)
+    assert not report["passed"]
+    assert not report["metrics"]["coverage"]["passed"]
+
+
+def test_frozen_reproduction_retains_relative_coverage_tolerance():
+    # At large cell counts the pre-existing relative allowance can exceed a cell.
+    report = reproduction_report([[0.9, 1, 2]], [[0.9 + 5e-5, 1, 2]], 336 * 321)
+    assert report["passed"]
+
+
+@pytest.mark.parametrize("column", [1, 2])
+def test_frozen_reproduction_keeps_continuous_scores_strict(column):
+    saved = np.array([[0.9, 1., 2.]])
+    new = saved.copy()
+    new[0, column] *= 1 + 2e-4
+    report = reproduction_report(saved, new, 96 * 137)
+    assert not report["passed"]
+    assert not report["metrics"][("coverage", "width", "winkler")[column]]["passed"]
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("reference", [False, True])
+def test_frozen_reproduction_rejects_nonfinite_scores(value, reference):
+    saved = np.array([[0.9, 1., 2.]])
+    new = saved.copy()
+    (saved if reference else new)[0, 1] = value
+    with pytest.raises(ValueError, match="finite"):
+        reproduction_report(saved, new, 96 * 137)
 
 
 def test_seed_and_alpha_do_not_change_partition():

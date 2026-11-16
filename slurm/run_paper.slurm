@@ -18,6 +18,7 @@ if [ -n "${GRES:-}" ]; then
     "$PY" -c 'import torch; assert torch.cuda.is_available(), "CUDA GPU is not visible on compute node"'
 else
     unset CISSN_REQUIRE_GPU
+    export CUDA_VISIBLE_DEVICES=""
     echo "CPU job: GRES is empty, so CUDA is not required"
     "$PY" -c 'import torch; print("torch", torch.__version__, "cuda_available", torch.cuda.is_available())'
 fi

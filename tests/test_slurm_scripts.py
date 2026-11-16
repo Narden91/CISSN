@@ -120,6 +120,23 @@ def test_cluster_jobs_require_gpu_only_when_gres_is_set(script):
     assert "CUDA is not required" in text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Uses a POSIX executable stub")
+def test_cpu_paper_job_hides_cuda_and_clears_inherited_gpu_requirement(bash, tmp_path):
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/usr/bin/env bash\n'
+                      'printf "CUDA_VISIBLE_DEVICES=<%s> CISSN_REQUIRE_GPU=<%s>\\n" '
+                      '"${CUDA_VISIBLE_DEVICES-unset}" "${CISSN_REQUIRE_GPU-unset}"\n', newline="\n")
+    python.chmod(0o755)
+    env = {**os.environ, "ROOT": str(tmp_path), "PAPER_CONFIG": "unused.yaml", "GRES": "",
+           "CUDA_VISIBLE_DEVICES": "0", "CISSN_REQUIRE_GPU": "1"}
+    result = subprocess.run([bash, str(ROOT / "slurm/run_paper.slurm")], env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count("CUDA_VISIBLE_DEVICES=<> CISSN_REQUIRE_GPU=<unset>") == 3
+    assert "End UTC:" in result.stdout
+
+
 def test_cells_omit_require_gpu_without_gres():
     import importlib.util
     import sys

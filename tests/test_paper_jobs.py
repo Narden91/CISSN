@@ -38,6 +38,19 @@ def test_preflight_accepts_complete_resources(resources):
     assert paper_jobs.check(settings) == 0
 
 
+def test_cpu_preflight_accepts_cpu_only_torch(resources, monkeypatch):
+    settings, _, _ = resources
+    monkeypatch.setattr("torch.version.cuda", None)
+    assert paper_jobs.check(settings) == 0
+
+
+def test_gpu_preflight_rejects_cpu_only_torch(resources, monkeypatch, capsys):
+    settings, _, _ = resources
+    monkeypatch.setattr("torch.version.cuda", None)
+    assert paper_jobs.check(settings, require_gpu=True) == 1
+    assert "CUDA build is required for a GPU job" in capsys.readouterr().out
+
+
 def test_preflight_rejects_missing_head(resources, capsys):
     settings, weights, _ = resources
     (weights / "checkpoint_head.pth").unlink()

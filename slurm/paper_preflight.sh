@@ -25,7 +25,9 @@ for file in slurm/paper_preflight.sh slurm/launch_paper.sh slurm/run_paper.slurm
     bash -n "$file"
 done
 echo "INFO checkout $ROOT; source $(git rev-parse --short HEAD); follow-up accepts uncommitted code and records hashes"
-"$PY" slurm/paper_jobs.py check --config "$CONFIG" --datasets "$DATASETS" --output "$OUTPUT"
+CHECK_ARGS=(--config "$CONFIG" --datasets "$DATASETS" --output "$OUTPUT")
+[ -n "${GRES:-}" ] && CHECK_ARGS+=(--require-gpu)
+"$PY" slurm/paper_jobs.py check "${CHECK_ARGS[@]}"
 if [ "$NO_SLURM" -eq 0 ]; then
     command -v sbatch >/dev/null || { echo "FAIL sbatch unavailable; use --no-slurm only for a workstation check" >&2; exit 1; }
     cmd=(sbatch --test-only --account="$ACCOUNT" --partition="$PARTITION"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One GPU job per dataset. Submit only after the frozen-resource check succeeds.
+# One CPU or GPU job per dataset, as selected by GRES, after the frozen-resource check succeeds.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 cd "$ROOT"

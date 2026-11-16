@@ -104,6 +104,14 @@ A successful log ends with `End UTC:`. If one job fails, fix the cause in its lo
 that dataset, for example `bash slurm/launch_paper.sh --datasets ECL`. Complete prediction caches are
 reused. The launcher refuses a dataset that is already queued.
 
+CPU reloads can move an interval boundary across a target relative to the original GPU results.
+The frozen-score check allows one cell of absolute coverage drift per origin
+(`1 / (horizon * scored channels)`), or the existing `1e-4` relative tolerance, whichever is larger.
+Width and Winkler retain the `1e-4` relative tolerance. Each `scores/<run>/reproduction_*.json`
+records the tolerances, per-metric drift, and pass/fail result. Nonfinite scores still fail.
+After updating this check, resubmit only the failed dataset; source changes automatically rebuild
+its prediction caches. A CPU job accepts either a CPU-only or CUDA-enabled PyTorch build.
+
 B6. After both jobs succeed, merge and build. The merge stops if any run is incomplete.
 
 ```bash

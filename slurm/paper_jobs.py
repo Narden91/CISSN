@@ -29,7 +29,7 @@ def selected_settings(config, datasets, output):
     return settings
 
 
-def check(settings):
+def check(settings, *, require_gpu=False):
     from cissn.data.registry import get_dataset_spec
     import torch
 
@@ -97,8 +97,8 @@ def check(settings):
             failures.append(f"Shell source must use LF line endings: {name}")
         elif name.endswith(".py"):
             ast.parse(file.read_text(encoding="utf-8"), filename=name)
-    if torch.version.cuda is None:
-        failures.append("Project torch is a CPU build; a CUDA build is required on compute nodes")
+    if require_gpu and torch.version.cuda is None:
+        failures.append("Project torch is a CPU build; a CUDA build is required for a GPU job")
     output = Path(settings["output_root"])
     parent = output
     while not parent.exists():
@@ -155,10 +155,11 @@ def main():
     parser.add_argument("--datasets", default="ECL,solar")
     parser.add_argument("--output", type=Path, default=Path("results/paper_cluster"))
     parser.add_argument("--job-configs", type=Path, default=Path("results/paper_cluster/job_configs"))
+    parser.add_argument("--require-gpu", action="store_true", help="Require a CUDA build for a GPU scheduler request")
     args = parser.parse_args()
     settings = selected_settings(args.config, args.datasets, args.output)
     if args.action == "check":
-        raise SystemExit(check(settings))
+        raise SystemExit(check(settings, require_gpu=args.require_gpu))
     if args.action == "prepare":
         prepare(settings, args.job_configs)
     else:

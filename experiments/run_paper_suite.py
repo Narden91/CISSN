@@ -346,6 +346,38 @@ def diagnostics(fitted, cal_states, cal_residuals, phases, test_states, test_res
             "role": "descriptive_test_diagnostic_not_selection"}
 
 
+def reproduction_report(saved, new, cells_per_origin):
+    """Compare frozen scores across devices, accounting for discrete coverage.
+
+    A float32 interval boundary can move across one target on CPU versus CUDA.
+    Coverage therefore has a one-cell absolute tolerance; continuous scores
+    retain the original relative tolerance, without an absolute allowance.
+    """
+    saved, new = np.asarray(saved, dtype=np.float64), np.asarray(new, dtype=np.float64)
+    if (saved.shape != new.shape or saved.ndim != 2 or saved.shape[1] != len(METRICS)
+            or not len(saved) or cells_per_origin < 1
+            or not np.all(np.isfinite(saved)) or not np.all(np.isfinite(new))):
+        raise ValueError("Frozen reproduction requires matching finite nonempty score arrays and positive cell count.")
+    absolute = np.abs(new - saved)
+    denominator = np.maximum(np.abs(saved), 1e-8)
+    relative = absolute / denominator
+    relative_tolerance = 1e-4
+    # Only absorb arithmetic roundoff in the one-cell coverage difference.
+    coverage_tolerance = 1 / cells_per_origin + 1e-12
+    allowed = relative_tolerance * denominator
+    allowed[:, 0] = np.maximum(allowed[:, 0], coverage_tolerance)
+    metrics = {
+        metric: {"max_absolute_drift": float(absolute[:, column].max()),
+                 "max_relative_drift": float(relative[:, column].max()),
+                 "passed": bool(np.all(absolute[:, column] <= allowed[:, column]))}
+        for column, metric in enumerate(METRICS)
+    }
+    return {"n_common_origins": len(saved), "max_relative_drift": float(relative.max()),
+            "relative_tolerance": relative_tolerance, "coverage_absolute_tolerance": coverage_tolerance,
+            "cells_per_origin": int(cells_per_origin), "metrics": metrics,
+            "passed": all(result["passed"] for result in metrics.values())}
+
+
 def score_cache(cache, config, settings, model):
     arrays = {name: np.load(cache / f"{name}.npy", mmap_mode="r") for name in (
         "cal_states", "cal_residuals", "cal_phases", "test_states", "test_pred", "test_true", "test_phases", "test_origins")}
@@ -402,10 +434,13 @@ def score_cache(cache, config, settings, model):
                 if np.any(valid):
                     saved = np.load(original / filename)[valid]
                     new = np.load(out / f"{method}_alpha{alpha}.npy")[positions[valid]]
-                    drift = float(np.max(np.abs(new - saved) / np.maximum(np.abs(saved), 1e-8)))
-                    write_json(out / f"reproduction_{method}.json", {"n_common_origins": int(valid.sum()), "max_relative_drift": drift})
-                    if drift > 1e-4:
-                        raise ValueError(f"Frozen reload failed to reproduce {cache.name}: {method} drift={drift}.")
+                    report = reproduction_report(saved, new, math.prod(pred.shape[1:]))
+                    write_json(out / f"reproduction_{method}.json", report)
+                    if not report["passed"]:
+                        failed = [metric for metric, result in report["metrics"].items() if not result["passed"]]
+                        raise ValueError(f"Frozen reload failed to reproduce {cache.name}: {method} "
+                                         f"metrics={failed}, drift={report['max_relative_drift']}; "
+                                         f"read {out / f'reproduction_{method}.json'}.")
     return rows
 
 
