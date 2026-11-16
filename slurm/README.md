@@ -120,10 +120,9 @@ R2-R5 cells come from a different GPU than the 52 CISSN and 256 baseline cells r
 
 ## Settings
 
-Edit the blank `ACCOUNT` and `PARTITION` fields directly in `slurm/env.sh` once.
+Put `ACCOUNT` and `PARTITION` in the untracked repo-root `.env`. `slurm/env.sh` loads that file and
+keeps its own account and email fields blank so they are not committed.
 Optional `QOS` and `MAIL_USER` fields can stay blank: the scripts omit those flags.
-The same file holds the GPU request, memory, tasks per block, and time limits,
-including `PAPER_TIME`. All launchers read it automatically; no separate environment
-file or per-session exports are needed. Commit these non-secret settings before
-historical training runs, which require a clean working tree.
+`slurm/env.sh` holds the default memory, tasks per block, and time limits, including `PAPER_TIME`
+(24h, the `dcgp_fua_prod` maximum); `.env` overrides them. Leave `GRES` empty to run on CPU.
 `preflight.sh` asks the scheduler whether the job shape is accepted (`sbatch --test-only`).

@@ -1,14 +1,16 @@
-# Edit the fields below once. Every launcher and preflight script reads this file.
-# Set ACCOUNT and PARTITION before submission. QOS and MAIL_USER are optional.
+# Defaults for every launcher and preflight script. Site account, partition, QOS,
+# and email belong in the untracked repo-root .env (gitignored), which this file loads.
+# Do not put those values here: this file is tracked.
 
 ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 
 ACCOUNT=""                              # required: your project account
-PARTITION=""                            # required: your GPU partition
+PARTITION=""                            # required: partition for the requested resources
 QOS=""                                  # optional: blank uses the scheduler default
 MAIL_USER=""                            # optional: blank disables email notifications
-PAPER_TIME="06:00:00"                    # time limit for each paper dataset job
-GRES="${GRES:-gpu:1}"
+MAIL_TYPE="${MAIL_TYPE:-FAIL}"         # used only when MAIL_USER is set
+PAPER_TIME="${PAPER_TIME:-24:00:00}"   # paper job limit; dcgp_fua_prod max is 24h
+GRES="${GRES:-}"                        # blank omits --gres and runs on CPU; set gpu:1 for a GPU job
 CPUS="${CPUS:-8}"
 MEM="${MEM:-64G}"
 THROTTLE="${THROTTLE:-8}"                   # array tasks of one block that run at the same time
@@ -50,9 +52,23 @@ else
 fi
 LOGS="$ROOT/logs/slurm"                    # logs/ is gitignored; --require_clean_git needs a clean tree
 
+if [ -f "$ROOT/.env" ]; then
+    # shellcheck disable=SC1091
+    source "$ROOT/.env"
+fi
+
+# An empty GRES must not become --gres=, which the scheduler rejects.
+append_gres() {
+    local -n _dest=$1
+    if [ -n "${GRES:-}" ]; then
+        _dest+=(--gres="$GRES")
+    fi
+}
+
 require_cluster_settings() {
     if [ -z "$ACCOUNT" ] || [ -z "$PARTITION" ]; then
         echo "ERROR: fill ACCOUNT and PARTITION in slurm/env.sh before using Slurm." >&2
+        echo "ERROR: put site values in the untracked .env instead of this tracked file." >&2
         return 2
     fi
 }

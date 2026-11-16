@@ -28,9 +28,13 @@ echo "INFO checkout $ROOT; source $(git rev-parse --short HEAD); follow-up accep
 "$PY" slurm/paper_jobs.py check --config "$CONFIG" --datasets "$DATASETS" --output "$OUTPUT"
 if [ "$NO_SLURM" -eq 0 ]; then
     command -v sbatch >/dev/null || { echo "FAIL sbatch unavailable; use --no-slurm only for a workstation check" >&2; exit 1; }
-    cmd=(sbatch --test-only --account="$ACCOUNT" --partition="$PARTITION" --gres="$GRES"
-         --nodes=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME" --wrap=true)
+    cmd=(sbatch --test-only --account="$ACCOUNT" --partition="$PARTITION"
+         --nodes=1 --ntasks-per-node=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME" --wrap=true)
+    append_gres cmd
     [ -n "$QOS" ] && cmd+=(--qos="$QOS")
+    if [ -z "$GRES" ]; then
+        echo "INFO GRES is empty: scheduler probe is CPU-only and run_paper.slurm will not require CUDA"
+    fi
     "${cmd[@]}"
 fi
 echo "Paper preflight OK"

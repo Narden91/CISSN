@@ -56,12 +56,13 @@ submit() {
     local block="$1" size="$2" dep="$3" time_var
     time_var="TIME_$(upper "$block")"
     local cmd=(sbatch --parsable --job-name="cissn_$block" --account="$ACCOUNT" --partition="$PARTITION"
-        --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="${!time_var}"
+        --nodes=1 --ntasks-per-node=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="${!time_var}"
         --array="0-$((size - 1))%$THROTTLE"
-        --export="ALL,ROOT=$ROOT,BLOCK=$block,NTASKS=$size"
+        --export="ALL,ROOT=$ROOT,BLOCK=$block,NTASKS=$size,GRES=$GRES"
         --output="$LOGS/%x_%A_%a.out")
+    append_gres cmd
     [ -n "$QOS" ] && cmd+=(--qos="$QOS")
-    [ -n "$MAIL_USER" ] && cmd+=(--mail-type=FAIL --mail-user="$MAIL_USER")
+    [ -n "$MAIL_USER" ] && cmd+=(--mail-type="$MAIL_TYPE" --mail-user="$MAIL_USER")
     [ -n "$dep" ] && cmd+=(--dependency="$dep")
     cmd+=(slurm/run_block.slurm)
     if [ "$DRY_RUN" -eq 1 ]; then

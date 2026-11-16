@@ -114,8 +114,9 @@ if [ "$NO_SLURM" -eq 1 ]; then
 elif ! command -v sbatch >/dev/null 2>&1; then
     bad "sbatch not found; run on a login node"
 else
-    cmd=(sbatch --test-only -A "$ACCOUNT" -p "$PARTITION" --gres="$GRES" -N 1 -c "$CPUS"
+    cmd=(sbatch --test-only -A "$ACCOUNT" -p "$PARTITION" -N 1 -c "$CPUS"
          --mem="$MEM" -t 01:00:00 --wrap=true)
+    append_gres cmd
     [ -n "$QOS" ] && cmd+=(--qos="$QOS")
     OUT=$("${cmd[@]}" 2>&1)
     if [[ "$OUT" == *"to start at"* ]]; then

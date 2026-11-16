@@ -41,11 +41,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 for dataset in "${NAMES[@]}"; do
     cmd=(sbatch --parsable --job-name="cissn_paper_$dataset" --account="$ACCOUNT" --partition="$PARTITION"
-        --gres="$GRES" --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME"
-        --export="ALL,ROOT=$ROOT,PAPER_CONFIG=$OUTPUT/job_configs/$dataset.yaml"
+        --nodes=1 --ntasks-per-node=1 --cpus-per-task="$CPUS" --mem="$MEM" --time="$PAPER_TIME"
+        --export="ALL,ROOT=$ROOT,PAPER_CONFIG=$OUTPUT/job_configs/$dataset.yaml,GRES=$GRES"
         --output="$LOGS/%x_%j.out")
+    append_gres cmd
     [ -n "$QOS" ] && cmd+=(--qos="$QOS")
-    [ -n "$MAIL_USER" ] && cmd+=(--mail-type=FAIL --mail-user="$MAIL_USER")
+    [ -n "$MAIL_USER" ] && cmd+=(--mail-type="$MAIL_TYPE" --mail-user="$MAIL_USER")
     cmd+=(slurm/run_paper.slurm)
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '%q ' "${cmd[@]}"; printf '\n'

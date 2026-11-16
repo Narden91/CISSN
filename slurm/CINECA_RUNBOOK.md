@@ -1,23 +1,25 @@
 # Cineca Leonardo runbook (copy and paste)
 
-Reference for the CISSN cluster: one-time setup, watch and cancel, failures, and Cineca facts. What to launch now is in `HPC_JOBS.md`. Fill the editable fields in `slurm/env.sh` once; every launcher reads them automatically.
+Reference for the CISSN cluster: one-time setup, watch and cancel, failures, and Cineca facts. What to launch now is in `HPC_JOBS.md`. Put the account, partition, and email in the untracked repo-root `.env`; `slurm/env.sh` loads it.
 Blocks marked **[workstation]** run in PowerShell on your PC. Blocks marked **[cluster]** run in bash on the login node. Facts are marked **verified** (source, date) or **not verified**.
 
-## 0. Values to set once in the script
+## 0. Values to set once
 
-Edit these fields at the top of `slurm/env.sh` on the workstation:
+Create an untracked repo-root `.env` (already gitignored). Do not put the account or email in `slurm/env.sh`.
 
 ```bash
 ACCOUNT=""        # required: your project account
-PARTITION=""      # required: your GPU partition
+PARTITION=""      # required: partition that can supply the requested resources
 QOS=""            # optional: blank uses the scheduler default
 MAIL_USER=""      # optional: blank disables email
-PAPER_TIME="06:00:00"
+PAPER_TIME="24:00:00"
+GRES=""           # empty runs on CPU; gpu:1 requests a GPU partition
 ```
 
-No separate configuration file or account exports are needed. Keep these non-secret
-script edits committed before historical training runs, which require a clean tree.
-The paper follow-up records source hashes and accepts uncommitted changes.
+Leave `GRES` empty for `dcgp_fua_prod`. That partition has no GPU, and `--gres=gpu:1` is rejected with
+`allocation failure: Requested node configuration is not available`. With an empty `GRES`, the paper job
+runs on CPU. Historical training runs need a clean tree; `.env` is ignored, so it does not have to be
+committed. The paper follow-up records source hashes and accepts uncommitted changes.
 
 **[workstation]** Only if copying files between machines, fill these transfer destinations:
 
@@ -111,7 +113,7 @@ Follow `HPC_JOBS.md`, part C. The paper jobs write to `results/paper_cluster`; t
 | Preflight: `virtual environment missing` | `setup_cluster.sh` not run | `bash slurm/setup_cluster.sh` on the login node. |
 | Preflight: `torch is not a CUDA build` | Wrong wheel | Rerun setup; `uv.lock` pins `+cu128`. |
 | Preflight: `Missing frozen weights` or `dataset SHA-256 disagrees` | Weights or data not copied byte for byte | Copy again from the machine that trained them (section 1.2). |
-| Preflight: `scheduler rejects the job shape` | Wrong account, partition, QOS, or memory | Check `saldo -b`, then edit the account, partition, QOS, or resource fields in `slurm/env.sh`. |
+| Preflight: `scheduler rejects the job shape` or `Requested node configuration is not available` | Account, partition, QOS, memory, or a GPU request on a CPU partition | Check `saldo -b` and `sinfo -o '%P %G'`. Put the matching values in the untracked `.env`. Leave `GRES` empty on `dcgp_fua_prod` to run the paper job on CPU. |
 | Preflight: not enough disk space | Cache estimate above free space | Free space or move the checkout to a larger work area. The estimate prints as `INFO cache estimate`. |
 | Task exit 3 / 4 / 5 | Dirty tree / no venv / no GPU visible | Read the first lines of the log; `nvidia-smi -L` shows the node's GPUs. |
 | Cell stopped at the time limit | Share per task too long | Raise `TIME_<BLOCK>` or `SHARDS_<BLOCK>` in `slurm/env.sh`, or `PAPER_TIME`; rerun resumes. |
@@ -128,4 +130,4 @@ Follow `HPC_JOBS.md`, part C. The paper jobs write to `results/paper_cluster`; t
 | Compute nodes have no internet; build the venv on the login node and call `.venv/bin/python`. | From `slurm/env.sh` and `run_block.slurm`; consistent with Cineca practice, not checked in the docs |
 | `saldo -b` lists budget per account. `$WORK`, `$CINECA_SCRATCH`, `$FAST` are the work areas. | Not verified (the docs page read did not cover them). Check with `saldo -b` and `echo $WORK $CINECA_SCRATCH $FAST`. |
 | Login-node CPU time limit for long commands (relevant to `uv sync`). | Not verified. If `setup_cluster.sh` is killed, rerun it; downloads resume from the uv cache. |
-| `slurm/env.sh` contains editable account, partition, QOS, email, and time fields. | Required fields start blank; optional blank flags are omitted. |
+| Account, partition, QOS, and email live in the untracked `.env`. `slurm/env.sh` loads it. | Required fields start blank; optional blank flags are omitted. Do not commit `.env`. |

@@ -65,8 +65,10 @@ git log -1 --oneline      # must show the commit of step A4
 
 If this is the first session on Cineca, do section 1 of `slurm/CINECA_RUNBOOK.md` first.
 
-B2. Fill `ACCOUNT` and `PARTITION` in `slurm/env.sh` if they are blank. `QOS` and `MAIL_USER` may stay
-blank. `PAPER_TIME` (default `06:00:00`, not a measured runtime) is the time limit of each job.
+B2. Put `ACCOUNT` and `PARTITION` in the untracked repo-root `.env` (`slurm/env.sh` loads it; do not
+commit it). `QOS` and `MAIL_USER` may stay blank. Leave `GRES` empty so every job runs on CPU.
+`PAPER_TIME` default is `24:00:00`, the `dcgp_fua_prod` maximum. `--gres=gpu:1` on that partition is
+rejected as an unavailable node configuration.
 
 B3. Check every input. The last line must be `Paper preflight OK`.
 
@@ -130,8 +132,8 @@ Never copy whole run folders or `results/publication` from the cluster.
 C2. Apply `plan.md` section 7 in order: integrity (7.1), control identities (7.2), then the
 comparison table and outcome A, B, or C (7.3). Read no comparison before 7.1 and 7.2 pass.
 
-C3. Record the commit of step A4 and the GPU next to the cluster results. `nvidia-smi -L` prints
-the GPU at the top of each log.
+C3. Record the commit of step A4 and the device next to the cluster results. GPU jobs print
+`nvidia-smi -L` at the top of each log; CPU jobs print that CUDA is not required.
 
 ## D. [cluster] Optional: Solar DLinear and PatchTST-lite training
 

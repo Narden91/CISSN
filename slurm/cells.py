@@ -43,7 +43,14 @@ P3_DATA = "solar"  # the dataset of docs/prespecification_<P3_DATA>.md; prefligh
 LOG_DIR = ROOT / "logs" / "slurm"  # inside the gitignored logs/ so --require_clean_git stays satisfied
 
 TRAIN = ["--train_epochs", "20", "--patience", "5", "--lradj", "cosine"]
-SEALED = ["--require_gpu", "--require_clean_git", "--immutable_artifacts", "--strict_determinism",
+
+
+def _gpu_args() -> list[str]:
+    """Pass --require_gpu only when the scheduler job requested a GPU."""
+    return ["--require_gpu"] if os.environ.get("GRES", "").strip() else []
+
+
+SEALED = [*_gpu_args(), "--require_clean_git", "--immutable_artifacts", "--strict_determinism",
           "--evidence_role", "confirmation", "--checkpoints", CKPT_PUB, "--results_dir", PUB]
 CISSN_COMMON = [*TRAIN, "--batch_size", "128", "--conformal_alpha", "0.1", "--n_clusters", "5",
                 "--multivariate_strategy", "per_feature", "--conformal_conditioning", "cluster"]
@@ -113,7 +120,7 @@ def block_smoke() -> list[Cell]:
     # controller so its test split stays sealed; ETTh1 test is already exposed.
     out = ["--checkpoints", "./checkpoints/smoke", "--results_dir", "./results/smoke"]
     one = ["--train_epochs", "1", "--patience", "5", "--lradj", "cosine", "--batch_size", "128"]
-    gpu = ["--require_gpu", "--require_clean_git"]
+    gpu = [*_gpu_args(), "--require_clean_git"]
     sealed = [*gpu, "--immutable_artifacts", "--strict_determinism", "--evidence_role", "confirmation", *out]
     cells = [
         _selection("smoke", _argv("--data", "ECL", "--pred_len", 336, "--seed", 0, "--revin", one, gpu, out),
@@ -136,7 +143,7 @@ def block_smoke() -> list[Cell]:
 def block_r1() -> list[Cell]:
     return [_selection("r1", _argv(
         "--data", data, "--pred_len", 336, "--seed", seed, ["--revin"] if revin else [], TRAIN,
-        "--require_gpu", "--require_clean_git", "--checkpoints", "./checkpoints/selection",
+        *_gpu_args(), "--require_clean_git", "--checkpoints", "./checkpoints/selection",
         "--results_dir", "./results/selection"))
         for data in ("ETTh2", "weather") for revin in (True, False) for seed in SEEDS]
 
@@ -185,7 +192,7 @@ def block_r6() -> list[Cell]:
         out = f"{PUB}/ablations_ETTh1_h336_s{seed}.json"
         argv = _argv("--data", "ETTh1", "--pred_len", 336, "--seed", seed, "--ablations", "all", TRAIN,
                      "--batch_size", 128, "--conformal_alpha", "0.1", "--multivariate_strategy", "per_feature",
-                     "--require_gpu", "--require_clean_git", "--output", out)
+                     *_gpu_args(), "--require_clean_git", "--output", out)
         cells.append(_ablation("r6", argv, out))
     return cells
 
@@ -215,7 +222,7 @@ def block_p3s() -> list[Cell]:
     out = ["--checkpoints", "./checkpoints/smoke_p3", "--results_dir", "./results/smoke_p3"]
     return [_selection("p3s", _argv("--data", P3_DATA, "--pred_len", 336, "--seed", 0, "--revin",
                                     "--scale_geometry", "per_cell", "--train_epochs", 1, "--patience", 5,
-                                    "--lradj", "cosine", "--batch_size", 128, "--require_gpu",
+                                    "--lradj", "cosine", "--batch_size", 128, *_gpu_args(),
                                     "--require_clean_git", out), root="./results/smoke_p3")]
 
 

@@ -69,3 +69,72 @@ def test_dry_run_uses_script_fields_and_optional_flags(bash, tmp_path, script, o
     assert ("--mail-type=FAIL" in command) == optional
     if not optional:
         assert "--qos=" not in command and "--mail-user=" not in command
+
+
+def test_untracked_env_overrides_blanks_and_omits_empty_gres(bash, tmp_path):
+    folder = tmp_path / "slurm"
+    folder.mkdir()
+    tracked = (ROOT / "slurm/env.sh").read_text()
+    assert 'ACCOUNT=""' in tracked and "unicas.it" not in tracked
+    shutil.copyfile(ROOT / "slurm/env.sh", folder / "env.sh")
+    shutil.copyfile(ROOT / "slurm/launch_paper.sh", folder / "launch_paper.sh")
+    (folder / "paper_preflight.sh").write_text("#!/usr/bin/env bash\nexit 0\n", newline="\n")
+    (tmp_path / ".env").write_text(
+        "\n".join([
+            'ACCOUNT="example_account"',
+            'PARTITION="example_partition"',
+            'QOS="normal"',
+            'MAIL_USER="researcher@example.invalid"',
+            'MAIL_TYPE="FAIL,END"',
+            'PAPER_TIME="12:00:00"',
+            'GRES=""',
+            'CPUS="8"',
+            'MEM="64G"',
+            "",
+        ]),
+        newline="\n",
+    )
+    result = subprocess.run(
+        [bash, str(folder / "launch_paper.sh"), "--dry-run", "--no-slurm"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    command = result.stdout + result.stderr
+    assert "--account=example_account" in command
+    assert "--partition=example_partition" in command
+    assert "--qos=normal" in command
+    assert "--mail-type=FAIL\\,END" in command or "--mail-type=FAIL,END" in command
+    assert "--mail-user=researcher@example.invalid" in command
+    assert "--time=12:00:00" in command
+    assert "--gres" not in command
+    assert "GRES=" in command
+    assert 'ACCOUNT=""' in (folder / "env.sh").read_text()
+
+
+@pytest.mark.parametrize("script", ["run_paper.slurm", "run_block.slurm"])
+def test_cluster_jobs_require_gpu_only_when_gres_is_set(script):
+    text = (ROOT / "slurm" / script).read_text()
+    assert 'if [ -n "${GRES:-}" ]; then' in text
+    assert "export CISSN_REQUIRE_GPU=1" in text
+    assert "unset CISSN_REQUIRE_GPU" in text
+    assert "CUDA is not required" in text
+
+
+def test_cells_omit_require_gpu_without_gres():
+    import importlib.util
+    import sys
+    cwd = Path.cwd()
+    spec = importlib.util.spec_from_file_location("cissn_cells", ROOT / "slurm/cells.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    os.environ.pop("GRES", None)
+    try:
+        spec.loader.exec_module(module)
+        assert module._gpu_args() == []
+        os.environ["GRES"] = "gpu:1"
+        assert module._gpu_args() == ["--require_gpu"]
+    finally:
+        os.environ.pop("GRES", None)
+        sys.modules.pop(spec.name, None)
+        os.chdir(cwd)
