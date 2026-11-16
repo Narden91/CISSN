@@ -78,7 +78,7 @@ def test_preflight_rejects_duplicate_configs(resources, monkeypatch):
     assert paper_jobs.check(settings) == 1
 
 
-def test_prepare_keeps_outputs_separate_and_solar_model_scope_explicit(tmp_path):
+def test_prepare_keeps_outputs_separate_and_scores_every_model(tmp_path):
     settings = {"datasets": ["ECL", "solar"], "models": ["cissn", "dlinear", "patchtst"], "output_root": str(tmp_path)}
     folder = tmp_path / "configs"
     paper_jobs.prepare(settings, folder)
@@ -86,8 +86,8 @@ def test_prepare_keeps_outputs_separate_and_solar_model_scope_explicit(tmp_path)
     ecl = yaml.safe_load((folder / "ECL.yaml").read_text())
     solar = yaml.safe_load((folder / "solar.yaml").read_text())
     assert ecl["output_root"] != solar["output_root"]
-    assert solar["models"] == ["cissn"]
-    assert ecl["models"] == settings["models"]
+    # Solar scores the P5 baselines too, so its job needs their weights.
+    assert solar["models"] == ecl["models"] == settings["models"]
 
 
 def test_merge_rejects_incomplete_job(tmp_path):

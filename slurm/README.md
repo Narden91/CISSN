@@ -85,6 +85,7 @@ driver that CUDA 12.8 wheels need. The fix changes `uv.lock`, so it needs a new 
 | p3s one-epoch memory check on solar (validation only) | 1 | 1 | smoke |
 | p3 solar confirmatory (needs `docs/prespecification_solar.md` in HEAD and `data/solar_AL.txt`) | 6 | 6 | p3s succeeded |
 | p3b ACI against flat CP, solar | 1 | 1 | every p3 task succeeded |
+| p5 solar DLinear and PatchTST-lite with RevIN, stride 25 (needs `data/solar_AL.txt`) | 12 | 6 | smoke |
 
 ## 4. Watch, resume
 

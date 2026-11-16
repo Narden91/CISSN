@@ -1,8 +1,7 @@
 # Follow-up reproducibility reference
 
-For the steps to launch only the remaining prepared HPC jobs, follow
-[HPC_JOBS.md](../HPC_JOBS.md). That file covers ECL and Solar, checking files,
-submission, monitoring, result merging, and table/figure generation.
+The ECL and Solar follow-up scoring finished on 2026-11-16. For open cluster work (Solar
+DLinear and PatchTST-lite) and the regeneration commands, follow [HPC_JOBS.md](../HPC_JOBS.md).
 
 This reference records the completed local work, output files, and research details.
 

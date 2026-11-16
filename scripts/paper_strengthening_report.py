@@ -14,7 +14,7 @@ def markdown_table(headers, rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results", type=Path, default=Path("results/paper_strengthening"))
+    parser.add_argument("--results", type=Path, default=Path("results/paper_strengthening_v2"))
     parser.add_argument("--output", type=Path, default=Path("docs/paper_strengthening_results.md"))
     args = parser.parse_args()
     frame = pd.read_csv(args.results / "summary.csv")

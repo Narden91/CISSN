@@ -83,7 +83,7 @@ bash slurm/launch.sh --blocks p1,p2                     # submit
 
 - All historical blocks are finished, so always name the block with `--blocks`.
 - Resume by running the same command again: finished cells are skipped, and partial checkpoints of unfinished cells are removed first.
-- **Gap:** `slurm/cells.py` has no Solar baseline block (DLinear, PatchTST-lite). `plan.md` Phase 5 adds it as a copy of `block_p1`. Until then, Solar baselines cannot be launched.
+- Block `p5` trains the Solar DLinear and PatchTST-lite baselines (12 cells). The project account has no GPU on the cluster, so `p5` trains on the workstation and only the Solar re-scoring runs here (`HPC_JOBS.md`, part D).
 - Sealed runs (`--require_clean_git --immutable_artifacts`) need a clean tree and byte-identical data.
 
 ## 5. Watch, resume, cancel

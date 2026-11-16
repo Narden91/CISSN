@@ -35,7 +35,7 @@ check "HEAD contains docs/prespecification.md (R4 needs it in the run commit)" g
 # The P3 dataset and its prespecification are checked only when a P3 block is launched (launch.sh
 # sets PREFLIGHT_BLOCKS); a manual preflight run checks them too.
 NEED_P3=0
-case " ${PREFLIGHT_BLOCKS:-p3} " in *" p3s "*|*" p3 "*|*" p3b "*) NEED_P3=1 ;; esac
+case " ${PREFLIGHT_BLOCKS:-p3} " in *" p3s "*|*" p3 "*|*" p3b "*|*" p5 "*) NEED_P3=1 ;; esac
 P3_DATA=""
 if [ "$NEED_P3" -eq 1 ] && [ -x "$PY" ]; then
     P3_DATA=$("$PY" -c 'import sys; sys.path.insert(0, "slurm"); from cells import P3_DATA; print(P3_DATA)' 2>/dev/null)

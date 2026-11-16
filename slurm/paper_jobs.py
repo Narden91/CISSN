@@ -41,8 +41,7 @@ def check(settings, *, require_gpu=False):
     required_files = set()
     total_bytes = 0
     for dataset in settings["datasets"]:
-        # Solar has no point-baseline publication runs. This absence is explicit.
-        models = ["cissn"] if dataset == "solar" else settings["models"]
+        models = settings["models"]
         spec = get_dataset_spec(dataset)
         for horizon in settings["horizons"]:
             for seed in settings["seeds"]:
@@ -109,8 +108,6 @@ def check(settings, *, require_gpu=False):
     if free < required:
         failures.append("Not enough disk space for prediction caches and temporary quantile arrays")
     print(f"INFO checked {len(required_files)} expected weight paths; torch {torch.__version__}; login-node GPU visibility is not required")
-    if "solar" in settings["datasets"]:
-        print("INFO Solar jobs use CISSN only: no Solar DLinear/PatchTST publication configurations exist")
     for failure in failures:
         print(f"FAIL {failure}")
     if failures:
@@ -122,8 +119,7 @@ def check(settings, *, require_gpu=False):
 def prepare(settings, directory):
     directory.mkdir(parents=True, exist_ok=True)
     for dataset in settings["datasets"]:
-        child = {**settings, "datasets": [dataset], "models": ["cissn"] if dataset == "solar" else settings["models"],
-                 "output_root": str(Path(settings["output_root"]) / dataset)}
+        child = {**settings, "datasets": [dataset], "output_root": str(Path(settings["output_root"]) / dataset)}
         (directory / f"{dataset}.yaml").write_text(yaml.safe_dump(child, sort_keys=False), encoding="utf-8")
     (directory / "datasets.txt").write_text("\n".join(settings["datasets"]) + "\n", encoding="utf-8")
 
@@ -135,8 +131,7 @@ def merge(settings):
     for dataset in settings["datasets"]:
         child = output / dataset
         records = json.loads((child / "inventory.json").read_text(encoding="utf-8"))
-        n_models = 1 if dataset == "solar" else len(settings["models"])
-        expected = len(settings["horizons"]) * len(settings["seeds"]) * n_models
+        expected = len(settings["horizons"]) * len(settings["seeds"]) * len(settings["models"])
         if len(records) != expected or any(r["status"] != "completed" for r in records):
             raise ValueError(f"{dataset}: incomplete jobs; do not build a final report")
         inventory_rows.extend(records)

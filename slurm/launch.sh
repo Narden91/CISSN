@@ -20,7 +20,7 @@ DRY_RUN=0
 SMOKE_ONLY=0
 # Default: only the blocks still open (experiments.md). The finished blocks r1-r4b and r6 stay
 # launchable with --blocks; a bare call must not rerun finished work.
-BLOCKS=(r5 p1 p2 p3s p3 p3b)
+BLOCKS=(r5 p1 p2 p3s p3 p3b p5)
 
 usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 for b in "${BLOCKS[@]}"; do
-    case "$b" in r1|r2|r3|r4|r4b|r5|r6|p1|p2|p3s|p3|p3b) ;; *) echo "ERROR: unknown block '$b' (r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b)" >&2; exit 2 ;; esac
+    case "$b" in r1|r2|r3|r4|r4b|r5|r6|p1|p2|p3s|p3|p3b|p5) ;; *) echo "ERROR: unknown block '$b' (r1 r2 r3 r4 r4b r5 r6 p1 p2 p3s p3 p3b p5)" >&2; exit 2 ;; esac
 done
 require_cluster_settings
 

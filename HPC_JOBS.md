@@ -17,9 +17,35 @@ Reference material is elsewhere. Do not copy commands from those files:
 | Work | Where | State |
 | - | - | - |
 | Historical training blocks R1 to R7, P1, P2, P3 | cluster | Done. Results are in `results/publication` (216 R5 baselines, 24 ECL baselines, 6 Solar CISSN runs, 3 ACI files). |
-| A. Local follow-up scoring on ETTh2, Weather, Exchange | workstation | Open. `results/paper_strengthening_v2` does not exist yet. |
-| B. Follow-up scoring on ECL and Solar | cluster | Open. Needs the ECL and Solar checkpoints, which exist only on the cluster. |
-| D. Solar DLinear and PatchTST-lite training | cluster | Not launchable. `slurm/cells.py` has no Solar baseline block yet (`plan.md` Phase 5). |
+| A. Local follow-up scoring on ETTh2, Weather, Exchange | workstation | Done. 18 runs in `results/paper_strengthening_v2` (GPU, code of commit `f44da2e`). |
+| B. Follow-up scoring on ECL and Solar | cluster | Done. 24 runs, CPU. Solar ran at commit `7117b83`, ECL at `f44da2e`; the two commits differ only in `HPC_JOBS.md`, `build_strengthening.py`, and a test. |
+| C. Results on the workstation | workstation | Done. The merged report inputs are in `results/cluster_complete_20261116_161806/paper_cluster`. Checks 7.1 and 7.2 of `plan.md` pass; the reading rule gives outcome A on ECL and on Solar. |
+| D. Solar DLinear and PatchTST-lite training, then Solar re-scoring | workstation GPU, then cluster CPU | Open. Block `p5` in `slurm/cells.py` (12 runs, about 4.6 h on the RTX 5080). Commands below. |
+| E. Phase 6 statistics | workstation | Done 2026-11-16 (seconds, no cluster). Outputs in `results/phase6_statistics` and `manuscript/figures/origin_difference.pdf`. |
+
+Result folders that the manuscript reads:
+
+| Folder | Content | Table and macro prefix |
+| - | - | - |
+| `results/cluster_complete_20261116_161806/paper_cluster` | ECL (CISSN, DLinear, PatchTST-lite) and Solar (CISSN) | `cluster` |
+| `results/paper_strengthening_v2` | ETTh2, Weather, Exchange (CISSN) | `strengthening` |
+
+Regenerate the manuscript inputs with:
+
+```powershell
+.\.venv\Scripts\python.exe manuscript/analysis/build_strengthening.py --results results/cluster_complete_20261116_161806/paper_cluster --prefix cluster
+.\.venv\Scripts\python.exe manuscript/analysis/build_strengthening.py --results results/paper_strengthening_v2
+```
+
+Removed on 2026-11-16 after a per-file hash check against the folder above:
+`results/cluster_download_20261116_144016`, `results/cluster_download_ECL_20261116_154301`,
+`results/paper_cluster` (a partial local cache), and `results/paper_cluster_ECL.tar.gz`. The first ECL
+scoring (commit `a004960`, superseded by the `f44da2e` rerun, same summaries) is kept as
+`results/cluster_complete_20261116_161806/superseded_first_scoring_ECL_a004960.tar.gz`.
+Also removed on 2026-11-16: `results/paper_strengthening` (the October six-method follow-up; its
+scores equal the v2 scores), `results/paper_strengthening_v2_timing`, the October snapshot
+`results_14_10_2026` (every run in it also exists under `results/`; its `superseded/` diagnostics
+are retired), and the `_*` scratch files in `results/`.
 
 The follow-up scores 9 interval methods on frozen models, with no training: `flat_paired`, `flat_full`,
 `phase`, `phase_coarse`, `state`, `phase_state`, `phase_coarse_state`, `flat_scaled`, and capped
@@ -147,8 +173,100 @@ comparison table and outcome A, B, or C (7.3). Read no comparison before 7.1 and
 C3. Record the commit of step A4 and the device next to the cluster results. GPU jobs print
 `nvidia-smi -L` at the top of each log; CPU jobs print that CUDA is not required.
 
-## D. [cluster] Optional: Solar DLinear and PatchTST-lite training
+## D. Solar DLinear and PatchTST-lite: train, re-score, bring back
 
-Not launchable yet. First, `plan.md` Phase 5 adds a Solar baseline block to `slurm/cells.py`
-(12 runs, about 70 minutes of GPU time, estimate). After that block exists and is committed, launch it
-with section 4 of `slurm/CINECA_RUNBOOK.md`. Then rerun step B4 with `--datasets solar`.
+Block `p5` trains 12 runs (DLinear and PatchTST-lite, `H` 336 and 96, seeds 42, 123, 456) with RevIN,
+the sealed flags, and Solar stride 25. The cluster account has no GPU, so the runs train on the
+workstation RTX 5080 Laptop GPU. The CISSN Solar checkpoints exist only on the cluster, so the
+re-scoring stays there, on CPU.
+
+Measured on 2026-11-16, one epoch at `H=336`, seed 42, non-sealed probe: DLinear 31.7 s per epoch
+plus 23 s test and about 13 s setup; PatchTST-lite 103.5 s per epoch plus 29 s test. The saved ECL
+baselines all ran the full 20 epochs. Estimate with 20 epochs and `H=96` taken as no slower than
+`H=336` (not measured): about 11 min per DLinear run and 35 min per PatchTST-lite run, so about
+4.6 hours for all 12. Early stopping can only shorten this. The strict determinism flag can slow it.
+
+D1. **[workstation]** Commit and push the working tree. The runs are sealed (`--require_clean_git`),
+so `git status --short` must print nothing before D2. Include `slurm/cells.py`, `slurm/launch.sh`,
+`slurm/env.sh`, `slurm/preflight.sh`, `slurm/paper_jobs.py`, and the new
+`manuscript/analysis/plot_origin_difference.py`. Write down the commit hash.
+
+D2. **[workstation]** Train the 12 runs on the local GPU. `GRES` makes each run require a GPU. The
+command skips finished runs, so rerun the same line after an interruption.
+
+```powershell
+git status --short                                   # must print nothing
+.\.venv\Scripts\python.exe slurm/cells.py list p5    # 12 cells, 12 to do
+$env:GRES = "gpu:1"; .\.venv\Scripts\python.exe slurm/cells.py run p5 --task 0 --ntasks 1 *> "logs/p5_$(Get-Date -Format yyyyMMdd_HHmmss).log"
+.\.venv\Scripts\python.exe slurm/cells.py list p5    # 12 cells, 0 to do
+```
+
+D3. **[workstation]** Pack the 12 run configurations (no `.npy` arrays) and the 24 weight files, then
+upload them. In the first line, replace the three quoted connection values, as in step C1.
+
+```powershell
+$env:CU = "<cineca user>"; $env:LOGIN = "<login host>"; $env:WORKDIR = "<work folder>"
+$runs = Get-ChildItem results/publication -Directory | Where-Object Name -match '^BASELINE_(dlinear|patchtst)_solar_'
+$weights = Get-ChildItem checkpoints/publication -Directory | Where-Object Name -match '^BASELINE_(dlinear|patchtst)_solar_' | Get-ChildItem -File -Filter *.pth
+"$($runs.Count) runs, $($weights.Count) weight files"   # expect 12 and 24
+$paths = @($runs) + @($weights) | ForEach-Object { $_.FullName.Substring($PWD.Path.Length + 1) -replace '\\', '/' }
+tar -czf results/p5_solar_baselines.tar.gz --exclude '*.npy' @paths
+scp results/p5_solar_baselines.tar.gz "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/"
+```
+
+D4. **[cluster]** Update the checkout and unpack. `results/` is gitignored and so are `*.pth` files, so
+the tree stays clean.
+
+```bash
+git status --short        # must print nothing
+git pull --ff-only
+git log -1 --oneline      # must show the commit of step D1
+tar -xzf p5_solar_baselines.tar.gz && rm p5_solar_baselines.tar.gz
+git status --short        # must still print nothing
+.venv/bin/python slurm/cells.py list p5    # 12 cells, 0 to do
+```
+
+D5. **[cluster]** Re-score Solar with all three forecasters, on CPU (`GRES=""`,
+`PARTITION="dcgp_fua_prod"` in `.env`, as before).
+
+```bash
+bash slurm/paper_preflight.sh --datasets solar
+bash slurm/launch_paper.sh --datasets solar --dry-run
+bash slurm/launch_paper.sh --datasets solar
+tail -n 20 $(ls -t logs/slurm/cissn_paper_solar*.out | head -n 1)   # ends with End UTC:
+```
+
+D6. **[cluster]** Merge ECL and Solar and package the report inputs, as in step B6.
+
+```bash
+.venv/bin/python slurm/paper_jobs.py merge --datasets ECL,solar --output results/paper_cluster
+tar --exclude='cache' -czf results/paper_cluster_report.tar.gz -C results paper_cluster
+```
+
+D7. **[workstation]** Download into a new folder and rebuild the tables, in the same PowerShell
+session as D3 (it reuses the connection values).
+
+```powershell
+$bundleDir = "results/cluster_complete_$(Get-Date -Format yyyyMMdd_HHmmss)"
+New-Item -ItemType Directory -Force $bundleDir | Out-Null
+scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/results/paper_cluster_report.tar.gz" "$bundleDir/"
+tar -xzf "$bundleDir/paper_cluster_report.tar.gz" -C "$bundleDir"
+.\.venv\Scripts\python.exe manuscript/analysis/build_strengthening.py --results "$bundleDir/paper_cluster" --prefix cluster
+```
+
+Then the agent applies `plan.md` section 7 again. It updates the folder name in this file, `CLAUDE.md`,
+and `manuscript/README.md`. It also updates the manuscript sentences that say no DLinear or PatchTST-lite
+model exists for Solar (`sections/07_results_strong_forecaster_aci.tex`, `sections/08_discussion.tex`).
+
+## E. [workstation] Phase 6 statistics
+
+Prespecified statistic on the historical runs at block multipliers 1, 2, and 4, with the
+ratio-of-means sensitivity interval beside it (key `ratio_of_means`). Multiplier 1 reproduces
+`results/publication/paired_interval_inference_ECL.json` exactly. Runs in seconds.
+
+```powershell
+$o = "results/phase6_statistics"; New-Item -ItemType Directory -Force $o | Out-Null
+foreach ($m in 1, 2, 4) { .\.venv\Scripts\python.exe scripts/paired_interval_inference.py --results_root results/publication --datasets ECL --block_multiplier $m --n_boot 5000 --seed 0 --output "$o/ECL_primary_m$m.json" }
+foreach ($m in 1, 2, 4) { foreach ($meth in "primary", "state_scaled") { .\.venv\Scripts\python.exe scripts/paired_interval_inference.py --results_root results/publication --datasets solar --method $meth --block_multiplier $m --n_boot 5000 --seed 0 --output "$o/solar_${meth}_m$m.json" } }
+.\.venv\Scripts\python.exe manuscript/analysis/plot_origin_difference.py
+```

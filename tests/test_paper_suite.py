@@ -224,6 +224,16 @@ def test_summary_nested_pair_and_ratio(tmp_path, dataset_subdirectory):
     assert (root / "generated" / "strengthening_numbers.tex").is_file()
     assert "ETTh2" in (root / "tables" / "tab_strengthening_counts.tex").read_text()
     assert not list((root / "generated").glob("tab_*.tex"))
+    # The fixture scores grow by one per method, so State minus paired Flat is 3 of 2.
+    assert "$+150.0$ [$+150.0$, $+150.0$]" in (root / "tables" / "tab_strengthening_relative.tex").read_text()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("build_strengthening", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    below, above = (-2.0, -1.0), (-1.0, 0.5)
+    assert module.reading_outcome({"phase": below, "phase_coarse": above, "flat_scaled": below}) == "A"
+    assert module.reading_outcome({"phase": below, "phase_coarse": below, "flat_scaled": above}) == "C"
+    assert module.reading_outcome({"phase": below, "phase_coarse": below, "flat_scaled": below}) == "B"
 
 
 def test_metrics_exact_and_alignment():

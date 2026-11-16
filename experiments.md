@@ -1,7 +1,8 @@
 # Historical CISSN training campaign (closed)
 
-Every block of the historical training campaign has finished. Nothing in this file is open.
-What to run now is in [HPC_JOBS.md](HPC_JOBS.md).
+Every block of the historical training campaign has finished. One new block is open: `p5`,
+Solar DLinear and PatchTST-lite (12 runs, `plan.md` Phase 5). What to run now is in
+[HPC_JOBS.md](HPC_JOBS.md).
 
 | Block | What | Evidence on disk (checked 2026-11-16) |
 | --- | --- | --- |

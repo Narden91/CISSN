@@ -35,6 +35,9 @@ SHARDS_P2=1;    TIME_P2=02:00:00
 SHARDS_P3S=1;   TIME_P3S=01:00:00
 SHARDS_P3=6;    TIME_P3=04:00:00
 SHARDS_P3B=1;   TIME_P3B=02:00:00
+# P5 estimate: ECL DLinear 146-173 s and PatchTST-lite 368-426 s at H=336, times 1.4 for solar
+# (CISSN solar/ECL ratio), so at most about 10 min per cell and 20 min per 2-cell task.
+SHARDS_P5=6;    TIME_P5=02:00:00
 
 # uv state lives next to the checkout, not in $HOME (small quota; the torch wheel is about 3 GB).
 UV_CACHE_DIR="${UV_CACHE_DIR:-$(dirname "$ROOT")/.uv-cache}"

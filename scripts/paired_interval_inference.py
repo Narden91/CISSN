@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import wilcoxon
 
-from cissn.evaluation.inference import moving_block_bootstrap_ci
+from cissn.evaluation.inference import moving_block_bootstrap_ci, moving_block_bootstrap_ratio_ci
 
 WINKLER_COLUMN = 2
 # Which calibrator is compared with flat CP: the run's primary one, or state-scaled CP.
@@ -71,7 +71,13 @@ def _load_cell_runs(results_root: Path, datasets: set[str], method: str = "prima
     return cells
 
 
-def _cell_delta(runs: list[dict]) -> np.ndarray:
+def _cell_delta(runs: list[dict]) -> tuple[np.ndarray, float]:
+    primary, flat = _cell_means(runs)
+    return primary - flat, float(flat.mean())
+
+
+def _cell_means(runs: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Seed-averaged per-origin Winkler scores of the compared calibrator and flat CP."""
     # Seeds share the test rows. If the origins differ, the rows are not paired
     # and averaging them would be meaningless, so stop instead of aligning.
     if len({run["conditioning"] for run in runs}) != 1:
@@ -88,7 +94,7 @@ def _cell_delta(runs: list[dict]) -> np.ndarray:
         raise ValueError("Seeds of one cell use different test-origin strides.")
     flat = np.mean([run["flat"][:, WINKLER_COLUMN] for run in runs], axis=0)
     primary = np.mean([run["primary"][:, WINKLER_COLUMN] for run in runs], axis=0)
-    return primary - flat, float(flat.mean())
+    return primary, flat
 
 
 def main() -> None:
@@ -118,7 +124,11 @@ def main() -> None:
         block_len = int(np.ceil(args.block_multiplier * horizon / stride))
         delta, flat_mean = _cell_delta(runs)
         result = moving_block_bootstrap_ci(delta, block_len, args.n_boot, args.seed, args.confidence)
+        # Sensitivity analysis only: the prespecified estimator keeps the flat mean fixed.
+        ratio = moving_block_bootstrap_ratio_ci(*_cell_means(runs), block_len, args.n_boot, args.seed,
+                                                args.confidence)
         rows.append({
+            "ratio_of_means": {key: ratio[key] for key in ("mean", "ci_low", "ci_high")},
             "data": data,
             "horizon": horizon,
             "stride": stride,

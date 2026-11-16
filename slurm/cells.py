@@ -38,7 +38,7 @@ PUB = "./results/publication"
 CKPT_PUB = "./checkpoints/publication"
 SEEDS = (42, 123, 456)
 EXPECTED = {"smoke": 5, "r1": 12, "r2": 2, "r3": 14, "r4": 9, "r4b": 1, "r5": 216, "r6": 3,
-            "p1": 24, "p2": 1, "p3s": 1, "p3": 6, "p3b": 1}
+            "p1": 24, "p2": 1, "p3s": 1, "p3": 6, "p3b": 1, "p5": 12}
 P3_DATA = "solar"  # the dataset of docs/prespecification_<P3_DATA>.md; preflight reads it from here
 LOG_DIR = ROOT / "logs" / "slurm"  # inside the gitignored logs/ so --require_clean_git stays satisfied
 
@@ -238,9 +238,17 @@ def block_p3b() -> list[Cell]:
     return [_aci("p3b", P3_DATA)]
 
 
+def block_p5() -> list[Cell]:
+    # P5: point baselines on the P3 dataset (plan.md Phase 5), scored on the P3 test origins so the
+    # paper follow-up can pair their residuals with the CISSN state of the same seed.
+    return [_baseline("p5", _argv("--model", model, "--revin", "--data", P3_DATA, "--pred_len", h, "--seed", seed,
+                                  P3_ORIGINS, BASELINE_COMMON))
+            for model in ("dlinear", "patchtst") for h in (336, 96) for seed in SEEDS]
+
+
 BLOCKS = {"smoke": block_smoke, "r1": block_r1, "r2": block_r2, "r3": block_r3, "r4": block_r4,
           "r4b": block_r4b, "r5": block_r5, "r6": block_r6,
-          "p1": block_p1, "p2": block_p2, "p3s": block_p3s, "p3": block_p3, "p3b": block_p3b}
+          "p1": block_p1, "p2": block_p2, "p3s": block_p3s, "p3": block_p3, "p3b": block_p3b, "p5": block_p5}
 
 
 def decide() -> dict:

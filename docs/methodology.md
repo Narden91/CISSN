@@ -1,6 +1,6 @@
 # Scientific scope and reporting
 
-> Evidence status: historical ETTh1 test values are development diagnostics. They cannot select RevIN, interval geometry, or hybrid variants. New final claims require pre-test chronological selection and untouched ETTh2, weather, and exchange-rate tests.
+> Evidence status: historical ETTh1 test values are development diagnostics. They cannot select RevIN, interval geometry, or hybrid variants. ETTh2, weather, and exchange-rate are exposed datasets (description only). ECL and Solar carried the two prespecified tests; the dated follow-up controls then gave outcome A on both (a calendar partition scored at least as well as the state partition). The current evidence summary is in `CLAUDE.md` and `plan.md` section 7. This file records the development history.
 
 The interval procedure is split conformal under its stated exchangeability assumptions. Overlapping time-series windows are dependent, so unconditional finite-sample coverage is not claimed for the deployed time-series protocol. The runner records within-cluster lag-1 residual autocorrelation in `dependence_diagnostics.json`; it does not apply an unsupported ACF inflation factor.
 

@@ -1,8 +1,11 @@
 # Paper strengthening: measured results and remaining work
 
-The ECL/Solar and strong-forecaster runs are left for the user on the HPC cluster.
-Run `bash slurm/paper_preflight.sh`, then the dry run and launcher documented in
-[the reproduction guide](paper_strengthening_reproduction.md).
+> **Superseded (2026-11-16).** This is the October follow-up with six calibrators on the
+> exposed datasets. The nine-calibrator follow-up on all five datasets replaced it:
+> `results/paper_strengthening_v2` and `results/cluster_complete_20261116_161806/paper_cluster`.
+> Its six-method scores equal the v2 scores exactly. The open questions below are answered:
+> the dated reading rule gives outcome A on ECL and on Solar, so a calendar partition scored at
+> least as well as the state partition. Read `CLAUDE.md` and `plan.md` section 7 instead.
 
 The local follow-up completed 18 frozen CISSN runs and 108 method/alpha
 cell summaries (324 per-run method/alpha rows). It recorded 60 selected

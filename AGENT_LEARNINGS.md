@@ -82,6 +82,20 @@ Each entry: the concrete failure, then the rule that prevents it.
   **Rule:** when a hook blocks a write, present the facts the hook asks for, then retry the
   same call. For a small change to an existing file, use Edit.
 
+- **Failure:** on 2026-11-16 the same hook denied the first Edit or Write of each file in the
+  session, 15 times, one file at a time (generator, test, every manuscript section, `plan.md`).
+  **Rule:** before a multi-file change, state the hook facts for all files in one message
+  (callers, affected functions, data fields, the user's words), then send each first edit alone
+  and retry it once. Do not batch a second edit of the same file with the denied first edit.
+
+## Two generated macro files in one LaTeX document
+
+- **Failure:** `build_strengthening.py --prefix cluster` and the default prefix wrote the same
+  macro names (`\FollowupRuns`, ...) into two files. `main.tex` could not input both, because
+  `\newcommand` rejects a duplicate name.
+  **Rule:** a generator that runs once per result folder puts the folder's prefix in every macro
+  name. After you add a macro file to `main.tex`, build the PDF; a clean build is the check.
+
 ## Overwriting untracked files
 
 - **Failure:** `plan.md` and `plan_ICML.md` are untracked, so Git holds no copy. A Write
@@ -103,7 +117,8 @@ Each entry: the concrete failure, then the rule that prevents it.
   RevIN (no `fullrevin` in the name). The 36 blocked baseline runs on ETTh2, Weather, and
   Exchange need the RevIN weights, which are not on this machine.
   **Rule:** to state which weights exist, read the `reason` field of
-  `results/paper_strengthening/inventory.json` and match the full run name, with its
+  the suite's `inventory.json` (the October copy in `results/paper_strengthening` was deleted on
+2026-11-16) and match the full run name, with its
   `fullrevin` part and hash, against `checkpoints/publication`.
 
 ## Diagnostics for calibrator design
