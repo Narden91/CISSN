@@ -45,6 +45,16 @@ def save(fig, out, name):
     plt.close(fig)
 
 
+def score_path(results, run, filename):
+    """Support standalone suites and merged suites with dataset subdirectories."""
+    candidates = [results / "scores" / run["run"] / filename,
+                  results / run["dataset"] / "scores" / run["run"] / filename]
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError("Missing score artifact; checked: " + ", ".join(map(str, candidates)))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=Path("results/paper_strengthening"))
@@ -66,6 +76,7 @@ def main():
     uncertainty = pd.read_csv(args.results / "uncertainty.csv")
     phases = pd.read_csv(args.results / "phase_effects.csv")
     inventory = json.loads((args.results / "inventory.json").read_text())
+    runs_by_name = {run["run"]: run for run in inventory}
     main_rows, alpha_rows, strong_rows = [], [], []
     for (dataset, horizon, model), group in frame.groupby(["dataset", "horizon", "model"]):
         at_alpha = group[np.isclose(group.alpha, 0.1)].set_index("method")
@@ -86,7 +97,7 @@ def main():
         dataset, horizon, model, alpha, method = key
         runs = [r for r in inventory if r["status"] == "completed" and r["dataset"] == dataset
                 and r["horizon"] == horizon and r["model"] == model]
-        paths = [args.results / "scores" / r["run"] / f"{method}_alpha{alpha}_horizon.npy" for r in runs]
+        paths = [score_path(args.results, r, f"{method}_alpha{alpha}_horizon.npy") for r in runs]
         if paths:
             coverage_steps = np.mean([np.load(path)[:, 0] for path in paths], axis=0)
             horizon_rows.append([tex(dataset), horizon, tex(model), LABEL[method], f"{alpha:.2f}",
@@ -153,20 +164,20 @@ def main():
     for path in sorted(args.results.rglob("diagnostics.json")):
         if path.parents[1].name != "scores":
             continue
-        config = json.loads((path.parents[2] / "cache" / path.parent.name / "metadata.json").read_text())["provenance"]["config"]
-        diagnostics.append((path, config, json.loads(path.read_text())))
+        run = runs_by_name[path.parent.name]
+        diagnostics.append((path, run, json.loads(path.read_text())))
     # One seed per cell, selected by seed number before seeing diagnostic values.
     chosen = {}
-    for path, config, data in diagnostics:
-        key = (config["data"], config["pred_len"])
-        if key not in chosen or config["seed"] < chosen[key][1]["seed"]:
-            chosen[key] = (path, config, data)
+    for path, run, data in diagnostics:
+        key = (run["dataset"], run["horizon"])
+        if key not in chosen or run["seed"] < chosen[key][1]["seed"]:
+            chosen[key] = (path, run, data)
     fig, axes = plt.subplots(max(1, (len(chosen) + 1) // 2), 2, figsize=(8, 2.5 * max(1, (len(chosen) + 1) // 2)), squeeze=False)
-    for ax, (key, (_, config, data)) in zip(axes.flat, sorted(chosen.items())):
+    for ax, (key, (_, run, data)) in zip(axes.flat, sorted(chosen.items())):
         counts = np.asarray(data["cluster_phase_counts"], dtype=float)
         proportions = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
         im = ax.imshow(proportions, aspect="auto", origin="lower", cmap="Blues")
-        ax.set(title=f"{key[0]}, H={key[1]}, seed {config['seed']}: NMI={data['cluster_phase_nmi']:.3f}",
+        ax.set(title=f"{key[0]}, H={key[1]}, seed {run['seed']}: NMI={data['cluster_phase_nmi']:.3f}",
                xlabel="Phase of first target", ylabel="State cluster")
         fig.colorbar(im, ax=ax, label="Phase fraction within cluster")
     fig.tight_layout()
@@ -201,9 +212,10 @@ def main():
     (gen / f"{prefix}_numbers.tex").write_text("\n".join(macro_lines) + "\n", encoding="utf-8")
     count_groups = {}
     for path in args.results.rglob("calibration_alpha0.1.json"):
-        config = json.loads((path.parents[2] / "cache" / path.parent.name / "metadata.json").read_text())["provenance"]["config"]
-        model = "cissn" if config.get("architecture") == "legacy" else config["model"]
-        count_groups.setdefault((config["data"], config["pred_len"], model), []).append(json.loads(path.read_text()))
+        if path.parents[1].name != "scores":
+            continue
+        run = runs_by_name[path.parent.name]
+        count_groups.setdefault((run["dataset"], run["horizon"], run["model"]), []).append(json.loads(path.read_text()))
     count_rows = []
     for (dataset, horizon, model), values in sorted(count_groups.items()):
         phase_counts = [n for value in values for n in value["phase"]["counts"].values()]

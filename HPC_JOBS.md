@@ -112,27 +112,31 @@ records the tolerances, per-metric drift, and pass/fail result. Nonfinite scores
 After updating this check, resubmit only the failed dataset; source changes automatically rebuild
 its prediction caches. A CPU job accepts either a CPU-only or CUDA-enabled PyTorch build.
 
-B6. After both jobs succeed, merge and build. The merge stops if any run is incomplete.
+B6. After both jobs succeed, merge and package the report inputs. The merge stops if any run is incomplete.
 
 ```bash
 .venv/bin/python slurm/paper_jobs.py merge --datasets ECL,solar --output results/paper_cluster
-.venv/bin/python manuscript/analysis/build_strengthening.py --results results/paper_cluster --prefix cluster
+tar --exclude='cache' -czf results/paper_cluster_report.tar.gz -C results paper_cluster
 ```
 
 Expect `summary.csv`, `runs.csv`, `uncertainty.csv`, `phase_effects.csv`, and `inventory.json` in
 `results/paper_cluster/`.
+The archive includes the per-dataset `scores/` directories needed for the report and excludes
+the large prediction caches. Recreate it after rerunning or merging new results.
 
 ## C. [workstation] Bring the results back
 
-C1. Copy the merged results and the generated files. In the first line, replace the three
-quoted values with your own; they are the only values you edit in this file.
+C1. Download the archive into a fresh local directory and build the report on the laptop.
+Use the updated report builder: it supports per-dataset score directories and needs no prediction
+caches, datasets, or checkpoints. In the first line, replace the three quoted connection values.
 
 ```powershell
 $env:CU = "<cineca user>"; $env:LOGIN = "<login host>"; $env:WORKDIR = "<work folder>"
-scp -r "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/results/paper_cluster" results/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/generated/*cluster*" manuscript/generated/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/tables/*cluster*" manuscript/tables/
-scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/manuscript/figures/cluster_*" manuscript/figures/
+$bundleDir = "results/cluster_download_$(Get-Date -Format yyyyMMdd_HHmmss)"
+New-Item -ItemType Directory -Force $bundleDir | Out-Null
+scp "${env:CU}@${env:LOGIN}:${env:WORKDIR}/CISSN/results/paper_cluster_report.tar.gz" "$bundleDir/"
+tar -xzf "$bundleDir/paper_cluster_report.tar.gz" -C "$bundleDir"
+.\.venv\Scripts\python.exe manuscript/analysis/build_strengthening.py --results "$bundleDir/paper_cluster" --prefix cluster
 ```
 
 Never copy whole run folders or `results/publication` from the cluster.

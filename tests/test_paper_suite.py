@@ -172,7 +172,8 @@ def test_calendar_diagnostic_noise_and_strong_phase_effect():
     assert missing["status"] == "missing_calibration_phases"
 
 
-def test_summary_nested_pair_and_ratio(tmp_path):
+@pytest.mark.parametrize("dataset_subdirectory", [False, True])
+def test_summary_nested_pair_and_ratio(tmp_path, dataset_subdirectory):
     root = tmp_path
     (root / "cache" / "run").mkdir(parents=True)
     (root / "scores" / "run").mkdir(parents=True)
@@ -195,11 +196,22 @@ def test_summary_nested_pair_and_ratio(tmp_path):
     ratio = uncertainty[uncertainty.kind == "ratio_of_means"].iloc[0]
     assert ratio["mean"] == 1.5
     import json
+    import shutil
     import subprocess
     import sys
     from pathlib import Path
     (root / "inventory.json").write_text(json.dumps([dict(run="run", dataset="ETTh2", horizon=2,
-                                                         model="cissn", status="completed")]))
+                                                         model="cissn", seed=42, status="completed")]))
+    (root / "scores" / "run" / "diagnostics.json").write_text(json.dumps(
+        {"cluster_phase_counts": [[2, 2], [2, 2]], "cluster_phase_nmi": 0.0}))
+    (root / "scores" / "run" / "calibration_alpha0.1.json").write_text(json.dumps(
+        {"phase": {"counts": {"0": 2, "1": 2}}, "phase_state": {"fallbacks": {"0:0": None}},
+         "paired_indices": [0, 1, 2, 3], "n_full": 8}))
+    # A portable report bundle contains scores and inventory, without prediction caches.
+    shutil.rmtree(root / "cache")
+    if dataset_subdirectory:
+        (root / "ETTh2").mkdir()
+        shutil.move(str(root / "scores"), str(root / "ETTh2" / "scores"))
     script = Path(__file__).resolve().parents[1] / "manuscript" / "analysis" / "build_strengthening.py"
     result = subprocess.run([sys.executable, str(script), "--results", str(root),
                              "--generated-dir", str(root / "generated"), "--table-dir", str(root / "tables"),
@@ -210,6 +222,7 @@ def test_summary_nested_pair_and_ratio(tmp_path):
     assert "Miss cost" in table and "Coarse phase+State" in table and "Flat scaled" in table
     assert "0.9000" in (root / "tables" / "tab_strengthening_horizon_coverage.tex").read_text()
     assert (root / "generated" / "strengthening_numbers.tex").is_file()
+    assert "ETTh2" in (root / "tables" / "tab_strengthening_counts.tex").read_text()
     assert not list((root / "generated").glob("tab_*.tex"))
 
 
