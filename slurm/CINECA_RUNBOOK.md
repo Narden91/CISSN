@@ -1,6 +1,6 @@
 # Cineca Leonardo runbook (copy and paste)
 
-Reference for the CISSN cluster: one-time setup, watch and cancel, failures, and Cineca facts. What to launch now is in `HPC_JOBS.md`. Put the account, partition, and email in the untracked repo-root `.env`; `slurm/env.sh` loads it.
+Reference for the CISSN cluster: one-time setup, watch and cancel, failures, and Cineca facts. What to launch now is in `TASKS.md`. Put the account, partition, and email in the untracked repo-root `.env`; `slurm/env.sh` loads it.
 Blocks marked **[workstation]** run in PowerShell on your PC. Blocks marked **[cluster]** run in bash on the login node. Facts are marked **verified** (source, date) or **not verified**.
 
 ## 0. Values to set once
@@ -69,7 +69,7 @@ If you changed code on the workstation, the user commits and pushes first (git i
 
 ## 3. Paper follow-up jobs (ECL, solar)
 
-Follow `HPC_JOBS.md`, parts B and C. That file is the only copy of the launch, merge, and copy-back commands.
+Follow `TASKS.md`, step 2. That file is the only copy of the launch, merge, and copy-back commands.
 
 ## 4. Training blocks (R1 to R6, P1 to P3): only when a block is open
 
@@ -83,7 +83,7 @@ bash slurm/launch.sh --blocks p1,p2                     # submit
 
 - All historical blocks are finished, so always name the block with `--blocks`.
 - Resume by running the same command again: finished cells are skipped, and partial checkpoints of unfinished cells are removed first.
-- Block `p5` trains the Solar DLinear and PatchTST-lite baselines (12 cells). The project account has no GPU on the cluster, so `p5` trains on the workstation and only the Solar re-scoring runs here (`HPC_JOBS.md`, part D).
+- Block `p5` trains the Solar DLinear and PatchTST-lite baselines (12 cells). The project account has no GPU on the cluster, so `p5` trains on the workstation and only the Solar re-scoring runs here (`TASKS.md`, steps 1 and 2).
 - Sealed runs (`--require_clean_git --immutable_artifacts`) need a clean tree and byte-identical data.
 
 ## 5. Watch, resume, cancel
@@ -102,7 +102,7 @@ Preflight refuses to start while a `cissn_*` job is queued. Wait or cancel first
 
 ## 6. Bring results back
 
-Follow `HPC_JOBS.md`, part C. The paper jobs write to `results/paper_cluster`; the training blocks write to `results/publication`.
+Follow `TASKS.md`, step 2. The paper jobs write to `results/paper_cluster`; the training blocks write to `results/publication`.
 
 ## 7. If something fails
 

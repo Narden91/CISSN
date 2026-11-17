@@ -1,7 +1,7 @@
 # Follow-up reproducibility reference
 
 The ECL and Solar follow-up scoring finished on 2026-11-16. For open cluster work (Solar
-DLinear and PatchTST-lite) and the regeneration commands, follow [HPC_JOBS.md](../HPC_JOBS.md).
+DLinear and PatchTST-lite) and the regeneration commands, follow [TASKS.md](../TASKS.md).
 
 This reference records the completed local work, output files, and research details.
 

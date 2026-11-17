@@ -1,6 +1,6 @@
 # CISSN
 
-CISSN is a state-space forecasting model with state-conditional conformal intervals. The publication protocol is defined only in [RUNBOOK.md](RUNBOOK.md).
+CISSN is a state-space forecasting model with state-conditional conformal intervals. Open steps are in [TASKS.md](TASKS.md); decisions, evidence, and rules are in [plan.md](plan.md). The protocol of the historical publication runs is [docs/RUNBOOK.md](docs/RUNBOOK.md) (closed).
 
 ## Start here
 
@@ -32,10 +32,10 @@ Each completed run saves predictions, targets, interval bounds when applicable, 
 
 ## Documentation
 
-- [HPC_JOBS.md](HPC_JOBS.md): steps to launch only the two remaining prepared HPC jobs.
-- [RUNBOOK.md](RUNBOOK.md): runnable publication protocol and acceptance criteria.
+- [TASKS.md](TASKS.md): open steps with commands.
+- [plan.md](plan.md): decisions, evidence, fixed design, result checks, and rules.
 - [docs/prespecification.md](docs/prespecification.md): confirmatory dataset, endpoint, and claim-reading rules.
-- [experiments.md](experiments.md): historical training and analysis commands.
+- [docs/RUNBOOK.md](docs/RUNBOOK.md): protocol of the historical publication runs (closed).
 - [docs/architecture.md](docs/architecture.md): implementation architecture.
 - [docs/datasets.md](docs/datasets.md): datasets and split protocol.
 - [docs/methodology.md](docs/methodology.md): scientific scope and reporting.

@@ -110,7 +110,7 @@ Each entry: the concrete failure, then the rule that prevents it.
   `strengthening_status.tex` counted 60 blocked runs. That count came from the local
   inventory. `HPC_JOBS.md` lists 18 frozen ECL runs (CISSN, DLinear, PatchTST) on the cluster,
   and `slurm/paper_jobs.py` says only Solar lacks DLinear and PatchTST configurations.
-  **Rule:** before you plan a training run, read `HPC_JOBS.md`, `slurm/paper_jobs.py`, and the
+  **Rule:** before you plan a training run, read `plan.md` section 5, `TASKS.md`, `slurm/paper_jobs.py`, and the
   cluster preflight output. A local "blocked" count describes this machine only.
 - **Failure:** a plan described the local weights from the folder names alone. The local
   `checkpoints/publication` holds DLinear and PatchTST folders, but they are the runs without
@@ -131,3 +131,13 @@ Each entry: the concrete failure, then the rule that prevents it.
   **Rule:** before you compare partitions for a calibrator, measure them on the same unit the
   calibrator fits: per group, horizon step, and (where possible) channel. Score on the other
   calibration half, and give the chance level for random groups.
+
+## Backups and removed files that documents cite
+
+- **Failure:** `plan.md` and `manuscript/README.md` said that the old Elsevier manuscript
+  sources were backed up under `results/_manuscript_layout_backup_20261112/`. On 2026-11-17 the
+  folder was not on disk, after a cleanup of the `_*` scratch folders in `results/`. The
+  documents kept the claim, and `manuscript/` was not in Git, so no copy is left.
+  **Rule:** do not put a backup in a folder whose name matches a cleanup pattern
+  (`results/_*`). Before you delete a folder or a document, grep the repository for its path,
+  and correct every sentence that names it in the same change.

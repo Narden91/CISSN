@@ -1,6 +1,6 @@
 # CISSN publication runbook
 
-Sole launch protocol. Earlier-protocol results not publication evidence. Never pool with these artifacts. All training blocks are finished (`experiments.md`). What to run now: `HPC_JOBS.md`. Confirmatory analysis and reading rules in `docs/prespecification.md` (ECL) and
+Protocol of the historical publication runs. Closed on 2026-11-17: every step below is finished, and this file starts no new run. Open steps are in `TASKS.md`; decisions, evidence, and rules are in `plan.md`. This file was `RUNBOOK.md` in the repository root until 2026-11-17. Earlier-protocol results not publication evidence. Never pool with these artifacts. Confirmatory analysis and reading rules in `docs/prespecification.md` (ECL) and
 `docs/prespecification_solar.md` (solar, draft).
 
 > Evidence note: ETTh1 test artifacts informed development, stay diagnostics only. ETTh2, weather, exchange-rate test splits read in pre-RevIN grid, so results secondary, descriptive. ECL = confirmatory dataset. Second confirmatory dataset: solar (Step 7, P3). All selection use validation data only.
@@ -193,7 +193,7 @@ Ablations run after main comparison. Run fixes one `--scale_geometry`, so two ce
 
 ## Step 7: additions for submission `[x]`
 
-Three additions answer gaps listed in `venue.md`. None change ECL endpoint, its analysis, or its reading rule. Each result reported as added after ECL confirmatory analysis.
+Three additions answer gaps listed in `venue.md` (removed on 2026-11-17; `git show aab381f:venue.md`). None change ECL endpoint, its analysis, or its reading rule. Each result reported as added after ECL confirmatory analysis.
 
 **Order (done).** Step 7 code and `docs/prespecification_solar.md` were committed before launch. One `bash slurm/launch.sh` call submitted `r5`, `p1`, `p2`, `p3s`, `p3`, `p3b` together. The `r5` reruns ran at a later commit than the other 204 R5 runs. Code differs by encoder fix and by Step 7 additions that leave stride-1 computation unchanged (stride option with default 1, extra output files); manuscript states both commits.
 

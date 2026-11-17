@@ -1,12 +1,12 @@
 # CISSN on the cluster
 
-Follow [HPC_JOBS.md](../HPC_JOBS.md) to launch the two remaining prepared jobs.
+Open cluster work is in [TASKS.md](../TASKS.md), step 2.
 It is the current guide for checking files, submission, monitoring, and result merging.
 
 ## Historical training workflow
 
 The remaining sections record the earlier training campaign. Their open-job lists
-and commit requirements belong to that campaign.
+and commit requirements belong to that campaign. `experiments.md` was removed on 2026-11-17, and `RUNBOOK.md` is now `docs/RUNBOOK.md`; `plan.md` Appendix C lists the last versions.
 
 Runs R1-R6 and the Step 7 blocks P1-P3 (`RUNBOOK.md`) as Slurm GPU array jobs. The open
 commands are in `experiments.md`. R7 (analysis) runs on the workstation.
